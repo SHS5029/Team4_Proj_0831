@@ -1,5 +1,11 @@
 # ruff: noqa: E501
-"""Pure HTML and CSS helpers for the Streamlit authentication screen."""
+"""Streamlit 인증 화면에서 사용하는 순수 HTML/CSS 생성 도우미.
+
+이 모듈은 인증 판단이나 세션 변경을 하지 않고 마크업 생성만 담당한다. 호출부가
+``unsafe_allow_html=True``로 결과를 렌더링하므로, 외부에서 온 프로필 값은 이
+모듈의 경계에서 반드시 HTML 이스케이프해야 한다. 정적 마크업과 사용자 입력을
+구분해 유지하는 것이 핵심 보안 계약이다.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +14,8 @@ from urllib.parse import quote
 
 from auth.identity import IdentityProfile
 
+# Google 로고는 코드에 고정된 장식 이미지다. 보조 기술이 버튼의 실제 레이블을
+# 중복해서 읽지 않도록 SVG 자체는 ``aria-hidden``으로 표시한다.
 GOOGLE_G_LOGO = """<svg aria-hidden="true" focusable="false" width="20" height="20" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg">
   <path fill="#4285F4" d="M17.64 9.205c0-.638-.057-1.252-.164-1.841H9v3.481h4.844a4.14 4.14 0 0 1-1.797 2.716v2.259h2.909c1.702-1.567 2.684-3.874 2.684-6.615z"/>
   <path fill="#34A853" d="M9 18c2.43 0 4.468-.806 5.956-2.18l-2.909-2.259c-.806.54-1.835.859-3.047.859-2.344 0-4.328-1.585-5.037-3.714H.956v2.332A9 9 0 0 0 9 18z"/>
@@ -15,13 +23,19 @@ GOOGLE_G_LOGO = """<svg aria-hidden="true" focusable="false" width="20" height="
   <path fill="#EA4335" d="M9 3.58c1.321 0 2.507.454 3.442 1.345l2.581-2.581C13.464.892 11.426 0 9 0A9 9 0 0 0 .956 4.962l3.007 2.332C4.672 5.165 6.656 3.58 9 3.58z"/>
 </svg>"""
 
+# SVG를 CSS ``background-image``에서 외부 파일 요청 없이 사용할 수 있도록 data URI로
+# 변환한다. ``quote``의 허용 문자 목록은 SVG 문법에 필요한 문자만 그대로 보존한다.
 _GOOGLE_G_DATA_URI = "data:image/svg+xml," + quote(
     GOOGLE_G_LOGO.replace("\n", " "),
     safe="/:=;,%",
 )
 
+# 디자인 확장은 먼저 ``:root`` 토큰을 조정하고, Streamlit 위젯은 명시적으로 부여한
+# 컨테이너 key에서 생성되는 ``st-key-*`` 클래스를 기준으로 한정한다. Streamlit의
+# 난수성 내부 클래스 이름에 직접 의존하면 버전 변경 시 스타일이 쉽게 깨질 수 있다.
 APP_CSS = f"""
 <style>
+/* 색상·간격·모서리 토큰은 히어로와 인증 카드가 공유하는 디자인 기준점이다. */
 :root {{
   --color-ocean: #1f6f78;
   --color-ocean-deep: #123f48;
@@ -47,6 +61,7 @@ APP_CSS = f"""
 
 html {{ color-scheme: light; }}
 
+/* Streamlit 기본 셸을 여행 서비스 배경과 중앙 콘텐츠 폭에 맞춘다. */
 [data-testid="stAppViewContainer"] {{
   background:
     radial-gradient(circle at 10% 12%, rgba(246, 185, 95, 0.25), transparent 24rem),
@@ -65,6 +80,7 @@ html {{ color-scheme: light; }}
   padding: clamp(2rem, 6vh, 5rem) clamp(1.25rem, 4vw, 3.5rem);
 }}
 
+/* 왼쪽 히어로는 서비스 성격을 전달하는 정적 소개 영역이다. */
 .travel-hero {{
   position: relative;
   min-height: 590px;
@@ -174,6 +190,7 @@ html {{ color-scheme: light; }}
 .route-label {{ color: rgba(255,255,255,.62); font-size: .68rem; letter-spacing: .08em; }}
 .route-name {{ margin-top: .16rem !important; color: #fff; font-size: .9rem; font-weight: 680; }}
 
+/* key="auth-card"로 만든 오른쪽 컨테이너에만 카드 표면을 적용한다. */
 [class*="st-key-auth-card"] {{
   padding: clamp(1.4rem, 2.6vw, 2.15rem) !important;
   border: 1px solid rgba(255,255,255,.82) !important;
@@ -210,6 +227,7 @@ html {{ color-scheme: light; }}
   word-break: keep-all;
 }}
 
+/* 로그인 버튼의 실제 클릭·disabled 상태는 Streamlit 위젯이 관리한다. */
 [class*="st-key-google-login"] button {{
   min-height: 3.35rem;
   border: 1px solid #d7dfde !important;
@@ -250,6 +268,7 @@ a:focus-visible {{
   word-break: keep-all;
 }}
 
+/* 프로필 값은 아래 ``profile_card_html``에서 이스케이프된 뒤 이 영역에 들어온다. */
 .profile-card {{
   padding: 1.25rem;
   border: 1px solid var(--color-border);
@@ -310,6 +329,7 @@ a:focus-visible {{
   border: 0 !important;
 }}
 
+/* 좁은 화면에서는 열 배치를 유지하면서 여백과 히어로 높이만 줄인다. */
 @media (max-width: 760px) {{
   [data-testid="stMainBlockContainer"] {{ padding: 1rem .9rem 2rem; }}
   [data-testid="stHorizontalBlock"] {{ gap: 1rem !important; }}
@@ -320,6 +340,7 @@ a:focus-visible {{
   [class*="st-key-auth-card"] {{ padding: 1.35rem !important; border-radius: 26px; }}
 }}
 
+/* 사용자의 운영체제 접근성 설정을 존중해 장식 전환 효과를 사실상 제거한다. */
 @media (prefers-reduced-motion: reduce) {{
   *, *::before, *::after {{ scroll-behavior: auto !important; transition-duration: .01ms !important; }}
 }}
@@ -328,6 +349,12 @@ a:focus-visible {{
 
 
 def hero_html() -> str:
+    """사용자 입력을 포함하지 않는 서비스 소개용 정적 HTML을 반환한다.
+
+    새 문구나 장식 요소를 추가할 때는 제목 연결(``aria-labelledby``)과 장식 요소의
+    ``aria-hidden`` 여부를 함께 검토해야 한다.
+    """
+
     return """
     <section class="travel-hero" aria-labelledby="travel-hero-title">
       <div class="brand-lockup">
@@ -351,6 +378,8 @@ def hero_html() -> str:
 
 
 def login_intro_html() -> str:
+    """로그아웃 화면 상단에 표시할 접근성 레이블 포함 정적 HTML을 반환한다."""
+
     return """
     <section class="auth-intro" aria-labelledby="login-title">
       <p class="auth-kicker">WELCOME ABOARD</p>
@@ -361,18 +390,30 @@ def login_intro_html() -> str:
 
 
 def profile_card_html(profile: IdentityProfile) -> str:
+    """검증된 프로필 모델을 안전한 사용자 카드 HTML로 변환한다.
+
+    ``IdentityProfile``은 길이와 URL 스킴이 정규화된 도메인 값이지만, HTML 문맥의
+    안전성은 별개의 문제다. 텍스트 노드에는 기본 이스케이프를, ``src`` 속성에는
+    따옴표까지 포함한 이스케이프를 적용해 마크업 삽입을 막는다. 앞으로 프로필 필드를
+    추가할 때도 f-string에 원본 값을 직접 넣지 말고 동일한 경계를 지켜야 한다.
+    """
+
+    # 사용자 제공 문자열은 ``unsafe_allow_html=True`` 렌더링 전에 모두 이스케이프한다.
     name = escape(profile.display_name)
     email = escape(profile.email)
     initial = escape((profile.display_name or "여")[0])
     if profile.avatar_url:
+        # identity 계층의 HTTPS 검증에 더해 속성 문맥 이스케이프를 방어적으로 적용한다.
         avatar = (
             '<span class="profile-avatar">'
             f'<img src="{escape(profile.avatar_url, quote=True)}" alt="">'
             "</span>"
         )
     else:
+        # 이미지가 없을 때 첫 글자를 시각적 아바타로 쓰되 보조 기술에는 숨긴다.
         avatar = f'<span class="profile-avatar-fallback" aria-hidden="true">{initial}</span>'
 
+    # 이메일 검증 배지는 공급자가 전달한 검증 클레임이 참일 때만 표시한다.
     verified = (
         '<span class="verified-badge">확인된 Google 계정</span>'
         if profile.email_verified

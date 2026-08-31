@@ -1,2 +1,5 @@
-"""Database adapters and repositories."""
+"""PostgreSQL 마이그레이션 실행기와 인증 저장소 어댑터 패키지.
 
+도메인 모델을 SQL 행으로 변환하는 책임을 모아 두고, UI 및 OIDC claim
+파싱 로직과 데이터베이스 트랜잭션 세부 구현을 분리한다.
+"""
