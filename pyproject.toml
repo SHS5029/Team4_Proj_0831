@@ -1,0 +1,31 @@
+[project]
+name = "team4-oauth-login"
+version = "0.1.0"
+description = "Streamlit 기반 Team4 Google OIDC 로그인 화면"
+requires-python = ">=3.12"
+dependencies = [
+  "psycopg[binary]>=3.2.0,<4",
+  "python-dotenv>=1.1.0,<2",
+  "streamlit[auth]>=1.55.0,<2",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.4.0,<9",
+  "ruff>=0.12.0,<1",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+pythonpath = [".", "frontend"]
+testpaths = ["backend/tests", "frontend/tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "S"]
+ignore = [
+  "S101", # pytest assert statements
+]

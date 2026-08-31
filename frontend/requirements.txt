@@ -1,0 +1,1 @@
+streamlit[auth]>=1.55,<2.0
