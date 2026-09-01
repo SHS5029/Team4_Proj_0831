@@ -26,6 +26,12 @@ LLM Agent loop, MCP Tool·Resource·Prompt, 관리자 업무 기능, Redis 연�
 않습니다. 상세 경계는 [아키텍처 개편 문서](docs/ARCHITECTURE_REFACTOR_PLAN.md)를
 참고하세요.
 
+현재 구조를 이용해 1명의 인간 플레이어와 AI 에이전트가 기본 마피아 게임을 진행하는
+후속 MVP의 제품 범위, 화면 흐름, 상태 머신, API, 데이터 모델, Agent/MCP 경계와 단계별
+완료 기준은 [AI 에이전트 마피아 MVP 구현 설계 초안](docs/AI_MAFIA_MVP_PLAN.md)에
+정리되어 있습니다. 이 문서는 구현 계획이며 아래의 현재 구현 범위를 확장했다고
+간주하지 않습니다.
+
 ## 프로젝트 구조
 
 ```text
@@ -58,6 +64,7 @@ LLM Agent loop, MCP Tool·Resource·Prompt, 관리자 업무 기능, Redis 연�
 ├── mcp_server/
 │   ├── tour/                         # 여행 MCP 독립 예약 패키지
 │   └── weather/                      # 날씨 MCP 독립 예약 패키지
+├── docs/AI_MAFIA_MVP_PLAN.md         # AI 마피아 MVP 제품·기술 설계 초안
 ├── tests/{integration,e2e}/          # 서버 간·브라우저 검증 확장 위치
 └── scripts/configure_google_oidc.py  # Google client JSON → Streamlit secrets 생성
 ```
