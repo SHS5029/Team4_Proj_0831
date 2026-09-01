@@ -4,16 +4,31 @@ version = "0.1.0"
 description = "FastAPI와 Streamlit을 분리한 Team4 Google OIDC 서비스 구조"
 requires-python = ">=3.12"
 dependencies = [
+  # --- 현재 구현(로그인·identity API)에서 사용하는 의존성 ---
   "fastapi>=0.116.0,<1",
   "psycopg[binary]>=3.2.0,<4",
   "python-dotenv>=1.1.0,<2",
   "streamlit[auth]>=1.55.0,<2",
   "uvicorn>=0.35.0,<1",
+  # --- AI 마피아 MVP(docs/AI_MAFIA_MVP_FINAL_PLAN.md)용 의존성 ---
+  # Redis: 게임 lock·idempotency·runtime cache·event stream (10장)
+  "redis>=5.0.0,<7",
+  # LLM 이중 공급자: LLM_PROVIDER 환경 변수로 선택 (7장, 통합 결정)
+  "openai>=1.50.0,<3",
+  "google-genai>=1.0.0,<2",
+  # MCP SDK: mcp_server/mcp_1 게임 컨텍스트 서버와 backend MCP client (8장)
+  "mcp>=1.2.0,<2",
+  # 비동기 HTTP: LLM·MCP 호출과 FastAPI TestClient가 공용으로 사용
+  "httpx>=0.27.0,<1",
+  # SSE: GET /api/v1/games/{game_id}/events 진행 이벤트 구독 (11장)
+  "sse-starlette>=2.1.0,<4",
 ]
 
 [dependency-groups]
 dev = [
   "pytest>=8.4.0,<9",
+  # 비동기 게임 엔진·Agent Manager 테스트용
+  "pytest-asyncio>=0.24.0,<2",
   "ruff>=0.12.0,<1",
 ]
 

@@ -19,17 +19,21 @@ PostgreSQL 사용자 저장을 독립 실행 단위로 분리한 프로젝트입
 - 재로그인 프로필·최근 로그인 시각 갱신과 비활성 사용자 fail-closed 차단
 - 외부 프로필 HTML escape와 HTTPS 아바타 URL 제한
 - Backend 소유 PostgreSQL migration 실행기
-- 독립 관리자 Streamlit 앱과 Tour·Weather MCP 서버의 예약 구조
+- 독립 관리자 Streamlit 앱과 MCP 서버 예약 구조(`mcp_server/mcp_1`, `mcp_2`)
 
 LLM Agent loop, MCP Tool·Resource·Prompt, 관리자 업무 기능, Redis 연결은 아직
 구현하지 않았습니다. 예약 모듈은 향후 연결 위치만 고정하며 외부 호출을 수행하지
 않습니다. 상세 경계는 [아키텍처 개편 문서](docs/ARCHITECTURE_REFACTOR_PLAN.md)를
 참고하세요.
 
-현재 구조를 이용해 1명의 인간 플레이어와 AI 에이전트가 기본 마피아 게임을 진행하는
-후속 MVP의 제품 범위, 화면 흐름, 상태 머신, API, 데이터 모델, Agent/MCP 경계와 단계별
-완료 기준은 [AI 에이전트 마피아 MVP 구현 설계 초안](docs/AI_MAFIA_MVP_PLAN.md)에
-정리되어 있습니다. 이 문서는 구현 계획이며 아래의 현재 구현 범위를 확장했다고
+현재 구조를 이용해 1명의 인간 플레이어와 AI 에이전트가 기본 마피아 게임을
+진행하는 후속 MVP의 확정 설계는
+[AI 마피아 MVP 최종 통합 플랜](docs/AI_MAFIA_MVP_FINAL_PLAN.md)에 정리되어
+있습니다. 이 문서는 세 기획 초안(`docs/mafia_game_plan.md`,
+`docs/AI_MAFIA_MVP_PLAN.md`, `docs/ai_mafia_game_engine분리규칙.md`)을 현재
+저장소 구조 기준으로 검증·통합한 구현 기준 문서이며, 통합 시 변경·결정된
+항목은 [통합·수정 내역](docs/AI_MAFIA_PLAN_INTEGRATION_NOTES.md)에 기록되어
+있습니다. 최종 플랜은 구현 계획이며 아래의 현재 구현 범위를 확장했다고
 간주하지 않습니다.
 
 ## 프로젝트 구조
@@ -62,9 +66,15 @@ LLM Agent loop, MCP Tool·Resource·Prompt, 관리자 업무 기능, Redis 연�
 │   └── tests/
 ├── frontend_admin/                   # 관리자 독립 앱의 최소 실행 골격
 ├── mcp_server/
-│   ├── tour/                         # 여행 MCP 독립 예약 패키지
-│   └── weather/                      # 날씨 MCP 독립 예약 패키지
-├── docs/AI_MAFIA_MVP_PLAN.md         # AI 마피아 MVP 제품·기술 설계 초안
+│   ├── mcp_1/                        # 게임 컨텍스트 MCP 예약 패키지(MVP 대상)
+│   └── mcp_2/                        # 후속 MCP 독립 예약 패키지
+├── docs/
+│   ├── AI_MAFIA_MVP_FINAL_PLAN.md    # AI 마피아 MVP 최종 통합 플랜(구현 기준)
+│   ├── AI_MAFIA_PLAN_INTEGRATION_NOTES.md  # 기획 문서 통합·수정 내역
+│   ├── AI_MAFIA_MVP_PLAN.md          # (대체됨) MVP 설계 초안
+│   ├── ai_mafia_game_engine분리규칙.md  # (대체됨) 엔진/Agent/MCP 분리 규칙
+│   ├── mafia_game_plan.md            # (대체됨) 추리게임 기획안·확장 참고
+│   └── ARCHITECTURE_REFACTOR_PLAN.md # 구조 개편 계획과 적용 기록
 ├── tests/{integration,e2e}/          # 서버 간·브라우저 검증 확장 위치
 └── scripts/configure_google_oidc.py  # Google client JSON → Streamlit secrets 생성
 ```
@@ -86,9 +96,9 @@ Redis, MCP 서버에 직접 연결하거나 MCP 서버끼리 서로의 내부 �
 uv sync --dev
 ```
 
-혼잡도 서비스에서 후속 발급할 관광·날씨·서울 실시간 도시데이터·길찾기·AI
-자격증명은 [API 자격증명 발급 목록](docs/crowd_timing_service_plan.md#9-api-자격증명-발급-목록)에
-정리되어 있습니다. 현재 코드에 연결된 외부 자격증명은 Google OIDC뿐입니다.
+현재 코드에 연결된 외부 자격증명은 Google OIDC뿐입니다. AI 마피아 MVP에서
+후속 연결할 OpenAI·Gemini API 키와 Redis 주소는 `.env.example`의 예약 항목을
+참고하세요.
 
 ## Backend 환경 설정
 
@@ -115,6 +125,9 @@ INTERNAL_API_MAX_AGE_SECONDS=300
 - 같은 `INTERNAL_API_SECRET`을 `frontend_user/.streamlit/secrets.toml`의
   `backend.internal_api_secret`에도 설정합니다. 브라우저나 소스 코드에는 넣지 않습니다.
 - Backend의 기본 서명 허용 시간 오차는 300초이며 최대 3600초로 제한됩니다.
+- `.env.example`의 `REDIS_URL`, `LLM_PROVIDER`, `OPENAI_API_KEY`,
+  `GEMINI_API_KEY`, `MAFIA_MCP_URL` 등은 AI 마피아 MVP용 예약 항목입니다.
+  아직 코드가 읽지 않으며 실제 키 값은 `.env`에만 보관합니다.
 
 `Team4_Proj` 데이터베이스는 앱이 만들지 않습니다. 마이그레이션 전에 관리 도구로
 데이터베이스를 생성하고 `.env` 계정에 연결·스키마 생성 권한을 부여하세요.
@@ -262,7 +275,8 @@ uv run ruff check .
 - 사용자 저장소: `backend/app/repositories/user_repository.py`
 - schema 변경: `backend/migrations/`에 다음 번호의 순방향 SQL 추가
 - Agent·LLM·MCP client: `backend/app/agent/`, `llm/`, `mcp/`
-- 독립 MCP 기능: `mcp_server/tour/` 또는 `mcp_server/weather/` 내부 계층에만 추가
+- 독립 MCP 기능: `mcp_server/mcp_1/`(게임 컨텍스트 MCP 예정) 또는
+  `mcp_server/mcp_2/` 내부 계층에만 추가
 
 ## 기여
 

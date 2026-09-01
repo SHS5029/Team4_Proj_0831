@@ -1,6 +1,11 @@
 # AI 에이전트 마피아 MVP 구현 설계 초안
 
-**문서 상태:** 구현 전 합의용 초안  
+> **[대체됨]** 이 문서는 [AI_MAFIA_MVP_FINAL_PLAN.md](AI_MAFIA_MVP_FINAL_PLAN.md)로
+> 통합·대체되었습니다. 내용이 충돌하면 최종 플랜을 우선합니다. 통합 시
+> 변경된 항목은 [통합·수정 내역](AI_MAFIA_PLAN_INTEGRATION_NOTES.md)을
+> 참고하세요.
+
+**문서 상태:** 구현 전 합의용 초안 (최종 플랜으로 대체됨)  
 **기준일:** 2026년 9월 1일  
 **대상 구조:** `frontend_user` + `frontend_admin` + `backend` + `mcp_server`
 

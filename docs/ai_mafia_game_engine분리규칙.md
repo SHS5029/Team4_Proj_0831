@@ -1,5 +1,10 @@
 # AI 마피아 게임: 메인 게임 엔진과 AI Agent 분리 규칙
 
+> **[대체됨]** 이 문서는 [AI_MAFIA_MVP_FINAL_PLAN.md](AI_MAFIA_MVP_FINAL_PLAN.md)로
+> 통합·대체되었습니다. Tool 이름, Resource URI, 인원 구성 등이 최종 플랜에서
+> 조정되었으므로 충돌 시 최종 플랜을 우선합니다. 조정 내역은
+> [통합·수정 내역](AI_MAFIA_PLAN_INTEGRATION_NOTES.md)을 참고하세요.
+
 ## 1. 문서 목적
 
 이 문서는 **4개의 AI Agent와 1명의 사용자**가 참여하는 마피아 게임에서 다음 구성요소의 책임과 통신 경계를 정의한다.
