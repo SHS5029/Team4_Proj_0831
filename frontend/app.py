@@ -1,4 +1,4 @@
-"""Streamlit 네이티브 Google OIDC 로그인 화면의 진입점.
+"""Streamlit 네이티브 Google OIDC 기본 로그인 화면의 진입점.
 
 이 모듈은 화면 구성, OIDC 세션 확인, 외부 사용자 정보의 내부 모델 변환,
 데이터베이스 계정 연결을 순서대로 조율한다. 인증 공급자의 원본 클레임과
@@ -43,7 +43,7 @@ from auth.persistence import (  # noqa: E402
     should_refresh_persistence,
 )
 from auth.providers import OAuthProvider, get_provider  # noqa: E402
-from ui import APP_CSS, hero_html, login_intro_html, profile_card_html  # noqa: E402
+from ui import APP_CSS, login_intro_html, profile_card_html  # noqa: E402
 
 LOGGER = logging.getLogger(__name__)
 
@@ -220,9 +220,15 @@ def _render_authenticated(provider: OAuthProvider) -> None:
     st.markdown(
         """
         <section class="auth-intro" aria-labelledby="welcome-title">
-          <p class="auth-kicker">WELCOME BACK</p>
-          <h2 class="auth-title" id="welcome-title">다시 만나<br>반가워요.</h2>
-          <p class="auth-description">저장해 둔 여행과 새로운 영감을 이어서 만나보세요.</p>
+          <span class="auth-symbol auth-symbol-success" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
+              stroke-linecap="round" stroke-linejoin="round">
+              <path d="m7 12 3 3 7-7"></path>
+              <circle cx="12" cy="12" r="9"></circle>
+            </svg>
+          </span>
+          <h1 class="auth-title" id="welcome-title">환영합니다</h1>
+          <p class="auth-description">현재 Google 계정으로 로그인되어 있습니다.</p>
         </section>
         """,
         unsafe_allow_html=True,
@@ -283,9 +289,9 @@ def main() -> None:
 
     # 페이지 설정은 첫 Streamlit UI 명령이어야 하므로 다른 렌더링보다 먼저 호출한다.
     st.set_page_config(
-        page_title="여정 | Google 로그인",
-        page_icon="✦",
-        layout="wide",
+        page_title="로그인",
+        page_icon="🔐",
+        layout="centered",
         initial_sidebar_state="collapsed",
     )
     st.markdown(APP_CSS, unsafe_allow_html=True)
@@ -295,28 +301,19 @@ def main() -> None:
     # Streamlit 재실행 시작 시 접근 권한을 닫아 둔 뒤, 아래 인증·DB 검사가 모두
     # 성공한 경로에서만 다시 연다. 이전 실행의 True가 판단 전에 남는 것을 막는다.
     st.session_state[APPLICATION_ACCESS_SESSION_KEY] = False
-    hero_column, auth_column = st.columns(
-        [1.12, 0.88],
-        gap="large",
-        vertical_alignment="center",
-    )
-    with hero_column:
-        st.markdown(hero_html(), unsafe_allow_html=True)
-
-    with auth_column:
-        with st.container(border=True, key="auth-card"):
-            # 순서가 보안 정책이다. 유효한 서버 설정과 로그인 세션을 모두 만족해야
-            # 인증 경로로 들어가며, 쿠키만 남은 경우에는 별도의 안전 로그아웃 화면을
-            # 보여 준다. 어느 조건도 아니면 일반 로그인 화면으로 돌아간다.
-            if should_process_external_user(
-                st.user,
-                oidc_configuration_ready=oidc_status.ready,
-            ):
-                _render_authenticated(provider)
-            elif is_external_user_logged_in(st.user):
-                _render_untrusted_session()
-            else:
-                _render_login(provider, oidc_status)
+    with st.container(border=True, key="auth-card"):
+        # 순서가 보안 정책이다. 유효한 서버 설정과 로그인 세션을 모두 만족해야 인증
+        # 경로로 들어가며, 쿠키만 남은 경우에는 별도의 안전 로그아웃 화면을 보여 준다.
+        # 어느 조건도 아니면 일반 로그인 화면으로 돌아간다.
+        if should_process_external_user(
+            st.user,
+            oidc_configuration_ready=oidc_status.ready,
+        ):
+            _render_authenticated(provider)
+        elif is_external_user_logged_in(st.user):
+            _render_untrusted_session()
+        else:
+            _render_login(provider, oidc_status)
 
 
 if __name__ == "__main__":

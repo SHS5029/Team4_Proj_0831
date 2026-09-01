@@ -1,6 +1,6 @@
-# 여정 로그인 화면
+# 기본 로그인 화면
 
-Streamlit 네이티브 OIDC(`st.login`, `st.user`, `st.logout`)를 사용하는 Google 로그인 전용 화면입니다. 로그인 전에는 여행 서비스 랜딩 화면, 로그인 후에는 안전하게 매핑한 사용자 프로필과 로그아웃 동작만 제공합니다.
+Streamlit 네이티브 OIDC(`st.login`, `st.user`, `st.logout`)를 사용하는 Google 로그인 전용 화면입니다. 프로젝트 주제가 정해지기 전에도 사용할 수 있도록 중립적인 단일 카드 기본형으로 구성했으며, 로그인 후에는 안전하게 매핑한 사용자 프로필과 로그아웃 동작만 제공합니다.
 
 ## 실행 준비
 
@@ -41,7 +41,7 @@ uv run pytest frontend/tests
 uv run ruff check frontend
 ```
 
-테스트는 OIDC claim 매핑, 필수 secrets 구조 검사, 외부 사용자 값 HTML escaping, 공식 Google `G` 색상, 반응형·키보드 포커스 CSS 토큰을 검증합니다.
+테스트는 OIDC claim 매핑, 필수 secrets 구조 검사, 외부 사용자 값 HTML escaping, 공식 Google `G` 색상, 주제 중립 문구, 반응형·키보드 포커스 CSS 토큰을 검증합니다.
 
 ## 확장 경계
 

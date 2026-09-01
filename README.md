@@ -7,6 +7,7 @@ Streamlit의 네이티브 OIDC 인증과 PostgreSQL을 연결한 Google 로그�
 ## 주요 기능
 
 - Streamlit `st.login("google")`, `st.user`, `st.logout()` 기반 Google OIDC 로그인
+- 프로젝트 주제와 무관하게 사용할 수 있는 중립적인 단일 카드 로그인 UI
 - OIDC 설정 누락, placeholder, 취약한 쿠키 secret 및 안전하지 않은 URL 사전 검사
 - Google `sub`를 기반으로 한 provider-neutral 사용자 식별
 - 첫 로그인 시 `users`와 `oauth_identities` 레코드의 원자적 자동 생성
@@ -28,6 +29,8 @@ Streamlit의 네이티브 OIDC 인증과 PostgreSQL을 연결한 Google 로그�
 │   ├── app/core/config.py          # .env 로드 및 DB URL 검증
 │   ├── app/db/migrate.py           # SQL 마이그레이션 실행기
 │   └── app/db/users.py             # PostgreSQL 사용자 저장소
+├── docs/
+│   └── crowd_timing_service_plan.md # AI 혼잡 회피 서비스 기획안
 ├── frontend/
 │   ├── app.py                      # Streamlit 애플리케이션 진입점
 │   ├── auth/                       # OIDC 설정·identity·접근 상태 경계
@@ -49,6 +52,8 @@ Streamlit의 네이티브 OIDC 인증과 PostgreSQL을 연결한 Google 로그�
 - 권장 패키지 관리자: [uv](https://docs.astral.sh/uv/)
 
 모든 명령은 저장소 루트에서 실행합니다.
+
+혼잡도 서비스에서 단계별로 발급해야 할 관광·날씨·서울 실시간 도시데이터·길찾기·AI 자격증명과 공식 발급처는 [API 자격증명 발급 목록](docs/crowd_timing_service_plan.md#9-api-자격증명-발급-목록)에 정리되어 있습니다. 현재 코드에 연결된 외부 자격증명은 Google OIDC뿐이며, 나머지 데이터 API는 기획된 후속 구현 범위입니다.
 
 ## 의존성 설치
 

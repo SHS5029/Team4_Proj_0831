@@ -141,7 +141,7 @@ def map_external_identity(
         display_name = _clean_text(_read_claim(user, "given_name"), limit=120)
     if not display_name:
         # 마지막 대체값도 정규화된 이메일에서 만들며 최대 길이를 다시 제한한다.
-        display_name = email.split("@", maxsplit=1)[0][:120] or "여행자"
+        display_name = email.split("@", maxsplit=1)[0][:120] or "사용자"
 
     return IdentityProfile(
         provider=normalized_provider,
