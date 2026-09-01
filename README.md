@@ -219,6 +219,13 @@ OIDC 로그인은 사용자 인증만 제공합니다. 향후 Google API 접근�
 - 보호 기능: `application-access-granted`가 참인 활성 DB 사용자에게만 노출
 - Google API 연동: 로그인 OIDC 흐름과 분리된 권한·token 수명 주기 구현
 
+## 구조 개편 계획
+
+현재 기능을 유지하면서 `backend`, `frontend_user`, `frontend_admin`, `mcp_server`를
+독립 실행 단위로 정리하는 계획은 [docs/ARCHITECTURE_REFACTOR_PLAN.md](docs/ARCHITECTURE_REFACTOR_PLAN.md)에
+기록되어 있습니다. 이번 단계에서는 LLM Agent와 MCP Tool을 실제로 추가하지 않고,
+향후 연결을 위한 디렉터리와 서버 경계만 마련합니다.
+
 ## 기여
 
 작업을 시작하기 전에 [AGENT.MD](AGENT.MD)를 읽고, 브랜치 정책과 사용자 승인, 검증 수준, README 갱신 규칙을 따르세요.
