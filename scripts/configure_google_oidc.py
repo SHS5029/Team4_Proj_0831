@@ -20,7 +20,7 @@ from urllib.parse import urlsplit
 
 GOOGLE_DISCOVERY_URL = "https://accounts.google.com/.well-known/openid-configuration"
 DEFAULT_REDIRECT_URI = "http://localhost:8501/oauth2callback"
-DEFAULT_OUTPUT_PATH = Path("frontend/.streamlit/secrets.toml")
+DEFAULT_OUTPUT_PATH = Path("frontend_user/.streamlit/secrets.toml")
 
 
 @dataclass(frozen=True, slots=True)

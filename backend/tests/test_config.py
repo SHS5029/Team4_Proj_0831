@@ -88,3 +88,25 @@ def test_settings_can_load_the_project_database_url_from_env(
 def test_settings_rejects_empty_or_non_postgresql_database_url(database_url: str) -> None:
     with pytest.raises(ValueError, match="(?i)database|postgres"):
         Settings(database_url=database_url)
+
+
+def test_internal_api_secret_is_validated_without_appearing_in_repr() -> None:
+    secret = "synthetic-signing-value-with-more-than-32-characters"  # noqa: S105
+    settings = Settings(
+        database_url="postgresql://app:synthetic@localhost/Team4_Proj",
+        internal_api_secret=secret,
+    )
+
+    assert settings.validated_internal_api_secret == secret.encode()
+    assert secret not in repr(settings)
+
+
+@pytest.mark.parametrize("secret", ["", "too-short", "REPLACE_WITH_A_RANDOM_VALUE_123456"])
+def test_internal_api_secret_rejects_missing_or_placeholder_values(secret: str) -> None:
+    settings = Settings(
+        database_url="postgresql://app:synthetic@localhost/Team4_Proj",
+        internal_api_secret=secret,
+    )
+
+    with pytest.raises(RuntimeError, match="(?i)signing|configured"):
+        _ = settings.validated_internal_api_secret

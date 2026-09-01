@@ -8,8 +8,8 @@ from uuid import UUID
 
 import pytest
 
-from backend.app.auth.models import ExternalIdentity, InactiveUserError
-from backend.app.db.users import PostgresUserRepository
+from backend.app.models.identity import ExternalIdentity, InactiveUserError
+from backend.app.repositories.user_repository import PostgresUserRepository
 
 USER_ID = UUID("83d40f36-e835-4a1d-88db-e59b6920b739")
 

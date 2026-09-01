@@ -1,5 +1,29 @@
 # Team4 구조 개편 및 서버 연결 구현 계획서
 
+## 0. 구현 상태 (2026-09-01)
+
+이 계획에 정의한 구조 개편과 현재 단계 서버 연결을 적용했다.
+
+- 기존 `frontend` 추적 파일을 `frontend_user`로 이동하고 얇은 `app.py`와
+  `app_pages/login_page.py` 경계를 구성했다.
+- FastAPI Backend의 health·identity router, schema, service, repository,
+  PostgreSQL·migration·HMAC infrastructure 경계를 구성했다.
+- Frontend의 PostgreSQL 직접 호출을 제거하고 `core/api_client.py`의 서명된
+  `POST /api/v1/identity/provision` 호출로 교체했다.
+- `frontend_admin`은 관리자 기능 없이 독립 실행 가능한 준비 화면만 추가했다.
+- `mcp_server/tour`, `mcp_server/weather`에는 실제 Tool이나 외부 호출 없이 예약
+  package와 계층별 책임 문서만 추가했다.
+- migration 소유권과 실행 경로를 `backend/migrations/` 및
+  `backend.app.infrastructure.migrations`로 변경했다.
+- 실제 `.env`, `secrets.toml`, OAuth client JSON은 자동 이동하거나 내용 확인을
+  하지 않았다. 새 `frontend_user` 설정은 예시와 루트 README에 별도로 안내한다.
+- 저장소 작업 규칙 파일명은 `AGENT.MD`에서 `AGENTS.MD`로 변경했으며 루트
+  README의 링크와 구조 표에도 같은 이름을 반영했다.
+
+LLM Agent, MCP Tool, 관리자 업무, Redis nonce 저장은 계속 후속 범위다. 현재
+`request_id`는 trace 상관관계에만 사용하고 재전송 방어는 timestamp 만료를 기준으로
+한다.
+
 ## 1. 문서 목적
 
 이 문서는 현재 프로젝트의 동작을 유지하면서 루트 아래에 `backend`,
@@ -550,9 +574,14 @@ python -m pytest frontend_user/tests
 5. 비활성 사용자는 `403`을 반환하고 프로필을 갱신하지 않는다.
 6. DB 예외는 `503`과 고정된 오류 형식으로 변환한다.
 
-구조 개편 전 baseline은 현재 테스트 결과와 비교한다. 현재 환경에서는 focused
-테스트 32개가 통과했고, 전체 테스트는 `.env` 부재와 Windows 파일 권한 비교로
-3개가 실패하므로 이 두 환경 의존성도 검증 기준에 명시한다.
+구조 개편 직전 baseline은 현재 macOS 개발 환경에서 전체 테스트 51개, compileall,
+Ruff가 모두 통과했다. 과거 기록의 `.env` 부재와 Windows 파일 권한 관련 3개 실패는
+현재 환경에서 재현되지 않았다. 구현 후에는 HMAC 정상·거부 경로와 Frontend API
+client 테스트를 추가한 전체 회귀 결과를 완료 보고의 기준으로 사용한다.
+
+구현 완료 후 전체 회귀 테스트는 70개가 통과했고, `compileall`과 Ruff도 통과했다.
+FastAPI TestClient가 현재 설치된 Starlette 조합에서 향후 `httpx2` 전환을 안내하는
+deprecation warning 1건을 출력하지만 테스트 실패나 런타임 동작 오류는 아니다.
 
 ## 9. 완료 기준
 

@@ -18,8 +18,8 @@ from urllib.parse import quote, urlsplit, urlunsplit
 
 from dotenv import load_dotenv
 
-# 이 파일에서 세 단계 위가 저장소 루트다. 기본 .env와 migrations 위치를
-# 호출한 현재 작업 디렉터리와 무관하게 안정적으로 찾기 위해 절대 경로를 쓴다.
+# 이 파일에서 세 단계 위가 저장소 루트다. 기본 .env 위치를 호출한 현재 작업
+# 디렉터리와 무관하게 안정적으로 찾기 위해 절대 경로를 쓴다.
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 # SQLite/MySQL URL이나 오타 난 스킴이 psycopg까지 전달되지 않도록 허용 목록을
@@ -39,6 +39,8 @@ class Settings:
     database_url: str = field(repr=False)
     database_name: str = "Team4_Proj"
     app_env: str = "development"
+    internal_api_secret: str = field(default="", repr=False)
+    internal_api_max_age_seconds: int = 300
 
     def __post_init__(self) -> None:
         """불변 설정이 만들어지는 시점에 URL과 DB 이름을 한 번 검증한다.
@@ -70,11 +72,28 @@ class Settings:
             raise ValueError("DATABASE_NAME must not be empty")
         if any(character in self.database_name for character in ("/", "\x00")):
             raise ValueError("DATABASE_NAME contains an invalid character")
+        if not 1 <= self.internal_api_max_age_seconds <= 3_600:
+            raise ValueError("INTERNAL_API_MAX_AGE_SECONDS must be between 1 and 3600")
 
         # frozen 데이터 클래스이므로 검증한 정규화 값은 object.__setattr__로
         # 한 번만 저장한다. 이후 요청 처리 중 설정이 바뀌지 않는다.
         object.__setattr__(self, "database_url", raw_url)
         object.__setattr__(self, "database_name", self.database_name.strip())
+        object.__setattr__(self, "internal_api_secret", self.internal_api_secret.strip())
+
+    @property
+    def validated_internal_api_secret(self) -> bytes:
+        """내부 API 서명에 사용할 충분히 긴 비밀값을 바이트로 반환한다.
+
+        비밀값 자체를 오류에 포함하지 않고 누락·자리표시자·짧은 값을 모두 같은
+        구성 오류로 처리한다. 이 검사는 Backend가 요청을 신뢰하기 직전에 실행해
+        잘못된 배포 설정에서 서명 검증이 우연히 활성화되지 않게 한다.
+        """
+
+        secret = self.internal_api_secret
+        if len(secret) < 32 or secret.upper().startswith("REPLACE_"):
+            raise RuntimeError("Internal API signing is not configured")
+        return secret.encode("utf-8")
 
     @property
     def effective_database_url(self) -> str:
@@ -108,7 +127,24 @@ class Settings:
             database_url=os.getenv("DATABASE_URL", ""),
             database_name=os.getenv("DATABASE_NAME", "Team4_Proj"),
             app_env=os.getenv("APP_ENV", "development"),
+            internal_api_secret=os.getenv("INTERNAL_API_SECRET", ""),
+            internal_api_max_age_seconds=_read_positive_int(
+                os.getenv("INTERNAL_API_MAX_AGE_SECONDS", "300"),
+                name="INTERNAL_API_MAX_AGE_SECONDS",
+            ),
         )
+
+
+def _read_positive_int(value: str, *, name: str) -> int:
+    """환경 변수의 양의 정수를 원문 노출 없이 검증해 반환한다."""
+
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if parsed <= 0:
+        raise ValueError(f"{name} must be positive")
+    return parsed
 
 
 @lru_cache(maxsize=1)

@@ -1,236 +1,264 @@
-# Team4 Google OIDC 로그인
+# Team4 서비스 아키텍처와 Google OIDC 로그인
 
-Streamlit의 네이티브 OIDC 인증과 PostgreSQL을 연결한 Google 로그인 예제입니다. 사용자는 별도의 회원가입 폼 없이 Google로 처음 로그인할 때 애플리케이션 계정이 자동 생성되며, 이후 로그인에서는 Google 프로필과 최근 로그인 시각이 갱신됩니다.
+일반 사용자용 Streamlit OIDC 로그인, 서명된 내부 요청을 받는 FastAPI Backend,
+PostgreSQL 사용자 저장을 독립 실행 단위로 분리한 프로젝트입니다. Google로 처음
+로그인하면 내부 계정이 생성되고, 이후 로그인에서는 프로필과 최근 로그인 시각이
+갱신됩니다.
 
-개발하거나 기여하기 전에 반드시 [AGENT.MD](AGENT.MD)의 브랜치, 커밋, 파일·디렉터리 구조, 테스트, 주석 및 문서화 규칙을 확인하세요.
+개발하거나 기여하기 전에 반드시 [AGENTS.MD](AGENTS.MD)의 브랜치, 커밋,
+파일·디렉터리 구조, 테스트, 주석 및 문서화 규칙을 확인하세요.
 
-## 주요 기능
+## 현재 구현 범위
 
 - Streamlit `st.login("google")`, `st.user`, `st.logout()` 기반 Google OIDC 로그인
-- 프로젝트 주제와 무관하게 사용할 수 있는 중립적인 단일 카드 로그인 UI
-- OIDC 설정 누락, placeholder, 취약한 쿠키 secret 및 안전하지 않은 URL 사전 검사
-- Google `sub`를 기반으로 한 provider-neutral 사용자 식별
-- 첫 로그인 시 `users`와 `oauth_identities` 레코드의 원자적 자동 생성
-- 재로그인 시 이메일, 표시 이름, 아바타 및 최근 로그인 시각 갱신
-- 비활성 사용자와 DB 저장 실패에 대해 fail-closed 방식으로 애플리케이션 접근 차단
+- OIDC 설정 누락, placeholder, 취약한 cookie secret, 안전하지 않은 URL 사전 검사
+- Google `sub` 기반 provider-neutral 사용자 식별과 외부 프로필 정규화
+- Frontend가 timestamp, UUID request id, raw body를 HMAC-SHA256으로 서명하는 내부 API
+- FastAPI `GET /health`, `POST /api/v1/identity/provision`
+- 첫 로그인 시 `users`와 `oauth_identities` 레코드의 원자적 생성
+- 재로그인 프로필·최근 로그인 시각 갱신과 비활성 사용자 fail-closed 차단
 - 외부 프로필 HTML escape와 HTTPS 아바타 URL 제한
-- 실제 비밀값을 출력하지 않는 Streamlit secrets 생성 스크립트
+- Backend 소유 PostgreSQL migration 실행기
+- 독립 관리자 Streamlit 앱과 Tour·Weather MCP 서버의 예약 구조
+
+LLM Agent loop, MCP Tool·Resource·Prompt, 관리자 업무 기능, Redis 연결은 아직
+구현하지 않았습니다. 예약 모듈은 향후 연결 위치만 고정하며 외부 호출을 수행하지
+않습니다. 상세 경계는 [아키텍처 개편 문서](docs/ARCHITECTURE_REFACTOR_PLAN.md)를
+참고하세요.
 
 ## 프로젝트 구조
 
 ```text
 .
-├── AGENT.MD                         # 개발·기여 작업 규칙
-├── README.md                        # 프로젝트 전체 설정·실행 안내
-├── .env.example                    # PostgreSQL 환경 변수 예시
-├── pyproject.toml                  # 런타임·개발 의존성과 도구 설정
+├── AGENTS.MD                         # 개발·기여 작업 규칙
+├── README.md                         # 전체 설정·실행·검증 안내
+├── .env.example                      # Backend 환경 변수 예시
+├── pyproject.toml                    # 통합 런타임·개발 의존성 및 도구 설정
 ├── backend/
-│   ├── app/auth/models.py          # 외부 identity와 내부 사용자 도메인 모델
-│   ├── app/core/config.py          # .env 로드 및 DB URL 검증
-│   ├── app/db/migrate.py           # SQL 마이그레이션 실행기
-│   └── app/db/users.py             # PostgreSQL 사용자 저장소
-├── docs/
-│   └── crowd_timing_service_plan.md # AI 혼잡 회피 서비스 기획안
-├── frontend/
-│   ├── app.py                      # Streamlit 애플리케이션 진입점
-│   ├── auth/                       # OIDC 설정·identity·접근 상태 경계
-│   ├── ui.py                       # 로그인·프로필 UI와 스타일
-│   └── .streamlit/
-│       └── secrets.toml.example    # 커밋 가능한 OIDC 설정 예시
-├── migrations/
-│   └── 001_create_oauth_schema.sql # 사용자/OAuth 연결 스키마
-└── scripts/
-    └── configure_google_oidc.py    # Google client JSON → secrets.toml 생성기
+│   ├── app/main.py                   # FastAPI 생성과 router·오류 처리 등록
+│   ├── app/routers/                  # health·identity HTTP endpoint
+│   ├── app/schemas/                  # 요청·응답 validation 계약
+│   ├── app/services/                 # identity 연결 유스케이스
+│   ├── app/models/identity.py        # 외부 identity·내부 사용자 도메인 모델
+│   ├── app/repositories/             # PostgreSQL 사용자 저장소
+│   ├── app/infrastructure/           # migration·PostgreSQL·HMAC 구현
+│   ├── app/{agent,llm,mcp}/          # 후속 Agent 연결 예약 위치
+│   ├── migrations/                   # Backend 소유 SQL migration
+│   ├── tests/
+│   └── README.md
+├── frontend_user/
+│   ├── app.py                        # 얇은 Streamlit 실행 진입점
+│   ├── app_pages/login_page.py       # OIDC 로그인·프로필 화면 흐름
+│   ├── auth/                         # OIDC 설정·claim·접근·저장 결과 정책
+│   ├── components/ui.py              # 안전한 HTML·CSS 표현
+│   ├── core/api_client.py            # HMAC Backend API client
+│   ├── .streamlit/secrets.toml.example
+│   └── tests/
+├── frontend_admin/                   # 관리자 독립 앱의 최소 실행 골격
+├── mcp_server/
+│   ├── tour/                         # 여행 MCP 독립 예약 패키지
+│   └── weather/                      # 날씨 MCP 독립 예약 패키지
+├── tests/{integration,e2e}/          # 서버 간·브라우저 검증 확장 위치
+└── scripts/configure_google_oidc.py  # Google client JSON → Streamlit secrets 생성
 ```
+
+`frontend_user`와 `frontend_admin`은 Backend만 HTTP로 호출합니다. Frontend가 DB,
+Redis, MCP 서버에 직접 연결하거나 MCP 서버끼리 서로의 내부 모듈을 import하지
+않습니다.
 
 ## 사전 준비
 
 - Python 3.12 이상
 - PostgreSQL 서버와 데이터베이스 생성 권한
-- Google Cloud 프로젝트
-- Google OAuth 동의 화면과 OAuth 2.0 웹 애플리케이션 클라이언트
+- Google Cloud 프로젝트와 OAuth 2.0 웹 애플리케이션 client
 - 권장 패키지 관리자: [uv](https://docs.astral.sh/uv/)
 
 모든 명령은 저장소 루트에서 실행합니다.
-
-혼잡도 서비스에서 단계별로 발급해야 할 관광·날씨·서울 실시간 도시데이터·길찾기·AI 자격증명과 공식 발급처는 [API 자격증명 발급 목록](docs/crowd_timing_service_plan.md#9-api-자격증명-발급-목록)에 정리되어 있습니다. 현재 코드에 연결된 외부 자격증명은 Google OIDC뿐이며, 나머지 데이터 API는 기획된 후속 구현 범위입니다.
-
-## 의존성 설치
-
-개발 도구를 포함한 잠금 버전 의존성을 설치합니다.
 
 ```bash
 uv sync --dev
 ```
 
-`uv`를 사용하지 않는 경우 별도의 Python 3.12 이상 가상환경에 `pyproject.toml`의 런타임·개발 의존성을 설치해야 합니다.
+혼잡도 서비스에서 후속 발급할 관광·날씨·서울 실시간 도시데이터·길찾기·AI
+자격증명은 [API 자격증명 발급 목록](docs/crowd_timing_service_plan.md#9-api-자격증명-발급-목록)에
+정리되어 있습니다. 현재 코드에 연결된 외부 자격증명은 Google OIDC뿐입니다.
 
-## `.env`와 `Team4_Proj` 데이터베이스
+## Backend 환경 설정
 
-기존 `.env`에는 다른 로컬 설정이나 비밀값이 있을 수 있으므로 덮어쓰지 마세요. 파일이 없을 때만 예시를 복사합니다.
+기존 `.env`에는 다른 로컬 설정이나 비밀값이 있을 수 있으므로 덮어쓰지 마세요.
+파일이 없을 때만 예시를 복사하고 소유자 전용 권한을 적용합니다.
 
 ```bash
 cp .env.example .env
 chmod 600 .env
 ```
 
-최소 설정은 다음과 같습니다.
+필수·기본 설정은 다음과 같습니다.
 
 ```dotenv
 DATABASE_URL=postgresql://app_user:change-me@localhost:5432/Team4_Proj
 DATABASE_NAME=Team4_Proj
+INTERNAL_API_SECRET=REPLACE_WITH_AT_LEAST_32_RANDOM_CHARACTERS
+INTERNAL_API_MAX_AGE_SECONDS=300
 ```
 
-- `DATABASE_URL`의 사용자명, 비밀번호, 호스트와 포트를 실제 PostgreSQL 환경에 맞게 변경합니다.
-- `DATABASE_NAME`은 이 프로젝트의 대상 DB인 `Team4_Proj`로 유지합니다.
-- 애플리케이션은 `DATABASE_URL`의 기존 DB 경로를 그대로 신뢰하지 않고 `DATABASE_NAME`으로 교체합니다. 호스트, 포트, 자격증명과 연결 옵션은 유지됩니다.
-- `.env`는 Git 무시 대상입니다. 실제 비밀번호나 API 키를 `.env.example`, 소스 코드, 문서에 넣지 마세요.
+- `DATABASE_URL`의 사용자명, 비밀번호, 호스트와 포트를 실제 PostgreSQL에 맞춥니다.
+- 앱은 URL의 원래 DB 경로 대신 `DATABASE_NAME`을 사용하며 기본값은 `Team4_Proj`입니다.
+- `INTERNAL_API_SECRET`은 32자 이상의 독립적인 무작위 값이어야 합니다.
+- 같은 `INTERNAL_API_SECRET`을 `frontend_user/.streamlit/secrets.toml`의
+  `backend.internal_api_secret`에도 설정합니다. 브라우저나 소스 코드에는 넣지 않습니다.
+- Backend의 기본 서명 허용 시간 오차는 300초이며 최대 3600초로 제한됩니다.
 
-`Team4_Proj` 데이터베이스 자체는 애플리케이션이 만들지 않습니다. 마이그레이션 전에 PostgreSQL 관리 도구로 같은 이름의 데이터베이스를 먼저 생성하고, `.env` 계정에 연결 및 스키마 생성 권한을 부여하세요.
+`Team4_Proj` 데이터베이스는 앱이 만들지 않습니다. 마이그레이션 전에 관리 도구로
+데이터베이스를 생성하고 `.env` 계정에 연결·스키마 생성 권한을 부여하세요.
 
 ## 데이터베이스 마이그레이션
 
-다음 명령은 `migrations/`의 SQL 파일을 이름순으로 실행합니다.
+Backend가 소유하는 `backend/migrations/`의 SQL을 이름순으로 실행합니다.
 
 ```bash
-uv run python -m backend.app.db.migrate
+uv run python -m backend.app.infrastructure.migrations
 ```
 
-현재 마이그레이션은 다음 객체를 생성합니다.
+현재 migration은 `pgcrypto`, `public.users`, `public.oauth_identities`, identity 유일
+제약·조회 인덱스·`updated_at` trigger를 생성합니다. SQL은 재실행 가능하게 작성되어
+있지만 임의의 기존 schema를 자동 교정하거나 데이터를 삭제하지 않습니다.
 
-- UUID 기본값을 위한 `pgcrypto` 확장
-- 애플리케이션 계정용 `public.users`
-- 외부 제공자 연결용 `public.oauth_identities`
-- `(provider, provider_subject)` 유일 제약, 조회 인덱스 및 `updated_at` 트리거
+## Google OAuth와 Streamlit secrets
 
-SQL은 재실행할 수 있도록 작성되어 있지만 기존 테이블의 임의 스키마를 자동 교정하지는 않습니다. `pgcrypto` 확장 생성 권한이 없다면 데이터베이스 관리자가 먼저 활성화해야 합니다. 자동 롤백이나 데이터 삭제 명령은 제공하지 않습니다.
-
-## Google OAuth 설정
-
-Google Cloud Console에서 OAuth 동의 화면을 구성한 뒤 **OAuth 클라이언트 ID → 웹 애플리케이션** 유형의 클라이언트를 만듭니다.
-
-로컬 개발용 **승인된 리디렉션 URI**에는 다음 값을 정확히 등록합니다.
+Google Cloud Console에서 OAuth 동의 화면과 웹 애플리케이션 client를 만들고 로컬
+승인된 redirect URI를 다음 값과 정확히 일치시킵니다.
 
 ```text
 http://localhost:8501/oauth2callback
 ```
 
-스킴, 호스트, 포트, 경로 중 하나라도 다르면 Google이 콜백을 거부합니다. 앱도 동일한 URI로 실행해야 하므로 로컬 브라우저에서는 `http://localhost:8501`을 사용하세요.
+운영 환경은 실제 HTTPS 도메인의 `/oauth2callback`을 Google 설정과 Streamlit
+secrets 양쪽에 동일하게 등록합니다.
 
-운영 환경에서는 실제 HTTPS 도메인의 `/oauth2callback`을 Google Cloud Console과 Streamlit secrets 양쪽에 완전히 동일하게 등록합니다.
-
-## 안전한 Streamlit secrets 생성
-
-Google Cloud Console에서 웹 애플리케이션 클라이언트 JSON을 내려받습니다. 이 JSON에는 client secret이 있으므로 **저장소 밖의 안전한 경로에 보관**하고 Git에 추가하지 마세요.
-
-다음 스크립트는 JSON에서 필요한 client ID와 client secret만 읽고, 32바이트 무작위 쿠키 secret을 생성해 `frontend/.streamlit/secrets.toml`에 기록합니다.
+Google client JSON은 저장소 밖의 안전한 경로에 두고 다음 스크립트로 OIDC 항목을
+생성합니다. 이 스크립트는 client secret을 출력하지 않으며 기존 파일을 기본적으로
+덮어쓰지 않습니다.
 
 ```bash
 uv run python scripts/configure_google_oidc.py \
   --client-json /secure/path/google-oauth-client.json
 ```
 
-기본 동작은 다음과 같습니다.
+기본 출력은 `frontend_user/.streamlit/secrets.toml`, redirect URI는
+`http://localhost:8501/oauth2callback`, 파일 권한은 `0600`입니다. 생성 후 예시의
+`[backend]` 항목을 참고해 Backend 주소와 `.env`와 동일한 내부 서명 secret을
+추가해야 합니다.
 
-- redirect URI: `http://localhost:8501/oauth2callback`
-- 출력 파일: `frontend/.streamlit/secrets.toml`
-- owner 전용 파일 권한: `0600`
-- 임시 파일을 이용한 원자적 저장
-- client secret과 쿠키 secret을 터미널에 출력하지 않음
-- 기존 출력 파일이 있으면 덮어쓰지 않고 중단
-
-기존 설정을 의도적으로 교체할 때만 `--overwrite`를 사용합니다. 운영 URI나 별도 출력 경로가 필요하면 다음처럼 지정합니다.
-
-```bash
-uv run python scripts/configure_google_oidc.py \
-  --client-json /secure/path/google-oauth-client.json \
-  --redirect-uri https://app.example.com/oauth2callback \
-  --output frontend/.streamlit/secrets.toml \
-  --overwrite
+```toml
+[backend]
+api_url = "http://127.0.0.1:8000"
+internal_api_secret = "REPLACE_WITH_THE_SAME_RANDOM_VALUE_AS_BACKEND"
 ```
 
-수동 설정이 필요한 경우에만 예시 파일을 복사하고 값을 직접 채웁니다.
+수동 설정은 예시를 복사한 뒤 OIDC와 Backend 값을 모두 채웁니다.
 
 ```bash
-cp frontend/.streamlit/secrets.toml.example frontend/.streamlit/secrets.toml
-chmod 600 frontend/.streamlit/secrets.toml
+cp frontend_user/.streamlit/secrets.toml.example \
+  frontend_user/.streamlit/secrets.toml
+chmod 600 frontend_user/.streamlit/secrets.toml
 ```
 
-필수 키는 `auth.redirect_uri`, `auth.cookie_secret`, `auth.google.client_id`, `auth.google.client_secret`, `auth.google.server_metadata_url`입니다. 실제 `secrets.toml`은 Git 무시 대상입니다.
+실제 `.env`, `secrets.toml`, Google OAuth JSON은 Git 무시 대상이며 이동·커밋하지
+않습니다.
 
 ## 실행
 
-마이그레이션과 OIDC 설정을 마친 뒤 저장소 루트에서 실행합니다.
+Backend를 먼저 실행합니다.
 
 ```bash
-uv run streamlit run frontend/app.py
+uv run uvicorn backend.app.main:app --reload --port 8000
 ```
 
-브라우저에서 [http://localhost:8501](http://localhost:8501)을 열고 **Google로 계속하기**를 선택합니다. 설정이 없거나 안전성 검사를 통과하지 못하면 로그인 버튼이 비활성화되고 비밀값 대신 안전한 구성 안내만 표시됩니다.
+`http://127.0.0.1:8000/health`의 정상 응답은 `{"status":"ok"}`입니다.
 
-## 회원가입과 재로그인 동작
+일반 사용자 앱은 별도 터미널에서 실행합니다.
 
-별도의 이메일·비밀번호 회원가입 화면은 없습니다. Google OIDC 인증이 성공하고 검증된 이메일을 포함한 identity가 확인되면 다음 순서로 처리합니다.
+```bash
+uv run streamlit run frontend_user/app.py --server.port 8501
+```
 
-1. Google의 불변 `sub`를 `provider_subject`로 정규화합니다.
-2. `(provider, provider_subject)`로 기존 OAuth 연결과 내부 사용자를 조회합니다.
-3. 첫 로그인이라면 하나의 DB 트랜잭션에서 `users`를 만들고 `oauth_identities`에 연결합니다.
-4. 기존 사용자라면 현재 이메일, 표시 이름, HTTPS 아바타와 최근 로그인 시각을 갱신합니다.
-5. `users.is_active = false`이면 프로필을 갱신하지 않고 트랜잭션을 롤백하며 애플리케이션 접근을 거부합니다.
+브라우저에서 [http://localhost:8501](http://localhost:8501)을 엽니다. OIDC 또는
+Backend 설정이 없거나 안전성 검사를 통과하지 못하면 접근을 허용하지 않고 고정된
+구성·재시도 안내만 표시합니다.
 
-이메일은 변경 가능한 프로필 속성일 뿐 계정 연결 키가 아닙니다. 동시 첫 로그인은 PostgreSQL advisory transaction lock으로 직렬화하며, DB 저장과 활성 상태 확인이 성공한 경우에만 `application-access-granted` 세션 상태가 부여됩니다. 성공 결과는 영구적인 권한으로 캐시하지 않고 Streamlit rerun마다 DB에서 다시 확인합니다.
+관리자 앱은 업무 기능 없이 독립 실행 경계만 확인할 수 있습니다.
+
+```bash
+uv run streamlit run frontend_admin/app.py --server.port 8502
+```
+
+## 로그인과 내부 API 흐름
+
+1. `frontend_user`가 Streamlit OIDC 로그인과 cookie session을 소유합니다.
+2. 외부 claim을 길이·문자·HTTPS 규칙으로 정규화합니다.
+3. `core/api_client.py`가 `timestamp.request_id.raw_body`를 HMAC-SHA256으로 서명합니다.
+4. Backend가 UUID, 기본 300초 시간 오차, HMAC, 요청 schema를 모두 다시 검증합니다.
+5. `IdentityService`가 PostgreSQL 저장소를 호출해 사용자를 생성하거나 갱신합니다.
+6. 저장된 활성 사용자 응답을 받은 실행에서만 애플리케이션 접근을 허용합니다.
+
+이메일은 변경 가능한 프로필일 뿐 계정 연결 키가 아닙니다. `(provider,
+provider_subject)`만 외부 계정 연결에 사용하며 동시 첫 로그인은 PostgreSQL advisory
+transaction lock으로 직렬화합니다. `request_id`는 현재 추적 상관관계에 사용하고,
+Redis가 추가되는 후속 단계에서 짧은 TTL의 재전송 차단 키로 확장합니다.
 
 ## 테스트와 정적 검사
 
-전체 회귀 테스트와 lint를 실행합니다.
+변경 동작별 focused test 예시는 다음과 같습니다.
+
+```bash
+uv run pytest backend/tests/test_identity_api.py
+uv run pytest backend/tests/test_users_repository.py
+uv run pytest frontend_user/tests
+```
+
+완료 전 전체 회귀·컴파일·lint는 다음 명령으로 확인합니다.
 
 ```bash
 uv run pytest
+uv run python -m compileall -q backend frontend_user frontend_admin mcp_server
 uv run ruff check .
 ```
 
-변경 범위별 focused test는 다음과 같습니다.
+자동 테스트는 synthetic identity, 가짜 DB 연결, mock HTTP transport를 사용해 Google,
+운영 DB, 유료 API를 호출하지 않습니다. 실제 Google OAuth 왕복과 실제 PostgreSQL
+마이그레이션은 자격 증명과 로컬 인프라가 필요하므로 별도 수동 검증 대상입니다.
 
-```bash
-uv run pytest frontend/tests
-uv run pytest backend/tests
-uv run pytest backend/tests/test_users_repository.py
-```
+## 보안 원칙과 알려진 제약
 
-OIDC와 사용자 저장소 자동 테스트는 synthetic identity와 가짜 DB 연결을 사용합니다. 환경 설정 테스트는 로컬 `.env`의 연결 형식만 읽으며 실제 DB에 접속하지 않습니다. 따라서 테스트 스위트는 Google OAuth 왕복이나 운영 DB를 호출하지 않고, 실제 Google 로그인은 Google Cloud 설정과 로컬 secrets를 준비한 뒤 브라우저에서 별도로 확인해야 합니다.
+- `.env`, 실제 `secrets.toml`, OAuth JSON, token과 모든 실제 자격증명을 커밋하지 않습니다.
+- OIDC cookie secret과 내부 API secret은 서로 다른 목적으로 생성하고 재사용하지 않습니다.
+- Google client secret, cookie secret, 내부 API secret, DB URL, token을 응답·로그에 넣지 않습니다.
+- Backend는 HMAC을 통과한 payload도 schema와 도메인 규칙으로 다시 검증합니다.
+- 서명 실패·만료·DB 장애·비활성 계정에서는 저장과 애플리케이션 접근을 거부합니다.
+- 외부 프로필은 HTML escape하며 아바타는 HTTPS URL만 허용합니다.
+- 현재 timestamp 만료만 재전송 범위를 제한합니다. UUID nonce의 일회성 저장은 Redis
+  연결 후 추가할 보안 확장 지점입니다.
+- 현재 관리자 앱에는 인증·권한과 업무 기능이 없으며 준비 화면만 표시합니다.
+- 현재 MCP 디렉터리에는 실행 서버와 Tool이 없고 외부 API를 호출하지 않습니다.
 
-## 보안 원칙
-
-- `.env`, 실제 `secrets.toml`, Google OAuth 다운로드 JSON 및 모든 자격증명을 커밋하지 않습니다.
-- `.env`와 `secrets.toml`은 최소 `0600` 권한으로 유지합니다.
-- Google client secret, 쿠키 secret, DB URL, access token, refresh token, ID token을 로그나 사용자 오류 메시지에 포함하지 않습니다.
-- `users`와 `oauth_identities`에는 OAuth token을 저장하지 않습니다.
-- 이메일이 같다는 이유만으로 서로 다른 provider identity를 자동 연결하지 않습니다.
-- OIDC claim과 외부 프로필은 신뢰하지 않고 길이·형식 검증과 HTML escape를 적용합니다.
-- 아바타 URL은 HTTPS만 허용합니다.
-- OIDC 설정이나 DB 저장에 실패하면 애플리케이션 접근을 허용하지 않습니다.
-- 운영 환경에서는 HTTPS를 사용하고 redirect URI를 정확한 운영 주소로 제한합니다.
-- 비밀값이 Git, 로그 또는 외부 시스템에 노출됐다고 의심되면 즉시 폐기·재발급하고 Git 이력도 별도로 정리합니다.
-
-OIDC 로그인은 사용자 인증만 제공합니다. 향후 Google API 접근이 필요하면 별도의 명시적 동의 범위, token 암호화 저장소, 갱신 및 폐기 정책을 설계해야 합니다.
+비밀값 노출이 의심되면 값을 다시 출력하지 말고 즉시 폐기·재발급한 뒤 Git 이력과
+외부 로그를 별도로 점검하세요.
 
 ## 확장 지점
 
-- 새 OIDC 제공자: `frontend/auth/providers.py`와 Streamlit provider 설정 추가
-- claim 변환: `frontend/auth/identity.py`의 provider-neutral 매핑 확장
-- 접근 정책: `frontend/auth/authorization.py`와 `frontend/auth/persistence.py`의 fail-closed 경계 확장
-- 사용자 저장소: `backend/app/db/users.py`의 repository 인터페이스 확장
-- 스키마 변경: `migrations/`에 다음 번호의 순방향 SQL 추가
-- 보호 기능: `application-access-granted`가 참인 활성 DB 사용자에게만 노출
-- Google API 연동: 로그인 OIDC 흐름과 분리된 권한·token 수명 주기 구현
-
-## 구조 개편 계획
-
-현재 기능을 유지하면서 `backend`, `frontend_user`, `frontend_admin`, `mcp_server`를
-독립 실행 단위로 정리하는 계획은 [docs/ARCHITECTURE_REFACTOR_PLAN.md](docs/ARCHITECTURE_REFACTOR_PLAN.md)에
-기록되어 있습니다. 이번 단계에서는 LLM Agent와 MCP Tool을 실제로 추가하지 않고,
-향후 연결을 위한 디렉터리와 서버 경계만 마련합니다.
+- OIDC 제공자 표시 설정: `frontend_user/auth/providers.py`
+- claim 정규화: `frontend_user/auth/identity.py`
+- Frontend 접근·저장 결과 정책: `frontend_user/auth/authorization.py`, `persistence.py`
+- Backend API client: `frontend_user/core/api_client.py`
+- identity API와 유스케이스: `backend/app/routers/identity_router.py`, `services/identity_service.py`
+- 사용자 저장소: `backend/app/repositories/user_repository.py`
+- schema 변경: `backend/migrations/`에 다음 번호의 순방향 SQL 추가
+- Agent·LLM·MCP client: `backend/app/agent/`, `llm/`, `mcp/`
+- 독립 MCP 기능: `mcp_server/tour/` 또는 `mcp_server/weather/` 내부 계층에만 추가
 
 ## 기여
 
-작업을 시작하기 전에 [AGENT.MD](AGENT.MD)를 읽고, 브랜치 정책과 사용자 승인, 검증 수준, README 갱신 규칙을 따르세요.
+작업을 시작하기 전에 [AGENTS.MD](AGENTS.MD)를 읽고 브랜치 정책, 사용자 승인,
+검증 수준, README 갱신 규칙을 따르세요. 구현 요청은 파일 변경을 승인하지만 커밋이나
+push를 자동 승인하지 않습니다.

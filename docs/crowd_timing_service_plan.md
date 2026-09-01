@@ -102,7 +102,7 @@
 | 필수(기본 LLM 채택안) | OpenAI 프로젝트 API 키<br>`OPENAI_API_KEY` | 사용자 조건 해석, 추천 이유·일정·플랜 B 생성 | [OpenAI API 키 발급](https://platform.openai.com/api-keys) · [공식 Quickstart](https://developers.openai.com/api/docs/quickstart) | ChatGPT 구독과 API 과금은 별개다. 팀 공용 개인 키 대신 프로젝트용 키를 서버에서만 사용하고 사용량 한도를 설정한다. 다른 LLM을 채택하면 해당 공급자 키로 대체한다. |
 | 현재 구현에 필수 | Google OAuth 2.0 Client ID·Secret<br>`auth.google.client_id`<br>`auth.google.client_secret` | Google OIDC 로그인 | [Google Auth Platform Clients](https://console.cloud.google.com/auth/clients) · [OIDC 설정 안내](https://developers.google.com/identity/openid-connect/openid-connect) | 웹 애플리케이션 클라이언트를 만들고 로컬 `http://localhost:8501/oauth2callback` 및 운영 HTTPS 콜백을 정확히 등록한다. |
 
-`auth.cookie_secret`은 외부에서 발급받는 API 키가 아니다. 저장소의 `scripts/configure_google_oidc.py`로 생성하며 실제 값은 `frontend/.streamlit/secrets.toml`에만 보관한다.
+`auth.cookie_secret`은 외부에서 발급받는 API 키가 아니다. 저장소의 `scripts/configure_google_oidc.py`로 생성하며 실제 값은 `frontend_user/.streamlit/secrets.toml`에만 보관한다.
 
 ### 9.2 공공데이터포털 활용신청 체크리스트
 
@@ -133,7 +133,7 @@ Instagram 등 SNS 데이터는 플랫폼을 먼저 확정한 뒤 공식 API의 �
 - [전국관광지정보표준데이터](https://www.data.go.kr/data/15021141/standard.do)는 CSV 파일 다운로드 방식이므로 API 키가 필요 없다.
 - [주요관광지점 입장객통계](https://know.tour.go.kr/stat/visitStatDis/table.do)는 공개 통계 조회·다운로드 자료다. 공개 API 계약이 확인되기 전에는 월간 배치 입력 자료로 취급한다.
 - 관광지 공식 홈페이지의 운영시간·휴무·시설 운휴와 관리자 입력에는 API 키가 없다. 이용약관을 확인하고 수동 또는 허용된 방식으로 갱신한다.
-- `DATABASE_URL`, `auth.cookie_secret`, 푸시 알림 서비스 계정은 API 발급 목록과 별개의 내부 비밀값이다. 알림 클라이언트 기술이 정해지기 전에는 Firebase 등 특정 공급자의 키를 미리 발급하지 않는다.
+- `DATABASE_URL`, `auth.cookie_secret`, Frontend–Backend HMAC용 `INTERNAL_API_SECRET`, 푸시 알림 서비스 계정은 API 발급 목록과 별개의 내부 비밀값이다. 알림 클라이언트 기술이 정해지기 전에는 Firebase 등 특정 공급자의 키를 미리 발급하지 않는다.
 
 ### 9.5 발급 순서
 

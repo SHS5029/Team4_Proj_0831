@@ -1,12 +1,14 @@
 [project]
 name = "team4-oauth-login"
 version = "0.1.0"
-description = "Streamlit 기반 Team4 Google OIDC 로그인 화면"
+description = "FastAPI와 Streamlit을 분리한 Team4 Google OIDC 서비스 구조"
 requires-python = ">=3.12"
 dependencies = [
+  "fastapi>=0.116.0,<1",
   "psycopg[binary]>=3.2.0,<4",
   "python-dotenv>=1.1.0,<2",
   "streamlit[auth]>=1.55.0,<2",
+  "uvicorn>=0.35.0,<1",
 ]
 
 [dependency-groups]
@@ -17,8 +19,8 @@ dev = [
 
 [tool.pytest.ini_options]
 addopts = "-ra"
-pythonpath = [".", "frontend"]
-testpaths = ["backend/tests", "frontend/tests"]
+pythonpath = [".", "frontend_user"]
+testpaths = ["backend/tests", "frontend_user/tests", "tests"]
 
 [tool.ruff]
 line-length = 100
