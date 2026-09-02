@@ -9,6 +9,26 @@
 merge하기까지**의 작업 단위, coding AI agent 사용 규칙, 중간 merge·테스트
 체크포인트를 확정한다. 여기에 없는 작업 범위는 임의로 착수하지 않는다.
 
+**적용 계약:** `ruleset_version=mystery-v1`, `scenario_version=scenario-v1`.
+게임은 인간 1명을 포함한 6~9명이며 역할 식별자는
+`MAFIA | DETECTIVE | DOCTOR | CITIZEN`만 사용한다. `DETECTIVE`의 한국어 표시명은
+`탐정`이고 `POLICE`는 사용하지 않는다. 마피아가 2명이어도 팀원 목록·표시·진영
+공유 이벤트를 Front에 전달하거나 추정하지 않는다.
+
+Front가 처리할 Phase enum은 다음 목록과 철자만 허용한다.
+
+```text
+ROLE_REVEAL | DAY_ANNOUNCEMENT | DAY_DISCUSSION | NIGHT_ACTION |
+NIGHT_RESOLUTION | DAY_VOTE | DAY_REVOTE | VOTE_RESOLUTION |
+FINAL_DISCUSSION | FINAL_VOTE | FINAL_RESOLUTION | FINISHED
+```
+
+첫날은 `round=0`의 안내·좌석순 발언 1순환 뒤 투표 없이 밤으로 전환한다.
+각 발언은 200자 이하의 `SPEAK` 또는 `PASS`이고, 기본 순환에서 전원이 `PASS`한
+경우에만 고정 질문 뒤 추가 1순환을 표시한다. 밤 행동은 20초, 일반·재·최종 투표는
+각 30초의 서버 권위 deadline을 따른다. Front 카운트다운은 안내용이며 상태 전이,
+자동 선택과 `FINAL_*` 급사 판정은 Backend 응답만 신뢰한다.
+
 ---
 
 ## 1. 소유 경계와 금지 사항
@@ -65,6 +85,8 @@ frontend_admin/tests/test_admin_pages_smoke.py
 
 이 밖의 파일·디렉터리 생성이 필요하면 착수 전에 이 문서와 구현 계획서를
 먼저 갱신하고 합의를 받는다(AGENTS.MD 구조 규칙).
+`mystery-v1`·`scenario-v1` 반영은 위 승인 목록 안에서 수행하며 신규 Front 파일을
+추가하지 않는다.
 
 ---
 
@@ -136,66 +158,155 @@ uv run pytest
 ## 4. 작업 단위(WU) 분해
 
 각 WU는 coding AI agent 1세션 규모다. 순서를 지키고, 선행 WU 미완료 상태로
-착수하지 않는다.
+착수하지 않는다. 특히 F1~F6은 공유 파일이 있더라도 합쳐 지시하지 않고, 각 WU의
+범위와 완료 기준만 한 세션에 수행한다.
 
 ### WU-F1. 게임 API 클라이언트 + fake transport
 
 - **범위 파일:** `frontend_user/core/game_api.py`,
   `frontend_user/tests/test_game_api.py`
-- **내용:** 구현 계획서 2장 명세 그대로의 클라이언트.
+- **내용:** 구현 계획서 2장 `mystery-v1`·`scenario-v1` 명세 그대로의 API
+  클라이언트와 fake 계약을 만든다.
   - 기존 `api_client.py`의 HMAC 서명 패턴을 재사용하되 게임 API용
     canonical(`timestamp.request_id.acting_user_id.raw_body`, GET은
     raw_body 빈 문자열)을 구현한다.
-  - 2.0의 오류 코드 표를 예외 타입으로 변환한다(코드별 분기 가능하게).
+  - 생성·저장 목록·재개·GameStateView·명령·SSE·결과·피드백 8개 사용자 API를
+    구현하고, 모든 변경 명령에 `expected_version`과 `idempotency_key`를 전달한다.
+  - 2.0의 오류 코드 13종을 예외 타입으로 변환한다. 특히
+    `GAME_STATE_CONFLICT`, `ACTION_ALREADY_SUBMITTED`,
+    `ACTION_DEADLINE_EXPIRED`, `CONTRACT_VERSION_MISMATCH`를 구별한다.
   - transport 주입이 가능해야 하며, 테스트·후속 WU가 쓸
-    **FakeGameTransport**(정상·각 오류 응답 시나리오)를 같은 파일 또는
-    테스트 모듈에 제공한다.
-- **완료 기준:** 2장 엔드포인트 7종 + 오류 9종 매핑 테스트 통과.
-  실제 네트워크 호출 0회.
+    **FakeGameTransport**를 같은 파일 또는 테스트 모듈에 제공한다. fake는
+    6~9명 역할표, `round=0`, 정확한 Phase enum, 공개 시나리오, 본인 개인 정보,
+    deadline과 `FINAL_*` 정상·오류 응답을 재현한다.
+  - fake 응답에도 타인 역할·알리바이·관찰, 마피아 팀원, 비공개 야간 행동과
+    개별 진행 중 투표를 넣지 않는다.
+- **완료 기준:** 사용자 API 8종 + 공통 오류 13종 매핑, HMAC canonical,
+  idempotency 재전송 테스트 통과. 실제 네트워크 호출 0회.
 
 ### WU-F2. GameStateView 표시 모델
 
 - **범위 파일:** `frontend_user/core/game_view.py`,
   `frontend_user/tests/test_game_view.py`
-- **내용:** 2.3 응답 JSON을 화면용 모델로 파싱·검증. 누락 필드,
-  잘못된 enum, 음수 sequence 등 방어적 처리. Phase·Command enum 상수 정의.
-- **완료 기준:** 정상·비정상 payload 파싱 테스트 통과.
-  **응답에 없는 정보(타인 역할 등)를 추정해 채우는 코드가 없어야 한다.**
+- **내용:** 2.3 응답 JSON을 화면용 불변 모델로 파싱·검증한다.
+  - `ruleset_version=mystery-v1`, `scenario.scenario_version=scenario-v1`, 6~9명,
+    `DETECTIVE`와 이 문서 서두의 Phase enum만 허용한다.
+  - 공개 `scenario`의 ID·제목·배경·피해자·장소·게임 목표를 보존한다. 생존 중인
+    본인의 `you`에는 역할·생존·알리바이·관찰을 별도 필드로 보존한다.
+    관찰은 `text`, 다른 현재 좌석인 `target_seat` 또는 `null`, `anonymous`를
+    검증하고 대상형(`target_seat` 있음/anonymous=false)과 익명형
+    (`target_seat=null`/anonymous=true) 외 조합을 거부한다.
+  - 공개 `initial_mafia_count`를 보존하되 현재 생존 마피아 수나 정체를 추정하는
+    파생 필드는 만들지 않는다.
+  - `discussion.cycle/current_speaker_player_id/fixed_question`,
+    `phase_timing.server_time/deadline_at/duration_seconds`, `your_submission`,
+    `allowed_commands`, PUBLIC `timeline`과 본인 `private_events`를 검증한다.
+  - 인간이 사망하고 아직 `FINISHED`가 아니면 `you`에는 식별자·좌석·
+    `alive=false`만 허용하고 역할·알리바이·관찰은 없어야 한다. 이 관전 변형에서는
+    `private_events=[]`, `your_submission=null`과 행동 명령 부재를 요구한다.
+  - 각 alive/관전 변형에서 필수인 필드의 누락, 잘못된 enum·버전, 음수
+    sequence·seat, timezone 없는 시각과
+    현재 Phase에 맞지 않는 deadline을 fail-closed로 처리한다.
+  - 타인의 `revealed_role`은 낮 처형으로 공개된 경우만 표시 모델에 유지하고,
+    밤 사망자는 반드시 `null`이어야 한다. 마피아 사용자에게도 팀원 필드를
+    만들거나 다른 마피아를 추정하지 않는다.
+- **완료 기준:** 모든 Phase와 정상·비정상 payload 파싱 테스트 통과.
+  `round=0` 첫날, `DETECTIVE` 표시명, 밤 사망 역할 숨김, 공개 시나리오 목표·
+  최초 마피아 수와 자기 알리바이·관찰 보존을 검증하며 응답에 없는 정보를 채우는
+  코드가 없어야 한다.
 
-### WU-F3. 공통 게임 UI 컴포넌트
+### WU-F3. 공통 게임 UI·카운트다운 컴포넌트
 
 - **범위 파일:** `frontend_user/components/game_ui.py`,
   `frontend_user/tests/test_game_pages_smoke.py`(초안)
-- **내용:** 타임라인, 좌석/생존자 패널, 행동 버튼 그룹, 저장 상태 표시.
-  기존 `components/ui.py`의 escape 패턴 재사용 — **모든 발언·표시 이름은
-  렌더링 전 HTML escape** (마피아 발언에 스크립트가 섞여도 안전해야 한다).
-- **완료 기준:** escape 검증 테스트(악성 문자열 입력) 포함 통과.
+- **내용:** 순수 표시 컴포넌트로 타임라인, 좌석·생존자, 공개 시나리오,
+  자기 역할·알리바이·관찰, 투표 집계, 행동 버튼, 저장 상태와 카운트다운 외형을
+  구현한다.
+  - 마피아 팀원 패널이나 진영 공유 표시는 만들지 않는다.
+  - 관전 View에서 제거된 역할·알리바이·관찰을 빈 문자열이나 이전 session state로
+    복원하지 않고 해당 개인 패널을 숨긴다.
+  - 밤 사망자의 역할은 숨기고 낮 처형자의 `revealed_role`만 표시한다.
+  - 투표 중에는 중간 표·개별 선택을 표시하지 않고 해소된 후보별 집계만 표시한다.
+  - `SPEAK` 입력은 정규화 후 1~200자이며 `PASS`와 구분한다.
+  - 카운트다운은 F6가 계산한 남은 초와 경고 수준을 입력으로 받는 표시 전용
+    컴포넌트다. 스스로 Phase를 전환하거나 deadline을 확정하지 않는다.
+  - 기존 `components/ui.py`의 패턴을 재사용해 **발언, 표시 이름, 시나리오,
+    알리바이·관찰, 오류 상세 등 모든 외부 문자열을 HTML escape**한다.
+- **완료 기준:** 악성 문자열 escape, 200자 경계, blind-mafia 무표시,
+  밤 사망 역할 숨김, 집계만 공개와 카운트다운 상태 렌더링 테스트 통과.
 
 ### WU-F4. 홈·생성·불러오기 화면
 
-- **범위 파일:** `home_page.py`, `game_create_page.py`, `game_load_page.py`,
-  `frontend_user/app.py`(라우팅 최소 수정), smoke 테스트 갱신
-- **내용:** 7.2 규칙 준수. 인원 5~9 선택(기본 6)과 역할표 안내,
-  저장 목록(2.2 응답), 이어하기. fake transport로 동작.
-- **완료 기준:** smoke 테스트 통과, 로그인 흐름 기존 테스트 무손상.
+- **범위 파일:** `frontend_user/app_pages/home_page.py`,
+  `frontend_user/app_pages/game_create_page.py`,
+  `frontend_user/app_pages/game_load_page.py`, `frontend_user/app.py`(라우팅 최소 수정),
+  `frontend_user/tests/test_game_pages_smoke.py`
+- **내용:** 7.2 규칙을 준수해 6~9명 생성, 저장 목록과 이어하기를 fake
+  transport로 구현한다.
+  - 인원 선택은 6~9만 허용하고 기본값은 6이다. 역할표는 6명 `1/1/1/3`,
+    7명 `1/1/1/4`, 8명 `2/1/1/4`, 9명 `2/1/1/5` 순서로
+    마피아/탐정/의사/시민 수를 정확히 안내한다.
+  - `mystery-v1`과 `scenario-v1`을 표시하고 시나리오는 정적 카탈로그 5종 중
+    사용자별 직전 생성 항목을 제외해 서버가 선택한다는 점을 설명한다.
+  - 생성 전에는 실제 선택 시나리오, 역할, 알리바이·관찰을 미리 추정하거나
+    노출하지 않는다. 생성 응답 뒤 공개 시나리오와 자기 정보만 보여준다.
+  - 저장 목록에는 시나리오 제목, 인원, 생존자 수, Phase, round와 저장 시각을
+    표시한다. 이어하기는 `expected_version`·새 idempotency key로 resume API를
+    호출하고 성공 응답의 GameStateView를 사용하며, 충돌 시 최신 상태를 재조회한다.
+- **완료 기준:** 5명 거부, 6~9 생성·역할표, 시나리오 안내, 저장 목록·이어하기
+  smoke 테스트 통과. 기존 로그인 흐름 테스트 무손상.
 
 ### WU-F5. 진행·결과 화면
 
-- **범위 파일:** `game_play_page.py`, `game_result_page.py`, smoke 테스트
-- **내용:** GameStateView 기반 렌더링, `ADVANCE_PHASE` 버튼형 턴제,
-  허용 명령만 버튼 노출, 관전·`FAST_FORWARD`, `SAVE_AND_EXIT`,
-  결과 화면(2.6)과 피드백 제출(2.7). 새로 고침 시 `game_id` 재조회.
-  오류 코드별 고정 안내(409 새로고침 / 503-AGENT 재시도 / 503-PERSISTENCE
-  저장 실패·입력 보존).
-- **완료 기준:** fake 시나리오(정상 진행, 각 오류, 인간 사망 관전)
-  smoke 테스트 통과.
+- **범위 파일:** `frontend_user/app_pages/game_play_page.py`,
+  `frontend_user/app_pages/game_result_page.py`,
+  `frontend_user/tests/test_game_pages_smoke.py`
+- **내용:** Backend의 GameStateView와 `allowed_commands`만으로 진행·관전·결과
+  화면을 렌더링한다. Front 전용 `ADVANCE_PHASE` 명령은 만들지 않는다.
+  - `ROLE_REVEAL → DAY_ANNOUNCEMENT(round=0) → DAY_DISCUSSION(round=0)`에서
+    공개 시나리오와 자기 역할·알리바이·관찰을 보여주고 첫날 투표 UI를 숨긴다.
+  - 현재 발언 좌석에만 200자 이하 `SPEAK`와 `PASS`를 표시한다. 전원 PASS 뒤의
+    고정 질문과 추가 1순환은 Backend의 `discussion`·PUBLIC 이벤트를 그대로
+    렌더링하며 Front가 자체 판단해 추가하지 않는다.
+  - 인간 사망 시 행동 컨트롤을 모두 숨기고 공개 정보만 보는 관전 모드와
+    허용될 때만 `FAST_FORWARD`를 제공한다. `SAVE_AND_EXIT`도 허용 명령일 때만
+    노출한다.
+  - `FINAL_DISCUSSION → FINAL_VOTE → FINAL_RESOLUTION → FINISHED`를 별도 급사
+    흐름으로 표시하고, 결과 화면에서 승리 진영·`finish_reason`, 전체 역할과
+    종료 후 공개 가능한 야간·개별 투표 기록을 보여준다. 급사 결과는
+    `FINAL_TARGET_MAFIA`와 `FINAL_TARGET_NON_MAFIA`를 구별해 설명한다.
+  - 진행 중 투표는 후보별 확정 집계만, 밤 사망 역할은 숨기고 낮 처형 역할만
+    표시한다. 새로 고침 시 `game_id`로 최신 상태를 재조회한다.
+  - 오류 코드별 고정 안내를 제공한다. 409 상태 충돌·중복 제출은 최신 상태 재조회,
+    503-AGENT는 재시도, 503-PERSISTENCE는 입력을 보존한 저장 실패 안내로 처리한다.
+- **완료 기준:** first-day `round=0` 무투표, 일반·전원 PASS 추가 순환, 인간 사망
+  관전·빠른 진행, 밤 사망 비공개, 낮 처형 공개, `FINAL_*` 양쪽 종료 사유와 오류
+  경로의 fake smoke 테스트 통과.
 
-### WU-F6. SSE/폴링 연동 계층
+### WU-F6. 서버 시간 동기화 + SSE/폴링 연동 계층
 
-- **범위 파일:** `game_api.py`·`game_play_page.py` 확장, 관련 테스트
-- **내용:** 2.5 SSE 구독, 실패 시 `?since_sequence` 증분 폴링 폴백.
-  `agent_status`(THINKING 등) 표시.
-- **완료 기준:** SSE 실패→폴링 전환 테스트(fake) 통과.
+- **범위 파일:** `frontend_user/core/game_api.py`,
+  `frontend_user/app_pages/game_play_page.py`, `frontend_user/tests/test_game_api.py`,
+  `frontend_user/tests/test_game_pages_smoke.py`
+- **내용:** 2.5 SSE를 구독하고 실패 시 `?since_sequence` 증분 폴링으로
+  전환한다. 모든 전체·증분 응답의 `server_time`과 `deadline_at`으로 시계 차이를
+  다시 계산하고 `agent_status=IDLE | THINKING | FALLBACK`을 표시한다.
+  - `deadline_at`이 있는 `NIGHT_ACTION`은 10초, `DAY_VOTE`·`DAY_REVOTE`·
+    `FINAL_VOTE`는 15초와 5초가 남을 때 경고한다. 경고는 각 threshold를 한 번만
+    표시하며 deadline이 없는 토론 Phase에는 카운트다운을 만들지 않는다.
+  - 브라우저 로컬 시각만으로 deadline을 연장·확정하지 않는다. SSE 재연결이나
+    폴링 전환 뒤에도 새 `server_time` 기준으로 보정하고 이미 지난 경고를 반복하지 않는다.
+  - `state_version`이 낮거나 sequence가 중복된 지연 이벤트는 무시한다. sequence
+    공백을 발견하면 마지막 정상 sequence부터 증분 조회하고 필요하면 전체 상태를
+    재조회한다.
+  - 표시 카운트다운 0만으로 `allowed_commands`를 제거하거나 제출을 최종 차단하지
+    않는다. Backend가 새 상태를 확정하기 전 사용자가 제출하면 같은 idempotency key로
+    한 번 전송하고 성공·거부 응답을 따른다. 늦게 도착한 성공 응답은 반영하고
+    `ACTION_DEADLINE_EXPIRED`, `ACTION_ALREADY_SUBMITTED`, `GAME_STATE_CONFLICT`는
+    같은 idempotency key로 재전송하지 않은 채 최신 GameStateView를 조회한다.
+- **완료 기준:** SSE 실패→폴링 전환, 브라우저 시계 오차 보정, 15·10·5초 경고
+  1회, 중복·역순·sequence 공백, deadline 직전 지연 명령의 성공과 만료 거부,
+  토론 Phase 무카운트다운 fake 테스트 통과.
 
 ### WU-F7. 관리자 API 클라이언트 + 3화면
 

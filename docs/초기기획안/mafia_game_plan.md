@@ -1,10 +1,19 @@
 # AI 마피아 추리게임 기획안
 
-> **[대체됨]** 이 문서의 기본 마피아 게임 범위는
-> [AI_MAFIA_MVP_FINAL_PLAN.md](../플랜/AI_MAFIA_MVP_FINAL_PLAN.md)로 통합·대체되었습니다.
-> 추리극 요소(시나리오 패턴, 사건 진실, 단서, Red Herring, AI GM 해설)는
-> MVP에서 제외되었으며 이 문서를 후속 확장 기획 참고 자료로 유지합니다.
-> 충돌 시 최종 플랜을 우선하며, 조정 내역은
+> **[레거시 참고 자료 — 구현 기준 아님]** 이 문서의 본문과 시뮬레이션은 초기
+> 아이디어 기록이며 현재 MVP의 기능·규칙·데이터 계약이나 인수 기준으로 사용하지
+> 않습니다. 제품 범위와 우선순위는
+> [AI_MAFIA_MVP_FINAL_PLAN.md](../플랜/AI_MAFIA_MVP_FINAL_PLAN.md), 게임 규칙은
+> [`mystery-v1` 최종 규칙](mafia_game_rules.md), 시나리오 카탈로그는
+> [`scenario-v1` 최종 시나리오](mafia_game_scenarios.md), API·DB·MCP 계약은
+> [AI_MAFIA_IMPLEMENTATION_PLAN.md](../개발상세플랜/AI_MAFIA_IMPLEMENTATION_PLAN.md)를
+> 각각 정본으로 따릅니다.
+>
+> 아래에 남아 있는 5명 구성, 7명 마피아 2명, 마피아 상호 인지, 의사 보호 제한,
+> 복합 사건 진실·핵심 단서·Red Herring, 첫날 의심도 투표, 다단계 낮 토론과
+> 시뮬레이션 수치·대사는 모두 레거시 예시입니다. 현재 `mystery-v1` 또는
+> `scenario-v1`과 충돌하면 사용하지 않으며, 후속 확장으로 채택할 때는 정본 문서와
+> 구현 계약을 먼저 함께 갱신합니다. 조정 배경은
 > [통합·수정 내역](../플랜/AI_MAFIA_PLAN_INTEGRATION_NOTES.md)을 참고하세요.
 
 ## 1. 문서 목적
