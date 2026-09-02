@@ -971,8 +971,9 @@ backend/tests/test_game_rules.py, test_game_state_machine.py,
 
 기존 파일 중 `backend/app/core/config.py`,
 `backend/app/infrastructure/migrations.py`, `backend/tests/test_config.py`,
-`backend/tests/test_migrations.py`는 WU-B3의 migration 전용 설정 경계 보정을
-위해 수정할 수 있다. 이 네 파일은 신규 파일이 아니며 다른 설정 리팩터링으로
+`backend/tests/test_migrations.py`는 WU-B3의 migration 전용 설정 경계 보정을,
+`backend/app/main.py`는 WU-B5~B7 router·scheduler lifespan 등록을 위해 수정할
+수 있다. 이 파일들은 신규 파일이 아니며 다른 설정·bootstrap 리팩터링으로
 범위를 넓히지 않는다.
 
 ### 4.2 작업 순서 (최종 플랜 14장 단계와 대응)

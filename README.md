@@ -73,7 +73,8 @@ agent 사용 규칙(한 세션 = WU 1개 이하), 중간 merge·테스트 체크
 
 `docs` 루트에 섞여 있던 문서를 `규칙`, `초기기획안`, `플랜`,
 `개발상세플랜`으로 분류했습니다. 이 중 `docs/개발상세플랜/`에는 구현 착수 시
-직접 사용하는 공통 계약과 섹터별 작업 지침서만 배치했습니다.
+직접 사용하는 공통 계약, 섹터별 작업 지침서와 문서 병합 의사결정 목록을
+배치했습니다.
 
 | 문서 | 기록된 내용 |
 |---|---|
@@ -81,6 +82,7 @@ agent 사용 규칙(한 세션 = WU 1개 이하), 중간 merge·테스트 체크
 | [SECTOR_PLAN_FRONT.md](docs/개발상세플랜/SECTOR_PLAN_FRONT.md) | Front 소유 경계, WU-F1~F8, CP-F0~F4와 검증 기준 |
 | [SECTOR_PLAN_BACKEND.md](docs/개발상세플랜/SECTOR_PLAN_BACKEND.md) | Backend 소유 경계, WU-B1~B9, CP-B0~B5와 고위험 검증 기준 |
 | [SECTOR_PLAN_MCP.md](docs/개발상세플랜/SECTOR_PLAN_MCP.md) | MCP Server·DB·Redis 실행 환경 책임, WU-M1A·M1B·M2~M8, CP-M0·M1A·M1B·M2~M8과 컨텍스트 격리 기준 |
+| [AI_MAFIA_DOCUMENT_CONFLICTS_AND_DECISIONS.md](docs/개발상세플랜/AI_MAFIA_DOCUMENT_CONFLICTS_AND_DECISIONS.md) | 계약 문서 병합 전 해소할 충돌, 구현 차단 결정과 명백한 교정 항목 |
 
 문서 이동에 맞춰 루트 `AGENTS.MD`, README, 환경 설정 예시와 패키지 안내의
 참조 경로도 갱신했습니다. 이번 분류는 문서 위치와 탐색 경로를 정리한 것이며,
@@ -154,6 +156,7 @@ Front·MCP 계약을 차례로 완료한 뒤 사용할 수 있습니다. 규칙 
 │   │   └── ARCHITECTURE_REFACTOR_PLAN.md # 구조 개편 계획과 적용 기록
 │   └── 개발상세플랜/
 │       ├── AI_MAFIA_IMPLEMENTATION_PLAN.md # 3인 섹터 분담 상세 구현 계획·API·DB 명세
+│       ├── AI_MAFIA_DOCUMENT_CONFLICTS_AND_DECISIONS.md # 문서 병합 충돌·의사결정 목록
 │       ├── SECTOR_PLAN_FRONT.md       # Front 섹터 작업 지침서(WU·CP)
 │       ├── SECTOR_PLAN_BACKEND.md     # Backend 섹터 작업 지침서(WU·CP)
 │       └── SECTOR_PLAN_MCP.md         # MCP 섹터 작업 지침서(WU·CP)
