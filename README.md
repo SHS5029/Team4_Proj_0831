@@ -36,6 +36,11 @@ LLM Agent loop, MCP Tool·Resource·Prompt, 관리자 업무 기능, Redis 연�
 있습니다. 최종 플랜은 구현 계획이며 아래의 현재 구현 범위를 확장했다고
 간주하지 않습니다.
 
+3인(Front·Backend·MCP Server) 섹터 분담, 섹터 간 API·DB·MCP 계약 명세와
+작업 순서는 [상세 구현 계획서](docs/AI_MAFIA_IMPLEMENTATION_PLAN.md)에
+정리되어 있습니다. 이 계획서에는 [AGENTS.MD](AGENTS.MD)의 작업 지침 요약이
+포함되어 있으며, 계약(명세) 변경은 계획서 갱신과 섹터 합의를 먼저 거칩니다.
+
 ## 프로젝트 구조
 
 ```text
@@ -70,6 +75,7 @@ LLM Agent loop, MCP Tool·Resource·Prompt, 관리자 업무 기능, Redis 연�
 │   └── mcp_2/                        # 후속 MCP 독립 예약 패키지
 ├── docs/
 │   ├── AI_MAFIA_MVP_FINAL_PLAN.md    # AI 마피아 MVP 최종 통합 플랜(구현 기준)
+│   ├── AI_MAFIA_IMPLEMENTATION_PLAN.md  # 3인 섹터 분담 상세 구현 계획·API·DB 명세
 │   ├── AI_MAFIA_PLAN_INTEGRATION_NOTES.md  # 기획 문서 통합·수정 내역
 │   ├── AI_MAFIA_MVP_PLAN.md          # (대체됨) MVP 설계 초안
 │   ├── ai_mafia_game_engine분리규칙.md  # (대체됨) 엔진/Agent/MCP 분리 규칙
@@ -126,8 +132,11 @@ INTERNAL_API_MAX_AGE_SECONDS=300
   `backend.internal_api_secret`에도 설정합니다. 브라우저나 소스 코드에는 넣지 않습니다.
 - Backend의 기본 서명 허용 시간 오차는 300초이며 최대 3600초로 제한됩니다.
 - `.env.example`의 `REDIS_URL`, `LLM_PROVIDER`, `OPENAI_API_KEY`,
-  `GEMINI_API_KEY`, `MAFIA_MCP_URL` 등은 AI 마피아 MVP용 예약 항목입니다.
+  `GEMINI_API_KEY`, `MAFIA_MCP_URL`, `ENGINE_INTERNAL_API_SECRET`,
+  `ENGINE_API_URL` 등은 AI 마피아 MVP용 예약 항목입니다.
   아직 코드가 읽지 않으며 실제 키 값은 `.env`에만 보관합니다.
+  `ENGINE_INTERNAL_API_SECRET`은 MCP→Backend 내부 경계용으로
+  `INTERNAL_API_SECRET`과 다른 값을 사용해야 합니다.
 
 `Team4_Proj` 데이터베이스는 앱이 만들지 않습니다. 마이그레이션 전에 관리 도구로
 데이터베이스를 생성하고 `.env` 계정에 연결·스키마 생성 권한을 부여하세요.
