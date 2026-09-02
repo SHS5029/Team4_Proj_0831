@@ -28,8 +28,14 @@ AI 플레이어 기능은 아래 계획에 따른 후속 구현 범위입니다.
 - 첫 로그인 시 `users`와 `oauth_identities` 레코드의 원자적 생성
 - 재로그인 프로필·최근 로그인 시각 갱신과 비활성 사용자 fail-closed 차단
 - 외부 프로필 HTML escape와 HTTPS 아바타 URL 제한
-- Backend 소유 PostgreSQL migration 실행기
+- Backend 소유 PostgreSQL migration 실행 코드(MCP 섹터가 실제 실행)
 - 독립 관리자 Streamlit 앱과 MCP 서버 예약 구조(`mcp_server/mafia_game`, `mcp_2`)
+
+개발 섹터 역할은 코드 소유권과 실행 환경 책임을 분리합니다. Backend 섹터는
+DB schema·migration SQL·repository와 Redis client·lock 코드를 작성하고, MCP
+섹터는 PostgreSQL·Redis 인스턴스 구축·기동·중지, 접속 계정·권한 준비,
+migration 실행과 health 확인을 담당합니다. 실제 Backend 프로세스는 DB·Redis에
+직접 연결하며 MCP 서버를 데이터 프록시로 사용하지 않습니다.
 
 LLM Agent loop, MCP Tool·Resource·Prompt, 관리자 업무 기능, Redis 연결은 아직
 구현하지 않았습니다. 예약 모듈은 향후 연결 위치만 고정하며 외부 호출을 수행하지
@@ -46,7 +52,8 @@ LLM Agent loop, MCP Tool·Resource·Prompt, 관리자 업무 기능, Redis 연�
 있습니다. 최종 플랜은 구현 계획이며 아래의 현재 구현 범위를 확장했다고
 간주하지 않습니다.
 
-3인(Front·Backend·MCP Server) 섹터 분담, 섹터 간 API·DB·MCP 계약 명세와
+3인(Front / Backend / MCP Server·Data Infrastructure) 섹터 분담, 섹터 간
+API·DB·MCP 계약 명세와
 작업 순서는 [상세 구현 계획서](docs/개발상세플랜/AI_MAFIA_IMPLEMENTATION_PLAN.md)에
 정리되어 있습니다. 이 계획서에는 [AGENTS.MD](AGENTS.MD)의 작업 지침 요약이
 포함되어 있으며, 계약(명세) 변경은 계획서 갱신과 섹터 합의를 먼저 거칩니다.
@@ -58,7 +65,7 @@ agent 사용 규칙(한 세션 = WU 1개 이하), 중간 merge·테스트 체크
 
 - Front: [docs/개발상세플랜/SECTOR_PLAN_FRONT.md](docs/개발상세플랜/SECTOR_PLAN_FRONT.md)
 - Backend: [docs/개발상세플랜/SECTOR_PLAN_BACKEND.md](docs/개발상세플랜/SECTOR_PLAN_BACKEND.md)
-- MCP Server: [docs/개발상세플랜/SECTOR_PLAN_MCP.md](docs/개발상세플랜/SECTOR_PLAN_MCP.md)
+- MCP Server·Data Infrastructure: [docs/개발상세플랜/SECTOR_PLAN_MCP.md](docs/개발상세플랜/SECTOR_PLAN_MCP.md)
 
 ## 개발상세플랜 문서 업데이트 (2026-09-02)
 
@@ -71,7 +78,7 @@ agent 사용 규칙(한 세션 = WU 1개 이하), 중간 merge·테스트 체크
 | [AI_MAFIA_IMPLEMENTATION_PLAN.md](docs/개발상세플랜/AI_MAFIA_IMPLEMENTATION_PLAN.md) | Front·Backend·MCP 공통 API·DB·MCP 계약, 승인된 파일 범위, 마일스톤과 계약 변경 절차 |
 | [SECTOR_PLAN_FRONT.md](docs/개발상세플랜/SECTOR_PLAN_FRONT.md) | Front 소유 경계, WU-F1~F8, CP-F0~F4와 검증 기준 |
 | [SECTOR_PLAN_BACKEND.md](docs/개발상세플랜/SECTOR_PLAN_BACKEND.md) | Backend 소유 경계, WU-B1~B7, CP-B0~B5와 고위험 검증 기준 |
-| [SECTOR_PLAN_MCP.md](docs/개발상세플랜/SECTOR_PLAN_MCP.md) | MCP Server 소유 경계, WU-M1~M5, CP-M0~M4와 컨텍스트 격리 기준 |
+| [SECTOR_PLAN_MCP.md](docs/개발상세플랜/SECTOR_PLAN_MCP.md) | MCP Server·DB·Redis 실행 환경 책임, WU-M1~M6, CP-M0~M5와 컨텍스트 격리 기준 |
 
 문서 이동에 맞춰 루트 `AGENTS.MD`, README, 환경 설정 예시와 패키지 안내의
 참조 경로도 갱신했습니다. 이번 분류는 문서 위치와 탐색 경로를 정리한 것이며,
@@ -94,7 +101,7 @@ agent 사용 규칙(한 세션 = WU 1개 이하), 중간 merge·테스트 체크
 │   ├── app/repositories/             # PostgreSQL 사용자 저장소
 │   ├── app/infrastructure/           # migration·PostgreSQL·HMAC 구현
 │   ├── app/{agent,llm,mcp}/          # 후속 Agent 연결 예약 위치
-│   ├── migrations/                   # Backend 소유 SQL migration
+│   ├── migrations/                   # Backend 작성 SQL migration(MCP 실행)
 │   ├── tests/
 │   └── README.md
 ├── frontend_user/
@@ -130,12 +137,14 @@ agent 사용 규칙(한 세션 = WU 1개 이하), 중간 merge·테스트 체크
 
 `frontend_user`와 `frontend_admin`은 Backend만 HTTP로 호출합니다. Frontend가 DB,
 Redis, MCP 서버에 직접 연결하거나 MCP 서버끼리 서로의 내부 모듈을 import하지
-않습니다.
+않습니다. MCP 섹터가 DB·Redis 실행 환경을 운영해도 `mcp_server/mafia_game`
+runtime은 DB·Redis에 직접 접근하지 않습니다.
 
 ## 사전 준비
 
 - Python 3.12 이상
-- PostgreSQL 서버와 데이터베이스 생성 권한
+- PostgreSQL 서버와 데이터베이스 생성 권한(MCP 섹터 운영 책임)
+- Redis 실행 환경(MCP 섹터 운영 책임, 게임 기능 구현 단계부터 필요)
 - Google Cloud 프로젝트와 OAuth 2.0 웹 애플리케이션 client
 - 권장 패키지 관리자: [uv](https://docs.astral.sh/uv/)
 
@@ -149,7 +158,7 @@ uv sync --dev
 후속 연결할 OpenAI·Gemini API 키와 Redis 주소는 `.env.example`의 예약 항목을
 참고하세요.
 
-## Backend 환경 설정
+## Backend·Data Infrastructure 환경 설정
 
 기존 `.env`에는 다른 로컬 설정이나 비밀값이 있을 수 있으므로 덮어쓰지 마세요.
 파일이 없을 때만 예시를 복사하고 소유자 전용 권한을 적용합니다.
@@ -181,12 +190,20 @@ INTERNAL_API_MAX_AGE_SECONDS=300
   `ENGINE_INTERNAL_API_SECRET`은 MCP→Backend 내부 경계용으로
   `INTERNAL_API_SECRET`과 다른 값을 사용해야 합니다.
 
-`Team4_Proj` 데이터베이스는 앱이 만들지 않습니다. 마이그레이션 전에 관리 도구로
-데이터베이스를 생성하고 `.env` 계정에 연결·스키마 생성 권한을 부여하세요.
+섹터 작업에서는 MCP 담당자가 PostgreSQL·Redis를 구축하고 실제 접속 값을 비밀
+채널로 Backend 담당자에게 제공합니다. Backend 담당자는 제공받은 URL을 소비하며
+DB·Redis 프로세스를 직접 설치·기동하지 않습니다. 실제 URL·비밀번호는 문서,
+로그, 완료 보고에 기록하지 않습니다.
+
+`Team4_Proj` 데이터베이스는 앱이 만들지 않습니다. MCP 담당자가 migration 전에
+관리 도구로 데이터베이스와 최소 권한 계정을 준비하고 `.env` 계정에 연결·스키마
+생성 권한을 부여합니다.
 
 ## 데이터베이스 마이그레이션
 
-Backend가 소유하는 `backend/migrations/`의 SQL을 이름순으로 실행합니다.
+Backend가 작성·소유하는 `backend/migrations/`의 SQL을 MCP 담당자가 이름순으로
+실행합니다. 아래 명령은 Backend 실행기를 사용하지만 실행 책임은 MCP 섹터에
+있습니다.
 
 ```bash
 uv run python -m backend.app.infrastructure.migrations
@@ -241,7 +258,9 @@ chmod 600 frontend_user/.streamlit/secrets.toml
 
 ## 실행
 
-Backend를 먼저 실행합니다.
+MCP 담당자가 PostgreSQL을 먼저 기동하고 연결·migration 상태를 확인한 뒤
+Backend를 실행합니다. 게임용 Redis가 구현된 이후에는 Redis health도 먼저
+확인합니다.
 
 ```bash
 uv run uvicorn backend.app.main:app --reload --port 8000
@@ -317,7 +336,8 @@ uv run ruff check .
 
 자동 테스트는 synthetic identity, 가짜 DB 연결, mock HTTP transport를 사용해 Google,
 운영 DB, 유료 API를 호출하지 않습니다. 실제 Google OAuth 왕복과 실제 PostgreSQL
-마이그레이션은 자격 증명과 로컬 인프라가 필요하므로 별도 수동 검증 대상입니다.
+마이그레이션은 자격 증명과 로컬 인프라가 필요하므로 MCP 담당자가 실행 환경을
+준비·검증하고 Backend 담당자와 결과를 공동 판정합니다.
 
 ## 보안 원칙과 알려진 제약
 
@@ -343,7 +363,8 @@ uv run ruff check .
 - Backend API client: `frontend_user/core/api_client.py`
 - identity API와 유스케이스: `backend/app/routers/identity_router.py`, `services/identity_service.py`
 - 사용자 저장소: `backend/app/repositories/user_repository.py`
-- schema 변경: `backend/migrations/`에 다음 번호의 순방향 SQL 추가
+- schema 변경: Backend가 `backend/migrations/`에 다음 번호의 순방향 SQL을
+  추가하고 MCP 담당자가 실제 환경에서 실행·재실행 검증
 - Agent·LLM·MCP client: `backend/app/agent/`, `llm/`, `mcp/`
 - 독립 MCP 기능: `mcp_server/mafia_game/`(게임 컨텍스트 MCP 예정) 또는
   `mcp_server/mcp_2/` 내부 계층에만 추가

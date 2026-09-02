@@ -2,6 +2,7 @@
 
 **문서 상태:** 확정 통합본 (구현 기준 문서)
 **기준일:** 2026년 9월 1일
+**역할 개정:** 2026년 9월 2일 — PostgreSQL·Redis 구축·실행을 MCP 섹터로 이전
 **통합 원본:** `docs/초기기획안/mafia_game_plan.md`,
 `docs/플랜/AI_MAFIA_MVP_PLAN.md`, `docs/규칙/ai_mafia_game_engine분리규칙.md`
 **변경 근거:** 통합 과정의 충돌 항목과 결정 사유는
@@ -38,7 +39,8 @@
 - 자동 저장, 수동 저장, 저장 게임 불러오기
 - 결과 화면과 최소 게임 통계
 - 관리자 KPI 대시보드, 로그, 사용자 피드백 화면
-- Backend가 LLM, MCP, PostgreSQL, Redis를 단독으로 연결·관리하는 경계
+- Backend가 LLM·MCP·PostgreSQL·Redis application 연결을 단독 관리하고,
+  PostgreSQL·Redis 실행 환경의 구축·기동·migration 실행은 MCP 섹터가 담당하는 경계
 
 ### MVP 제외 (후속 확장)
 
@@ -95,6 +97,12 @@
                                 └──────────────────────┘
 ```
 
+위 그림은 runtime 통신 경계다. Backend가 PostgreSQL·Redis에 직접 연결하며 MCP
+서버가 데이터 프록시가 되지 않는다. 팀 역할상 PostgreSQL·Redis 인스턴스의 설치,
+생성, 기동, 중지, 계정·권한 준비, migration 실행과 health 확인은 MCP 섹터가
+담당한다. Backend 섹터는 DB schema·migration SQL·repository와 Redis client·lock
+동작을 작성한다.
+
 ### 3.1 현재 저장소 디렉터리별 책임
 
 아래 표는 **현재 실제 디렉터리 구조**에 MVP 책임을 매핑한 것이다. 새 최상위
@@ -120,6 +128,10 @@
 | `backend/migrations/` | 게임 schema 순방향 SQL 추가 (`002_...` 이후 번호) |
 | `mcp_server/mafia_game/` | **마피아 게임 컨텍스트 MCP 서버** (resource/tool) |
 | `mcp_server/mcp_2/` | 후속 MCP 예약 (MVP에서 사용하지 않음) |
+
+`backend/`가 DB·Redis application 코드를 소유하는 것과 실행 환경 담당자가 MCP
+섹터인 것은 별개다. MCP 담당자는 Backend migration을 실행할 수 있지만 수정하지
+않고, MCP 서버 runtime에는 DB·Redis 직접 접근 코드를 추가하지 않는다.
 
 게임 컨텍스트 MCP 패키지는 예약 이름 `mcp_1`에서 `mafia_game`으로 변경했다
 (2026-09-01, 사용자 승인). `mcp_2`는 용도 미정 예약 패키지로 유지하며 README의
@@ -426,7 +438,8 @@ MCP는 규칙 엔진을 대신하지 않고 에이전트가 허용된 컨텍스�
 
 PostgreSQL을 영구 원본으로 사용한다. 검색·무결성 필드는 열로, 규칙별 확장
 데이터는 검증된 JSONB로 둔다. schema는 `backend/migrations/`에 다음 번호의
-순방향 SQL로 추가한다.
+순방향 SQL로 Backend 섹터가 추가한다. PostgreSQL 인스턴스와 DB 구축, 해당
+migration의 실제 실행·재실행 검증은 MCP 섹터가 담당한다.
 
 | 테이블 | 주요 필드 | 목적 |
 |---|---|---|
@@ -465,7 +478,8 @@ event sequence가 다르면 이벤트 재생으로 복구한다. 검증 후 채�
 lock token 소유자만 lock을 해제하고 긴 작업은 heartbeat로 연장한다. DB
 commit 전에 cache를 성공으로 갱신하지 않는다. Redis는 영구 게임 원본으로
 사용하지 않는다. 기존 identity API의 `request_id`도 Redis 연결 후 짧은 TTL의
-재전송 차단 키로 확장한다.
+재전송 차단 키로 확장한다. Redis client·key·TTL·lock 의미는 Backend 코드
+계약이고, Redis 인스턴스 구축·기동·health 확인은 MCP 섹터 운영 책임이다.
 
 ## 11. Backend API
 
@@ -578,10 +592,12 @@ commit 전에 cache를 성공으로 갱신하지 않는다. Redis는 영구 게�
 
 ### 2단계: DB·Redis 저장
 
-- `backend/migrations/`에 순방향 SQL, `repositories/`에 저장소
-- event append, optimistic version, snapshot 저장·복구
-- `infrastructure/redis/`에 lock, idempotency와 실행 상태
-- Redis 장애와 동시 명령 충돌 테스트
+- Backend: `backend/migrations/`의 순방향 SQL, `repositories/` 저장소,
+  event append, optimistic version, snapshot 저장·복구 구현
+- Backend: `infrastructure/redis/`의 client, lock, idempotency와 실행 상태 구현
+- MCP: PostgreSQL·`Team4_Proj` DB·최소 권한 role과 Redis 인스턴스 구축·기동
+- MCP: Backend migration 실행·재실행, PostgreSQL 연결과 Redis health 확인
+- 공동: Redis 장애, 동시 명령 충돌과 PostgreSQL 원본 보존 검증
 
 ### 3단계: 사용자 화면과 API
 
@@ -633,6 +649,8 @@ MVP 완료 조건:
 - LLM/MCP 실패가 게임 상태를 훼손하지 않는다.
 - 관리자만 KPI, 정제된 로그와 피드백을 조회한다.
 - 소유권, 비공개 역할과 관리자 권한 거부 경로가 테스트된다.
+- MCP 섹터가 PostgreSQL migration 재실행과 Redis health를 확인하고,
+  Backend가 동일 환경에서 persistence·lock smoke를 통과한다.
 - 전체 테스트, compileall과 lint가 통과하고 README가 구현과 일치한다.
 
 ## 16. 남은 결정 항목

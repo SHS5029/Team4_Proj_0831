@@ -3,7 +3,8 @@
 > **[대체됨]** 이 문서는 [AI_MAFIA_MVP_FINAL_PLAN.md](AI_MAFIA_MVP_FINAL_PLAN.md)로
 > 통합·대체되었습니다. 내용이 충돌하면 최종 플랜을 우선합니다. 통합 시
 > 변경된 항목은 [통합·수정 내역](AI_MAFIA_PLAN_INTEGRATION_NOTES.md)을
-> 참고하세요.
+> 참고하세요. 2026-09-02 이후 PostgreSQL·Redis 실행 환경은 MCP 섹터가
+> 구축·기동하고, Backend는 application code·data contract를 소유합니다.
 
 **문서 상태:** 구현 전 합의용 초안 (최종 플랜으로 대체됨)  
 **기준일:** 2026년 9월 1일  
@@ -37,7 +38,8 @@
 - 자동 저장, 수동 저장, 저장 게임 불러오기
 - 결과 화면과 최소 게임 통계
 - 관리자 KPI 대시보드, 로그, 사용자 피드백 화면
-- Backend가 LLM, MCP, PostgreSQL, Redis를 단독으로 연결·관리하는 경계
+- Backend가 LLM·MCP·PostgreSQL·Redis application 연결을 관리하고,
+  PostgreSQL·Redis 실행 환경은 MCP 섹터가 구축·운영하는 경계
 
 MVP 이후에는 인간 다인 플레이, 음성 채팅, 사용자 제작 역할·시나리오, 동적 사건,
 랭킹·친구·길드·결제, 완성형 신고·제재 기능을 검토한다.
@@ -465,10 +467,10 @@ cache를 성공으로 갱신하지 않는다. Redis는 영구 게임 원본으�
 
 ### 2단계: DB·Redis 저장
 
-- 순방향 PostgreSQL migration과 repository
-- event append, optimistic version, snapshot 저장·복구
-- Redis lock, idempotency와 실행 상태
-- Redis 장애와 동시 명령 충돌 테스트
+- Backend: 순방향 PostgreSQL migration·repository, event append,
+  optimistic version, snapshot 저장·복구와 Redis application 연동 구현
+- MCP: PostgreSQL·Redis 인스턴스 구축·기동, migration 실행·재실행과 health 확인
+- 공동: Redis 장애와 동시 명령 충돌 테스트
 
 ### 3단계: 사용자 화면과 API
 

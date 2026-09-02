@@ -4,13 +4,13 @@
 
 ## 섹터별 작업 지침서 (AI 마피아 MVP)
 
-AI 마피아 MVP 구현은 3인이 Front·Backend·MCP Server 섹터로 나누어 별도
-시스템에서 개발한 뒤 merge합니다. **각 섹터 작업(사람·coding AI agent 모두)은
+AI 마피아 MVP 구현은 3인이 Front / Backend / MCP Server·Data Infrastructure
+섹터로 나누어 별도 시스템에서 개발한 뒤 merge합니다. **각 섹터 작업(사람·coding AI agent 모두)은
 착수 전에 이 문서와 함께 자기 섹터 지침서를 반드시 읽고 따라야 합니다.**
 
 - Front 섹터: [docs/개발상세플랜/SECTOR_PLAN_FRONT.md](docs/개발상세플랜/SECTOR_PLAN_FRONT.md)
 - Backend 섹터: [docs/개발상세플랜/SECTOR_PLAN_BACKEND.md](docs/개발상세플랜/SECTOR_PLAN_BACKEND.md)
-- MCP Server 섹터: [docs/개발상세플랜/SECTOR_PLAN_MCP.md](docs/개발상세플랜/SECTOR_PLAN_MCP.md)
+- MCP Server·Data Infrastructure 섹터: [docs/개발상세플랜/SECTOR_PLAN_MCP.md](docs/개발상세플랜/SECTOR_PLAN_MCP.md)
 - 섹터 간 공통 계약(API·DB·MCP 명세): [docs/개발상세플랜/AI_MAFIA_IMPLEMENTATION_PLAN.md](docs/개발상세플랜/AI_MAFIA_IMPLEMENTATION_PLAN.md)
 
 섹터 지침서의 핵심 강제 사항: **coding AI agent에게 한 번에 모든 구현을
@@ -18,6 +18,12 @@ AI 마피아 MVP 구현은 3인이 Front·Backend·MCP Server 섹터로 나누�
 1개 이하로 제한합니다. 작업 범위·신규 파일 목록은 각 지침서에서 확정하고,
 범위 밖 작업은 지침서와 계약 문서를 먼저 갱신·합의한 뒤 진행합니다.
 지침서와 이 문서가 충돌하면 이 문서가 우선합니다.
+
+섹터 책임상 Backend는 DB schema·migration·repository와 Redis application 코드를
+소유하고, MCP 섹터는 PostgreSQL·Redis 실행 환경의 구축·기동·중지, 접속
+계정·권한 준비, migration 실행과 health 확인을 담당합니다. MCP 서버 runtime은
+DB·Redis에 직접 접근하지 않으며 Backend 내부 API만 호출합니다. 세부 경계는 공통
+계약과 Backend·MCP 섹터 지침서를 따릅니다.
 
 ## 브랜치와 Git 작업
 

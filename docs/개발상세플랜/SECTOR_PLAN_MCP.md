@@ -1,8 +1,8 @@
-# MCP Server 섹터 작업 지침서 (AI 마피아 MVP)
+# MCP Server·Data Infrastructure 섹터 작업 지침서 (AI 마피아 MVP)
 
 **대상 담당자:** MCP 섹터 개발자 1인 (별도 시스템에서 개발 후 merge)
 **상위 계약 문서:** [상세 구현 계획서](AI_MAFIA_IMPLEMENTATION_PLAN.md)
-— 5장(내부 Engine API)·6장(MCP 계획)
+— 3장(DB·Redis 계약)·5장(내부 Engine API)·6장(MCP·인프라 계획)
 **작업 규칙 원본:** [AGENTS.MD](../../AGENTS.MD) — 이 지침서보다 우선한다.
 
 이 문서는 MCP 섹터가 별도 시스템에서 독립 개발하고 통합 저장소에 merge하기
@@ -10,6 +10,12 @@
 확정한다. 이 서버의 존재 이유는 **정보 격리**다: 에이전트에게 허용되지 않은
 정보가 Resource·Tool 결과·로그 어디에도 나타나지 않게 하는 것이 모든 작업의
 1순위 완료 기준이다.
+
+이 섹터는 MCP 애플리케이션과 함께 PostgreSQL·Redis의 **인스턴스 설치, 생성,
+기동, 중지, 접속 계정·권한 준비, migration 실행, health 확인과 실행 결과
+공유**를 맡는다. 다만 이것은 운영 책임의 이동이며 MCP 서버 코드가 DB·Redis에
+직접 접근한다는 뜻이 아니다. DB schema·migration SQL·repository와 Redis
+client·lock 의미는 계속 Backend 섹터가 작성한다.
 
 ---
 
@@ -19,6 +25,13 @@
 
 ```text
 mcp_server/mafia_game/**
+```
+
+코드 디렉터리 소유와 별도로 다음 실행 환경을 이 섹터가 구축·운영한다.
+
+```text
+PostgreSQL 인스턴스·Team4_Proj DB·접속 role/권한·migration 실행
+Redis 인스턴스·접속 설정·기동/중지·PING/health 확인
 ```
 
 ### 1.2 수정 금지 (다른 섹터 소유)
@@ -33,6 +46,9 @@ Backend 내부 Engine API(5장)의 요청·응답이 계약과 다르면 Backend
 고치지 말고 구현 계획서 9장 절차로 보고한다.
 `mcp_server/mafia_game`은 `backend.*` 모듈을 **import하지 않는다**
 (HTTP로만 통신). `mcp_2` 등 다른 MCP 패키지의 내부 모듈도 import 금지.
+MCP 서버 runtime도 DB·Redis에 직접 접속하지 않는다. MCP 담당자는 Backend가
+제공한 migration 파일을 실행할 수 있지만 내용을 수정하지 않으며, Redis
+application key·TTL·lock 규칙도 Backend 계약을 임의로 바꾸지 않는다.
 
 ### 1.3 조건부 수정 (사전 고지 필요)
 
@@ -68,6 +84,11 @@ mcp_server/mafia_game/tests/test_audit.py
 사용하며 새 최상위 디렉터리를 만들지 않는다. 이 밖의 파일이 필요하면 착수
 전에 이 문서와 구현 계획서를 갱신·합의한다.
 
+인프라 책임 이동은 새 `infra/`, Docker Compose, provisioning script 생성을
+자동 승인하지 않는다. 저장소 파일이 추가로 필요하면 먼저 이 문서의 승인 파일
+목록과 루트 README를 갱신해 합의한다. 그 전에는 팀이 승인한 로컬·관리형 실행
+환경을 사용하고 결과만 비밀값 없이 기록한다.
+
 `tests/` 디렉터리 추가로 루트 `pyproject.toml`의 `testpaths` 갱신이
 필요하면(`mcp_server/mafia_game/tests` 추가) 공유 파일 고지 규칙을 따른다.
 
@@ -83,10 +104,13 @@ cp .env.example .env && chmod 600 .env       # 기존 .env 있으면 덮어쓰�
 uv run pytest                                 # baseline 통과 확인
 ```
 
-- **개발 전 구간을 Backend 없이 진행 가능**해야 한다. WU-M1에서 만드는
+- MCP 애플리케이션 개발 전 구간은 Backend 없이 진행 가능해야 한다. WU-M2에서 만드는
   `integrations/engine/fake.py`(계약 5장의 정상·거부 응답 시나리오 재현)가
   모든 후속 WU와 자동 테스트의 기본 의존성이다.
-- 실제 Backend 연동(WU-M4)은 CP-B4 이후 로컬에서 Backend를 기동해 수동
+- WU-M1에서 PostgreSQL·Redis 실행 환경을 먼저 준비하되 실제 URL·비밀번호를
+  문서·로그·완료 보고에 남기지 않는다. Backend에 전달하는 것은 설정 key 이름,
+  접근 가능 여부, 적용한 migration 파일명과 health 결과뿐이다.
+- 실제 Backend 연동(WU-M5)은 CP-B4 이후 로컬에서 Backend를 기동해 수동
   확인한다. 자동 테스트는 계속 fake만 사용한다.
 - `ENGINE_INTERNAL_API_SECRET`, `ENGINE_API_URL`은 `.env`에만 둔다.
   Front용 `INTERNAL_API_SECRET`을 재사용하지 않는다.
@@ -143,7 +167,21 @@ uv run pytest
 - Tool 노출 제한은 편의 기능일 뿐 권한 검사가 아니다. 최종 판정은 Backend
   (이중 검증)라는 전제를 코드 주석에 명시한다.
 
-### WU-M1. 골격 + 계약 schema + fake 엔진
+### WU-M1. PostgreSQL·Redis 실행 환경 구축
+
+- **범위:** 팀이 승인한 로컬·관리형 PostgreSQL·Redis 실행 환경과 비밀값을
+  제외한 운영 기록. 저장소 신규 인프라 파일은 별도 승인 전 생성하지 않는다.
+- **내용:** PostgreSQL 인스턴스와 `Team4_Proj` DB 생성, 최소 권한 접속 role
+  준비, Redis 인스턴스 기동, 두 서비스의 재시작 절차와 health 확인. Backend가
+  전달한 순방향 migration을 `backend.app.infrastructure.migrations`로 실행하고
+  적용 파일명만 기록한다.
+- **완료 기준:** PostgreSQL 연결 가능, migration 재실행 성공, Redis `PING`
+  성공, 실제 URL·비밀번호가 출력물에 없음. Backend 담당자에게 비밀 전달
+  채널로 접속 설정을 제공하고 CP-B2 검증 요청을 받을 수 있는 상태.
+- **금지:** Backend migration 수정, MCP runtime의 DB·Redis 직접 접근,
+  영구 데이터로 Redis 사용, 실제 접속 문자열을 문서·commit·채팅에 복사.
+
+### WU-M2. 골격 + 계약 schema + fake 엔진
 
 - **범위 파일:** `core/config.py`, `schemas/contracts.py`,
   `ports/engine_port.py`, `integrations/engine/__init__.py`,
@@ -155,7 +193,7 @@ uv run pytest
   + 401/422 시나리오).
 - **완료 기준:** contracts 검증 테스트(허용 외 필드 제거 포함) 통과.
 
-### WU-M2. 세션·Resource 7종
+### WU-M3. 세션·Resource 7종
 
 - **범위 파일:** `core/session.py`, `services/context_service.py`,
   `api/resources/game_resources.py`, `server.py`, `__main__.py`,
@@ -165,7 +203,7 @@ uv run pytest
   Resource 7종을 fake 엔진 기반으로 제공.
 - **완료 기준:** Resource 7종 정상 응답 + 세션 없는 접근 거부 테스트 통과.
 
-### WU-M3. Tool 6종 + 감사 로그
+### WU-M4. Tool 6종 + 감사 로그
 
 - **범위 파일:** `services/action_service.py`, `api/tools/game_tools.py`,
   `core/audit.py`, `tests/test_tools.py`, `tests/test_audit.py`
@@ -176,7 +214,7 @@ uv run pytest
 - **완료 기준:** Tool 6종 정상·거부 경로, actor 위조 시도 거부(입력에
   actor 필드가 있으면 전달 전 차단), 감사 로그 필수 필드 기록 테스트 통과.
 
-### WU-M4. 실제 Engine HMAC 클라이언트
+### WU-M5. 실제 Engine HMAC 클라이언트
 
 - **범위 파일:** `integrations/engine/client.py`,
   기존 테스트 확장(mock transport)
@@ -185,10 +223,10 @@ uv run pytest
   (Engine 5xx → 에이전트에는 "일시 불가"만, 내부 상세는 감사 로그로).
 - **완료 기준:** mock transport로 서명 생성·오류 변환 테스트 통과.
   실제 네트워크 자동 테스트 0회.
-- **CP-M3 병행 작업:** Backend CP-B4 이후 로컬 Backend를 기동해 실제
+- **CP-M4 병행 작업:** Backend CP-B4 이후 로컬 Backend를 기동해 실제
   왕복 1회 수동 확인. 계약 불일치는 코드 수정 전에 문서 이슈로 보고.
 
-### WU-M5. 격리·감사 강화 (카나리)
+### WU-M6. 격리·감사 강화 (카나리)
 
 - **범위 파일:** `tests/test_session_isolation.py`, 필요한 서비스 보강
 - **내용:** 최종 플랜 12.1 검증 규칙의 MCP 측 구현.
@@ -205,15 +243,18 @@ uv run pytest
 | 체크포인트 | 포함 WU | merge 전 필수 검증 | 통합 상대 |
 |---|---|---|---|
 | **CP-M0 계약 확인** | (코드 없음) | 5·6장 리뷰 의견 제출 | 3인 합의 |
-| **CP-M1 골격** | M1 | focused + 전체 회귀 | 없음 (독립) |
-| **CP-M2 Resource·Tool** | M2, M3 | 회귀 + 격리 불변식(4.0) 확인 | 없음 (독립) |
-| **CP-M3 Engine 연동** | M4 | 회귀 + 실 Backend 수동 왕복 1회 | **Backend CP-B4 이후** |
-| **CP-M4 격리 완성** | M5 | 회귀 + 카나리 테스트 | Backend CP-B5와 함께 CP-ALL |
+| **CP-M1 Data Infrastructure** | M1 | PostgreSQL migration 재실행 + Redis health, 비밀정보 비노출 확인 | **Backend CP-B2 선행 환경** |
+| **CP-M2 MCP 골격** | M2 | focused + 전체 회귀 | 없음 (독립) |
+| **CP-M3 Resource·Tool** | M3, M4 | 회귀 + 격리 불변식(4.0) 확인 | 없음 (독립) |
+| **CP-M4 Engine 연동** | M5 | 회귀 + 실 Backend 수동 왕복 1회 | **Backend CP-B4 이후** |
+| **CP-M5 격리 완성** | M6 | 회귀 + 카나리 테스트 | Backend CP-B5와 함께 CP-ALL |
 
 ### 중간 테스트 규칙
 
 - WU마다 focused, CP merge 직전 전체 회귀(3.4).
-- CP-M3 merge 후 `develop`에서 통합 스모크(Backend 기동 → MCP 기동 →
+- CP-M1 이후 Backend가 migration·Redis application 계약을 전달하면 MCP
+  담당자가 실제 서비스에서 실행·health 결과를 확인하고 공동 검증 기록을 남긴다.
+- CP-M4 merge 후 `develop`에서 통합 스모크(Backend 기동 → MCP 기동 →
   Resource 1종 조회 성공)를 실행하고 결과를 Backend 담당자와 공유한다.
 - Backend 원인 실패는 임의 수정하지 않고 원인·영향만 보고.
 
@@ -233,11 +274,11 @@ uv run pytest
 ## 7. 완료 보고 양식 (WU·CP 공통)
 
 ```text
-[WU-M3 완료]
+[WU-M4 완료]
 - 변경 파일: (목록)
 - 실행 검증: uv run pytest mcp_server/mafia_game/tests → NN passed / ruff OK
 - 격리 불변식 확인: (4.0 항목별 해당 테스트 이름)
-- 생략 검증과 이유: 실 Backend 왕복은 CP-M3에서 수행 예정
+- 생략 검증과 이유: 실 Backend 왕복은 CP-M4에서 수행 예정
 - 범위 밖 변경: 없음
 - 계약 이슈: (있으면 구현 계획서 장·절 지목)
 - README 갱신 필요 여부: (실행 방법·env 변경 유무)

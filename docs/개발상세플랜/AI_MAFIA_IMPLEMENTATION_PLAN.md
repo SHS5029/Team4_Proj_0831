@@ -3,7 +3,7 @@
 **문서 상태:** 구현 착수용 상세 계획 (추후 수정 가능)
 **기준 문서:** [AI 마피아 MVP 최종 통합 플랜](../플랜/AI_MAFIA_MVP_FINAL_PLAN.md)
 **작업 규칙 원본:** [AGENTS.MD](../../AGENTS.MD) — 이 계획서의 모든 작업에 적용
-**분담:** 3인 — Front 섹터, Backend 섹터, MCP Server 섹터
+**분담:** 3인 — Front 섹터, Backend 섹터, MCP Server·Data Infrastructure 섹터
 **섹터별 작업 지침서 (착수 전 필독):**
 [Front](SECTOR_PLAN_FRONT.md) ·
 [Backend](SECTOR_PLAN_BACKEND.md) ·
@@ -14,6 +14,12 @@
 필요하면 임의로 바꾸지 말고 3인 합의 후 이 문서를 먼저 갱신한 뒤 코드를
 수정한다. 각 섹터의 작업 단위(WU) 분해, coding AI agent 사용 규칙(한 세션
 = WU 1개 이하), 중간 merge·테스트 체크포인트는 섹터 지침서가 확정한다.
+
+**2026-09-02 역할 변경:** PostgreSQL·Redis의 설치, 인스턴스·DB 생성, 기동,
+중지, 접속 계정·권한 준비, migration 실행과 health 확인은 MCP 섹터가 맡는다.
+Backend는 schema·migration SQL·repository와 Redis client·lock 등 애플리케이션
+코드를 계속 소유한다. MCP 서버 runtime은 DB·Redis에 직접 접근하지 않고 기존처럼
+Backend 내부 API만 호출한다.
 
 ---
 
@@ -95,8 +101,8 @@ README 갱신 / 구조 임의 변경 없음 / 승인 없는 커밋·푸시 없�
 | 섹터 | 담당 디렉터리 (소유) | 주요 산출물 |
 |---|---|---|
 | **Front** | `frontend_user/`, `frontend_admin/` | 홈·생성·진행·불러오기·결과 화면, 관리자 KPI·로그·피드백 화면, API client 확장 |
-| **Backend** | `backend/` (app 전체, migrations) | 게임 규칙 엔진, 상태 머신, 게임·관리자 API, DB·Redis, Agent Manager, LLM client, MCP client·capability 정책 |
-| **MCP Server** | `mcp_server/mafia_game/` | 게임 컨텍스트 MCP 서버(Resource/Tool), 세션·격리·감사 로그, Backend 내부 API 소비 |
+| **Backend** | `backend/` (app 전체, migrations) | 게임 규칙 엔진, 상태 머신, 게임·관리자 API, DB schema·migration·repository, Redis application client·lock, Agent Manager, LLM client, MCP client·capability 정책 |
+| **MCP Server·Data Infrastructure** | `mcp_server/mafia_game/` + PostgreSQL·Redis 실행 환경 | 게임 컨텍스트 MCP 서버(Resource/Tool), 세션·격리·감사 로그, Backend 내부 API 소비, PostgreSQL·Redis 구축·기동·migration 실행·health 확인 |
 
 ### 1.1 공유 파일 규칙
 
@@ -105,6 +111,12 @@ README 갱신 / 구조 임의 변경 없음 / 승인 없는 커밋·푸시 없�
 - `backend/app/mcp/`(MCP client·capability)는 Backend 소유지만 **계약 협의는
   MCP 섹터와 공동**으로 한다. 계약 변경은 이 문서 5장(내부 API)과 6장(MCP
   명세) 갱신이 선행 조건이다.
+- `backend/migrations/`와 `backend/app/infrastructure/redis/`는 Backend 코드
+  소유다. MCP 담당자는 migration을 실행하고 Redis 서비스를 운영할 수 있지만
+  이 파일과 DB·Redis application 계약을 임의로 수정하지 않는다.
+- PostgreSQL·Redis 운영 책임은 새 저장소 디렉터리 소유권을 자동 부여하지
+  않는다. provisioning 파일이나 Docker 구성이 필요하면 승인 파일 목록과
+  README를 먼저 갱신한다.
 - 다른 섹터 소유 디렉터리는 수정하지 않는다. 필요한 변경은 이슈/메시지로
   해당 섹터에 요청한다.
 
@@ -112,8 +124,10 @@ README 갱신 / 구조 임의 변경 없음 / 승인 없는 커밋·푸시 없�
 
 ```text
 Front  ──(2장 사용자·관리자 REST API + 3장 SSE)──▶  Backend
-Backend ──(5장 내부 Engine API, HMAC 서명)──────▶  MCP Server가 호출
+MCP Server ──(5장 내부 Engine API, HMAC 서명)────▶ Backend
 AI Agent(Backend가 구동) ──(6장 MCP Resource/Tool)──▶ MCP Server
+MCP 섹터 ──(구축·기동·migration 실행·health)────▶ PostgreSQL / Redis
+Backend ──(application connection)──────────────▶ PostgreSQL / Redis
 ```
 
 - Front는 Backend 완성 전 **fake API client**(테스트 더블)로 화면을 개발한다.
@@ -128,6 +142,12 @@ AI Agent(Backend가 구동) ──(6장 MCP Resource/Tool)──▶ MCP Server
 | 사용자 앱 | `uv run streamlit run frontend_user/app.py --server.port 8501` | 8501 |
 | 관리자 앱 | `uv run streamlit run frontend_admin/app.py --server.port 8502` | 8502 |
 | 게임 MCP 서버 | `uv run python -m mcp_server.mafia_game` (구현 시 확정) | 8100 |
+| PostgreSQL | MCP 섹터 승인 환경에서 기동·health 확인 | 환경별 |
+| Redis | MCP 섹터 승인 환경에서 기동·health 확인 | 환경별 |
+
+PostgreSQL·Redis 행은 MCP **담당자의 운영 책임**을 뜻한다. 네트워크 연결은
+Backend 프로세스가 직접 수행하며 MCP 서버 프로세스를 데이터 프록시로 사용하지
+않는다.
 
 ---
 
@@ -377,7 +397,7 @@ data: {"game_id":"uuid","state_version":18,"phase":"DAY_VOTE",
 
 ---
 
-## 3. DB 설계서 (Backend 소유, 추후 수정 가능)
+## 3. DB·Redis 계약 (Backend 코드 소유 / MCP 실행 환경 소유)
 
 ### 3.0 원칙
 
@@ -388,6 +408,10 @@ data: {"game_id":"uuid","state_version":18,"phase":"DAY_VOTE",
 - 검색·무결성 필드는 열로, 규칙별 확장 데이터는 검증된 JSONB로 둔다.
 - 종료 전 비공개 정보(역할, 조사 결과)는 API 계층에서 필터하며, DB 접근은
   repository를 통해서만 한다.
+- Backend는 schema와 순방향 migration을 작성하고 fake repository/Redis로
+  자동 검증한다. MCP 섹터는 PostgreSQL·Redis 환경을 생성·기동하고 Backend가
+  전달한 migration을 실행하며 연결·재실행·health 결과를 비밀값 없이 공유한다.
+- MCP 서버 runtime은 이 운영 책임과 무관하게 DB·Redis에 직접 접근하지 않는다.
 
 ### 3.1 테이블 정의
 
@@ -586,9 +610,12 @@ backend/tests/test_game_rules.py, test_game_state_machine.py,
    역할 배정(seed 결정적), 밤 해소(보호=공격 취소), 투표·재투표·무처형,
    승패 판정. fake agent로 5~9명 전 구성 자동 완주 테스트.
    *완료 기준: 규칙 단위 테스트 전부 통과, 유료 API 0회.*
-2. **B2. 영속화** — migration 002, repository, event append + optimistic
+2. **B2. 영속화 코드** — migration 002, repository, event append + optimistic
    version + snapshot 저장·복구(checksum·재생), Redis lock·idempotency.
-   *완료 기준: 동시 명령 충돌(409), Redis 장애 시 PostgreSQL 원본 보존 테스트.*
+   PostgreSQL·Redis 설치·기동과 migration 실행은 MCP CP-M1 환경에서 MCP
+   담당자가 수행한다.
+   *완료 기준: fake 기반 동시 명령 충돌(409)·Redis 장애 시 PostgreSQL 원본
+   보존 테스트와 MCP 담당자의 실제 migration·health 검증 기록.*
 3. **B3. 사용자 API** — 2장 명세 구현. 소유권·필터링(타인 역할 제거)·
    idempotency·SSE. *완료 기준: 2장의 오류 표 전 경로 테스트,
    비공개 정보 미포함 응답 스냅샷 테스트.*
@@ -663,7 +690,22 @@ allowed-actions | persona`)
 
 ---
 
-## 6. MCP Server 섹터 상세 계획 (`mcp_server/mafia_game`)
+## 6. MCP Server·Data Infrastructure 섹터 상세 계획 (`mcp_server/mafia_game`)
+
+### 6.0 Data Infrastructure 운영 책임
+
+MCP 섹터는 MCP 서버 코드와 별도로 PostgreSQL·Redis 실행 환경을 담당한다.
+
+- PostgreSQL 인스턴스, `Team4_Proj` DB, 최소 권한 role을 준비하고 서비스를
+  기동·중지한다.
+- Backend가 작성한 `backend/migrations/*.sql`을 기존 실행기로 적용하고
+  재실행 결과와 적용 파일명만 기록한다.
+- Redis를 기동·중지하고 연결과 `PING`을 확인한다. key·TTL·lock 의미는
+  Backend가 정의한 3.3 계약을 그대로 사용한다.
+- `DATABASE_URL`, DB 비밀번호, `REDIS_URL`은 비밀 채널과 로컬 `.env`에서만
+  전달하며 문서·로그·commit에 복사하지 않는다.
+- 운영 책임을 이유로 MCP runtime에 DB·Redis client를 추가하거나 Backend
+  migration·repository·Redis client 파일을 수정하지 않는다.
 
 ### 6.1 신규 파일 (승인된 구조 변경 범위)
 
@@ -730,13 +772,16 @@ Tools — 모두 5장 `/actions`로 전달하는 **행동 제안**이며 상태�
 
 ### 6.3 작업 순서
 
-아래 M1~M4는 [MCP 섹터 지침서](SECTOR_PLAN_MCP.md)의 WU-M1~M5로 세분화되어
+아래 M1~M5는 [MCP 섹터 지침서](SECTOR_PLAN_MCP.md)의 WU-M1~M6으로 세분화되어
 있다(격리 불변식 WU-M0 포함). coding AI agent 세션은 WU 단위로만 지시한다.
 
-1. **M1. 골격+fake 엔진** — server, 세션 고정, fake engine으로 Resource 7종.
-2. **M2. Tool 6종** — 1차 검증, `/actions` 전달, 거부 응답 정제.
-3. **M3. 실제 Engine 연결** — HMAC 클라이언트, capability 전달, 오류 변환.
-4. **M4. 격리·감사 강화** — 세션 격리 테스트(다른 게임/agent 접근 거부),
+1. **M1. Data Infrastructure** — PostgreSQL·Redis 구축·기동·health, Backend
+   migration 실행과 비밀정보 없는 결과 공유.
+2. **M2. 골격+fake 엔진** — server, 세션 고정, fake engine으로 Resource 7종.
+3. **M3. Resource·Tool** — Resource 7종, Tool 6종 1차 검증, `/actions`
+   전달과 거부 응답 정제.
+4. **M4. 실제 Engine 연결** — HMAC 클라이언트, capability 전달, 오류 변환.
+5. **M5. 격리·감사 강화** — 세션 격리 테스트(다른 게임/agent 접근 거부),
    카나리 유출 테스트, 감사 로그 검증.
 
 *완료 기준: fake 엔진 기반 전체 테스트 통과(외부 호출 0), 세션 위조·타
@@ -805,14 +850,14 @@ frontend_admin/tests/ (신설: test_admin_api.py, test_admin_pages_smoke.py)
 
 - Front: [SECTOR_PLAN_FRONT.md](SECTOR_PLAN_FRONT.md) (WU-F1~F8, CP-F0~F4)
 - Backend: [SECTOR_PLAN_BACKEND.md](SECTOR_PLAN_BACKEND.md) (WU-B1~B7, CP-B0~B5)
-- MCP: [SECTOR_PLAN_MCP.md](SECTOR_PLAN_MCP.md) (WU-M1~M5, CP-M0~M4)
+- MCP: [SECTOR_PLAN_MCP.md](SECTOR_PLAN_MCP.md) (WU-M1~M6, CP-M0~M5)
 
 | 마일스톤 | Front | Backend | MCP | 통합 검증 |
 |---|---|---|---|---|
 | **M-A 계약 고정** | CP-F0 | CP-B0 | CP-M0 | 이 문서 리뷰 3인 합의 |
-| **M-B 단독 완성** | CP-F1~F2 (fake) | CP-B1~B2 | CP-M1~M2 (fake) | 섹터별 focused+회귀 통과 |
-| **M-C 1차 통합** | CP-F3 | CP-B3, CP-B4 | CP-M3 | 인간 1 + fake LLM로 한 판 완주 |
-| **M-D 에이전트 통합** | 진행 UX 다듬기 | CP-B5(B6) | CP-M4 | 실제 LLM 수동 1회(비용 승인 후), 회귀는 fake |
+| **M-B 단독 완성** | CP-F1~F2 (fake) | CP-B1~B2 | CP-M1(Data Infra), CP-M2 (fake) | DB·Redis health + 섹터별 focused·회귀 통과 |
+| **M-C 1차 통합** | CP-F3 | CP-B3, CP-B4 | CP-M3~M4 | 인간 1 + fake LLM로 한 판 완주 |
+| **M-D 에이전트 통합** | 진행 UX 다듬기 | CP-B5(B6) | CP-M5 | 실제 LLM 수동 1회(비용 승인 후), 회귀는 fake |
 | **M-E 관리자·알파** | CP-F4 | CP-B5(B7) | 감사 보강 | 5~9명 자동 시뮬레이션, 최종 플랜 15장 완료 조건 |
 
 ### 8.1 중간 merge 절차 (전 섹터 공통)
@@ -822,8 +867,10 @@ frontend_admin/tests/ (신설: test_admin_api.py, test_admin_pages_smoke.py)
 2. merge 전: `develop`을 자기 브랜치에 반영해 충돌을 자기 쪽에서 해소하고
    전체 회귀(`uv run pytest` + compileall + ruff)를 통과시킨다.
 3. merge 후: `develop`에서 통합 스모크를 실행하고 결과를 팀에 공유한다.
+   - CP-M1/CP-B2 이후: MCP 담당자가 PostgreSQL migration 재실행 + Redis
+     health 확인 → Backend persistence smoke 1회
    - CP-B3/CP-F3 이후: Backend 기동 → `/health` 200 → 게임 생성 1회
-   - CP-B4/CP-M3 이후: Backend + MCP 기동 → Resource 1종 조회 성공
+   - CP-B4/CP-M4 이후: Backend + MCP 기동 → Resource 1종 조회 성공
 4. 통합 스모크 실패 시 원인 섹터가 수정 브랜치로 후속 조치한다. 다른
    섹터 코드를 임의 수정하지 않는다.
 5. `main` 병합은 M-C 이후 사용자 승인 시에만.
@@ -832,8 +879,9 @@ frontend_admin/tests/ (신설: test_admin_api.py, test_admin_pages_smoke.py)
 
 ```text
 CP-B3(사용자 API) ──▶ CP-F3(Front 실연동)
-CP-B4(내부 Engine API) ──▶ CP-M3(MCP 실연동)
-CP-B5 + CP-M4 ──▶ M-E 통합 알파
+CP-M1(Data Infrastructure) ──▶ CP-B2(실 DB·Redis 검증)
+CP-B4(내부 Engine API) ──▶ CP-M4(MCP 실연동)
+CP-B5 + CP-M5 ──▶ M-E 통합 알파
 그 외 모든 CP는 fake 기반으로 상호 독립 진행 가능
 ```
 
@@ -849,15 +897,16 @@ CP-B5 + CP-M4 ──▶ M-E 통합 알파
 | 2026-09-01 | 초판 작성 | — | — |
 | 2026-09-01 | `mcp_server/mcp_1` → `mcp_server/mafia_game` 개명 | 예약명 대신 담당 게임 도메인이 드러나는 이름 사용 | 사용자 승인 |
 | 2026-09-02 | 섹터별 작업 지침서 3종 분리, 8장을 CP 기반 중간 merge·통합 스모크 절차로 개정 | 별도 시스템 개발 후 merge 전제의 세부 지침과 AI agent 세션 범위(WU 1개 이하) 강제 | 사용자 요청 |
+| 2026-09-02 | PostgreSQL·Redis 구축·기동·migration 실행·health 책임을 Backend에서 MCP 섹터로 이동 | 인프라 실행 책임을 MCP 담당자에게 일원화하고 Backend는 application code·data contract에 집중 | 사용자 요청 |
 
 ## 10. 환경 변수 (전 섹터 공통, `.env.example` 참조)
 
 | 변수 | 사용 섹터 | 용도 |
 |---|---|---|
-| `DATABASE_URL` / `DATABASE_NAME` | Backend | PostgreSQL |
+| `DATABASE_URL` / `DATABASE_NAME` | MCP(구축·실행·전달), Backend(소비) | PostgreSQL |
 | `INTERNAL_API_SECRET` | Front·Backend | Front→Backend HMAC (기존) |
 | `ENGINE_INTERNAL_API_SECRET` | Backend·MCP | MCP→Backend 내부 HMAC (**Front용과 다른 값**) |
-| `REDIS_URL` | Backend | lock·cache·stream |
+| `REDIS_URL` | MCP(구축·실행·전달), Backend(소비) | lock·cache·stream |
 | `LLM_PROVIDER` / `OPENAI_*` / `GEMINI_*` | Backend | LLM 이중 공급자 |
 | `LLM_TIMEOUT_SECONDS` / `GAME_MAX_TOKENS_PER_RUN` | Backend | run 제한 |
 | `MAFIA_MCP_URL` | Backend | MCP 서버 주소 (8100) |

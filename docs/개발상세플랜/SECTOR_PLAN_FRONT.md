@@ -82,6 +82,8 @@ uv run pytest                                 # baseline 70개+ 통과 확인
 
 - Front 개발은 **Backend·MCP·PostgreSQL·Redis 없이 진행 가능**해야 한다.
   모든 화면·클라이언트는 fake transport(WU-F1)로 개발·테스트한다.
+- 실제 Backend 연동 환경의 PostgreSQL·Redis 구축·기동은 MCP 섹터가 담당한다.
+  Front 담당자는 DB·Redis를 직접 설치·실행하거나 접속하지 않는다.
 - OIDC secrets는 화면 수동 확인 시에만 필요하다. 실제
   `secrets.toml`·`.env`는 절대 커밋하지 않는다.
 - 통합 확인 단계(CP-2 이후)에서만 Backend 프로세스를 로컬 기동한다.
@@ -224,7 +226,7 @@ CP를 건너뛰고 대량 merge하는 것을 금지한다.
 | **CP-F0 계약 확인** | (코드 없음) | 2장 명세 리뷰 의견 제출 | 3인 합의 |
 | **CP-F1 클라이언트 골격** | F1~F2 | focused + 전체 회귀 | 없음 (독립) |
 | **CP-F2 화면 완성(fake)** | F3~F5 | 회귀 + 화면 수동 확인 | 없음 (독립) |
-| **CP-F3 1차 통합** | F6, F8 | 회귀 + 실 Backend 수동 완주 | Backend CP-B3 이후 |
+| **CP-F3 1차 통합** | F6, F8 | 회귀 + 실 Backend 수동 완주 | Backend CP-B3 + MCP CP-M1 이후 |
 | **CP-F4 관리자** | F7 | 회귀 + 403 거부 경로 확인 | Backend CP-B5 이후 |
 
 ### 중간 테스트 규칙

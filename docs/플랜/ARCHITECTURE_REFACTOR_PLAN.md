@@ -24,6 +24,12 @@ LLM Agent, MCP Tool, 관리자 업무, Redis nonce 저장은 계속 후속 범�
 `request_id`는 trace 상관관계에만 사용하고 재전송 방어는 timestamp 만료를 기준으로
 한다.
 
+**2026-09-02 섹터 역할 변경:** 이 문서의 “Backend 소유”는 파일·schema·application
+연결 책임을 뜻한다. PostgreSQL·Redis 인스턴스 설치·생성·기동·중지, 접속
+계정·권한 준비, Backend migration 실행과 health 확인은 MCP 섹터가 맡는다.
+Backend는 migration·repository·Redis client 코드를 계속 소유하고 DB·Redis에
+직접 연결하며, MCP 서버 runtime은 DB·Redis를 직접 호출하지 않는다.
+
 ## 1. 문서 목적
 
 이 문서는 현재 프로젝트의 동작을 유지하면서 루트 아래에 `backend`,
@@ -433,7 +439,13 @@ LLM은 MCP Tool schema를 선택하는 역할만 수행한다. 실제 Tool 실�
 - Redis는 세션, 캐시, 실행 상태, Pub/Sub에 사용하고 영구 데이터 저장소로 사용하지 않는다.
 - Redis key에는 서비스 prefix를 사용한다. 예: `team4:backend:*`, `team4:tour:*`.
 - MCP 서버가 Backend 사용자 테이블을 직접 수정하지 않는다.
-- DB migration은 Backend가 소유한다. MCP 전용 schema가 실제로 추가되는 시점에는
+- DB schema와 migration 파일은 Backend가 소유하고, MCP 담당자가 PostgreSQL
+  실행 환경을 구축해 migration을 실행·재실행 검증한다.
+- Redis client와 key·TTL 계약은 Backend가 소유하고, MCP 담당자가 Redis
+  인스턴스를 구축·기동하고 health를 확인한다.
+- MCP 섹터의 운영 책임과 MCP 서버 runtime의 데이터 접근 권한을 혼동하지 않는다.
+  `mcp_server/mafia_game`은 Backend 내부 API만 호출한다.
+- MCP 전용 schema가 실제로 추가되는 시점에는
   `mcp_server/<server>/migrations/` 또는 별도 MCP 배포 저장소로 분리한다.
 
 ### 6.5 MCP 예약 구조 생성 기준
@@ -552,10 +564,13 @@ python -m backend.app.infrastructure.migrations
 ```
 
 기존 `DATABASE_URL` 연결 정보와 `DATABASE_NAME=Team4_Proj` 적용 규칙을 유지한다.
+명령과 파일은 Backend 패키지에 있지만 실제 PostgreSQL 구축·기동과 이 명령의
+실행·재실행 검증은 MCP 담당자가 수행한다.
 
 이번 구조 개편에서는 루트 `migrations/`와 `infra/`를 만들지 않는다. 로컬
-PostgreSQL·Redis 실행은 개발자 환경 또는 별도 운영 인프라에서 준비하고,
-서비스별 README에는 필요한 접속 URL과 환경 변수만 문서화한다.
+PostgreSQL·Redis 실행은 MCP 담당자가 승인된 개발자 환경 또는 별도 운영
+인프라에서 준비하고, 서비스별 README에는 필요한 설정 key와 책임 경계만
+문서화한다. 실제 접속 URL과 비밀번호는 문서에 기록하지 않는다.
 
 ### 8.5 테스트 순서
 

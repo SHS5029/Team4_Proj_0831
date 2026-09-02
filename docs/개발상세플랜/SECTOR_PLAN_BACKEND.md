@@ -10,6 +10,11 @@ merge하기까지의 작업 단위, coding AI agent 사용 규칙, 중간 merge�
 체크포인트를 확정한다. Backend는 Front와 MCP 양쪽의 계약 제공자이므로
 **계약 구현(2·5장)을 임의로 바꾸지 않는 것**이 최우선 규율이다.
 
+PostgreSQL·Redis의 **인스턴스 설치, 생성, 기동, 중지, 접속 계정·권한 준비,
+migration 실행과 health 확인은 MCP 섹터의 운영 책임**이다. Backend 섹터는
+DB schema·migration SQL·repository와 Redis client·lock 의미를 구현하고 fake로
+검증하지만, 실제 DB·Redis 프로세스를 직접 구축하거나 실행하지 않는다.
+
 ---
 
 ## 1. 소유 경계와 금지 사항
@@ -20,11 +25,15 @@ merge하기까지의 작업 단위, coding AI agent 사용 규칙, 중간 merge�
 backend/**
 ```
 
+위 소유권은 Backend 애플리케이션 코드와 DB·Redis 사용 계약에 한정한다.
+PostgreSQL·Redis 실행 환경의 구축·기동과 migration 실행은 포함하지 않는다.
+
 ### 1.2 수정 금지 (다른 섹터 소유)
 
 ```text
 frontend_user/**, frontend_admin/**   → Front 섹터
 mcp_server/**                         → MCP 섹터
+PostgreSQL·Redis 실행 환경 구축·운영 → MCP 섹터
 ```
 
 ### 1.3 조건부 수정 (사전 고지 필요)
@@ -93,9 +102,11 @@ uv run pytest                                 # baseline 통과 확인
 ```
 
 - **WU-B1(규칙 엔진)은 DB·Redis·LLM 없이** 순수 Python으로 개발한다.
-- WU-B2부터 로컬 PostgreSQL(`Team4_Proj` DB 생성)과 Redis가 필요하다.
-  단, **자동 테스트는 fake 연결로 실행 가능**해야 하며 실제 인프라는 수동
-  검증에만 쓴다(기존 backend/tests의 fake DB 패턴을 따른다).
+- WU-B2·B3의 자동 테스트는 **MCP 섹터의 실제 PostgreSQL·Redis 없이 fake
+  연결로 실행 가능**해야 한다(기존 backend/tests의 fake DB 패턴을 따른다).
+- 실제 인프라 검증이 필요한 시점에는 MCP 섹터의 CP-M1 인프라 준비 결과를
+  사용한다. Backend 담당자가 DB·Redis를 설치·생성·기동하지 않고, 필요한
+  migration 후보와 접속 요구사항을 MCP 담당자에게 전달한다.
 - 실제 LLM 키는 WU-B6의 수동 1회 검증에만 사용하고 자동 테스트에서
   호출하지 않는다. 키는 `.env`에만 둔다.
 
@@ -152,7 +163,7 @@ uv run pytest
   + View 필터가 타인 역할·조사 결과를 절대 포함하지 않는 검증(카나리 방식
   권장) 통과. 외부 의존성 import 0.
 
-### WU-B2. DB 영속화
+### WU-B2. DB 계약·영속화 코드 (인프라 실행 제외)
 
 - **범위 파일:** `migrations/002_create_mafia_game_schema.sql`,
   `repositories/game_repository.py`, `repositories/feedback_repository.py`,
@@ -160,18 +171,23 @@ uv run pytest
 - **내용:** 구현 계획서 3장 설계 그대로. 001 컨벤션(단일 트랜잭션,
   IF NOT EXISTS, 재실행 가능, 한국어 주석, updated_at 트리거 재사용) 준수.
   persona 5종 시드 포함. event append + optimistic version + snapshot
-  (checksum·이벤트 재생 복구).
+  (checksum·이벤트 재생 복구). Backend는 migration SQL을 작성하지만 실제
+  PostgreSQL 인스턴스 생성과 migration 실행은 MCP 섹터가 담당한다.
 - **완료 기준:** fake 연결 기반 repository 테스트, version 충돌·재생 복구
-  테스트 통과. **001 파일 diff 없음.**
+  테스트 통과. **001 파일 diff 없음.** 실제 migration 검증용 변경 파일과
+  예상 결과를 MCP 담당자에게 전달.
 
-### WU-B3. Redis 기반 실행 조정
+### WU-B3. Redis 애플리케이션 연동 (서버 실행 제외)
 
 - **범위 파일:** `infrastructure/redis/client.py`, `locks.py`,
   `tests/test_redis_locks.py`
 - **내용:** 3.3 key 설계. lock(token 소유자만 해제, heartbeat 연장),
   idempotency 저장, runtime cache, event stream 발행. fake Redis로 테스트.
+  Redis 설치·기동·초기 구축·health 확인은 MCP 섹터가 담당하며 Backend는
+  `REDIS_URL` 소비와 애플리케이션 동작만 구현한다.
 - **완료 기준:** lock 경합·소유자 아닌 해제 거부·Redis 장애 시 안전 중단
-  테스트 통과.
+  테스트 통과. 실제 Redis 연결 검증에 필요한 key·TTL·명령 요구사항을 MCP
+  담당자에게 전달.
 
 ### WU-B4. 사용자 게임 API
 
@@ -230,14 +246,17 @@ uv run pytest
 |---|---|---|---|
 | **CP-B0 계약 확인** | (코드 없음) | 2·3·5장 리뷰 의견 제출 | 3인 합의 |
 | **CP-B1 규칙 엔진** | B1 | focused + 전체 회귀 | — |
-| **CP-B2 영속화** | B2, B3 | 회귀 + 로컬 DB migration 수동 1회 | — |
+| **CP-B2 영속화** | B2, B3 | 회귀 + MCP CP-M1 환경에서 MCP 담당자가 migration·Redis health 수동 검증 | **MCP CP-M1 필요** |
 | **CP-B3 사용자 API** | B4 | 회귀 + 오류 표 전 경로 확인 | **Front CP-F3 선행 조건** |
-| **CP-B4 내부 API** | B5 | 회귀 + capability 거부 경로 확인 | **MCP CP-M3 선행 조건** |
+| **CP-B4 내부 API** | B5 | 회귀 + capability 거부 경로 확인 | **MCP CP-M4 선행 조건** |
 | **CP-B5 에이전트·관리자** | B6, B7 | 회귀 + fake LLM 완주 | Front CP-F4, 통합 CP-ALL |
 
 ### 중간 테스트 규칙
 
 - WU마다 focused, CP merge 직전 전체 회귀.
+- Backend 담당자는 PostgreSQL·Redis 프로세스를 직접 설치·기동·중지하지 않는다.
+  CP-B2의 실제 인프라 검증은 MCP 담당자가 수행하고, Backend 담당자는 schema,
+  key·TTL 계약과 기대 결과를 제공해 공동 판정한다.
 - CP-B3·CP-B4 merge 후 `develop`에서 서버 기동 스모크
   (`uvicorn` 기동 → `/health` 200 → 게임 생성 1회)를 실행하고 결과를
   Front·MCP 담당자에게 공유한다.
@@ -265,7 +284,8 @@ uv run pytest
 - 변경 파일: (목록)
 - 실행 검증: uv run pytest backend/tests → NN passed / ruff OK / compileall OK
 - 거부 경로 테스트: (401/403/404/409/422 항목 나열)
-- 생략 검증과 이유: 실제 DB migration은 CP-B2에서 수동 실행 예정
+- 생략 검증과 이유: 실제 DB migration·Redis 기동은 MCP CP-M1 환경에서
+  MCP 담당자가 실행 예정
 - 범위 밖 변경: 없음
 - 계약 이슈: (있으면 구현 계획서 장·절 지목)
 - README 갱신 필요 여부: (실행 방법·env 변경 유무)

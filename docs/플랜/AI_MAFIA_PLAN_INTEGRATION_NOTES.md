@@ -132,3 +132,20 @@
   문서와 최종 플랜의 규칙 표·상태 머신·URI·Tool 명세를 상호 대조해 확인했다.
 - 패키지·환경변수 변경은 `uv sync --dev` 성공과 `uv run pytest`,
   `uv run ruff check .`, compileall 통과로 검증했다 (결과는 완료 보고 참조).
+
+## 5. 2026-09-02 섹터 역할 변경
+
+사용자 요청에 따라 PostgreSQL·Redis의 설치, 인스턴스·DB 생성, 기동, 중지,
+접속 계정·권한 준비, Backend migration 실행과 health 확인 책임을 Backend
+섹터에서 MCP 섹터로 이동했다.
+
+- Backend는 DB schema·migration SQL·repository와 Redis client·key·TTL·lock
+  의미 등 application code·data contract를 계속 소유한다.
+- MCP 담당자는 Backend가 제공한 migration과 Redis 계약을 수정하지 않고 실제
+  환경에서 실행·재실행·health를 확인한다.
+- Backend runtime은 PostgreSQL·Redis에 직접 연결한다. MCP 서버 runtime은
+  데이터 프록시가 아니며 DB·Redis에 직접 접근하지 않는다.
+- MCP 지침서는 Data Infrastructure WU-M1을 추가해 WU-M1~M6, CP-M0~M5로
+  재편했고 Backend·Front 통합 체크포인트가 MCP CP-M1을 선행 조건으로 참조한다.
+- 실제 접속 URL·비밀번호는 `.env`와 승인된 비밀 전달 채널에만 두며 문서·로그·
+  완료 보고에는 서비스 상태와 적용 migration 파일명만 기록한다.
