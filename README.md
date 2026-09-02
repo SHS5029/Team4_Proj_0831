@@ -78,7 +78,7 @@ SSE와 operation polling, HMAC 기반 MCP 내부 context 조회를 최소 구현
 │   ├── app/models/identity.py        # 외부 identity·내부 사용자 도메인 모델
 │   ├── app/repositories/             # PostgreSQL 사용자 저장소
 │   ├── app/infrastructure/           # migration·PostgreSQL·HMAC 구현
-│   ├── app/{agent,llm,mcp}/          # 후속 Agent 연결 예약 위치
+│   ├── app/{agent,llm_provider,mcp}/ # Agent·LLM Provider·MCP 연결 위치
 │   ├── migrations/                   # Backend 소유 SQL migration
 │   ├── tests/
 │   └── README.md
@@ -112,6 +112,7 @@ SSE와 operation polling, HMAC 기반 MCP 내부 context 조회를 최소 구현
 │   ├── AI_MAFIA_DATA_REDIS_DESIGN.md # PostgreSQL·Redis 저장·복구 계약
 │   ├── AI_MAFIA_FRONTEND_SPEC.md    # 사용자·관리자 화면·상태·호출 순서
 │   ├── AI_MAFIA_PLAN_INTEGRATION_NOTES.md  # 기획 문서 통합·수정 내역
+│   ├── LLM_PROVIDER_IMPLEMENTATION_PLAN.md # LLM Provider 명칭 변경·구현 계획
 │   ├── AI_MAFIA_MVP_PLAN.md          # (대체됨) MVP 설계 초안
 │   ├── ai_mafia_game_engine분리규칙.md  # (대체됨) 엔진/Agent/MCP 분리 규칙
 │   ├── mafia_game_plan.md            # (대체됨) 추리게임 기획안·확장 참고
@@ -137,9 +138,13 @@ Redis, MCP 서버에 직접 연결하거나 MCP 서버끼리 서로의 내부 �
 uv sync --dev
 ```
 
-현재 코드에 연결된 외부 자격증명은 Google OIDC뿐입니다. AI 마피아 MVP에서
-후속 연결할 local·OpenAI·Gemini provider 설정과 Redis 주소는 `.env.example`의 예약 항목을
-참고하세요.
+uv를 사용하지 않는 Backend 환경에서는 운영 의존성을
+`backend/requirements.txt`, 테스트·정적 검사 포함 환경을
+`backend/requirements-dev.txt`로 설치할 수 있습니다.
+
+현재 코드에 연결된 외부 자격증명은 Google OIDC뿐입니다. LLM은 기본적으로
+`dummy` Provider를 사용하며, local·OpenAI·Gemini Provider 설정은 `.env.example`과
+[LLM Provider 구현 계획](docs/LLM_PROVIDER_IMPLEMENTATION_PLAN.md)을 참고하세요.
 
 ## Backend 환경 설정
 
@@ -167,13 +172,14 @@ INTERNAL_API_MAX_AGE_SECONDS=300
   `backend.internal_api_secret`에도 설정합니다. 브라우저나 소스 코드에는 넣지 않습니다.
 - Backend의 기본 서명 허용 시간 오차는 300초이며 최대 3600초로 제한됩니다.
 - `.env.example`의 `REDIS_URL`, `LLM_PROVIDER`, `LOCAL_LLM_BASE_URL`,
-  `LOCAL_LLM_MODEL`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `MAFIA_MCP_URL`,
-  `BACKEND_INTERNAL_URL`, `MCP_INTERNAL_SECRET`, `GAME_SEED_ENCRYPTION_KEY` 등은
-  AI 마피아 MVP용 예약 항목입니다.
-  아직 코드가 읽지 않으며 실제 키 값은 `.env`에만 보관합니다.
+  `LOCAL_LLM_MODEL`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `GEMINI_API_KEY`,
+  `GEMINI_MODEL`, `LLM_TIMEOUT_SECONDS`, `LLM_MAX_OUTPUT_TOKENS`,
+  `MAFIA_MCP_URL`, `BACKEND_INTERNAL_URL`, `MCP_INTERNAL_SECRET`,
+  `GAME_SEED_ENCRYPTION_KEY` 등은 AI 마피아 MVP 설정입니다. API key와 실제
+  운영 단가는 `.env`에만 보관합니다.
 - 원격 LLM을 선택하면 `LLM_INPUT_COST_PER_MILLION_USD`와
-  `LLM_OUTPUT_COST_PER_MILLION_USD`를 선택 모델의 현재 가격으로 설정해야 하며,
-  0 이하인 값에서는 Backend가 시작을 거부하도록 설계했습니다.
+  `LLM_OUTPUT_COST_PER_MILLION_USD`를 선택 모델의 현재 가격으로 설정합니다.
+  Provider 선택과 구조화 응답 검증은 `backend/app/llm_provider/`가 담당합니다.
 
 `Team4_Proj` 데이터베이스는 앱이 만들지 않습니다. 마이그레이션 전에 관리 도구로
 데이터베이스를 생성하고 `.env` 계정에 연결·스키마 생성 권한을 부여하세요.
@@ -325,7 +331,8 @@ uv run ruff check .
 - identity API와 유스케이스: `backend/app/routers/identity_router.py`, `services/identity_service.py`
 - 사용자 저장소: `backend/app/repositories/user_repository.py`
 - schema 변경: `backend/migrations/`에 다음 번호의 순방향 SQL 추가
-- Agent·LLM·MCP client: `backend/app/agent/`, `llm/`, `mcp/`
+- Agent·LLM Provider·MCP client: `backend/app/agent/`, `backend/app/llm_provider/`, `backend/app/mcp/`
+- LLM Provider 구현 순서와 공통 계약: [LLM Provider 구현 계획](docs/LLM_PROVIDER_IMPLEMENTATION_PLAN.md)
 - 독립 MCP 기능: `mcp_server/mcp_1/`(게임 컨텍스트 MCP 예정) 또는
   `mcp_server/mcp_2/` 내부 계층에만 추가
 

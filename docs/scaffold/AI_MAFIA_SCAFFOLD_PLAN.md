@@ -70,7 +70,7 @@ Frontend를 알지 않으며 Backend의 context/proposal port만 사용한다.
 | `mcp_0827/mcp_server/*/api` | MCP registration 계층 | `mcp_server/mcp_1/api` | 날씨·관광 Tool/Resource |
 | `tool_0824/backend/app/main.py` | FastAPI app, router, tag, Swagger | `backend/app/main.py` | stage/lab/parking router |
 | `tool_0824/backend/app/tools/registry.py` | schema와 실행 함수의 registry 패턴 | `backend/app/mcp/registry.py` | weather·travel 함수 |
-| `tool_0824/backend/app/providers/registry.py` | provider 선택·allowlist 패턴 | 후속 `backend/app/llm/registry.py` | 실제 provider 호출 |
+| `tool_0824/backend/app/providers/registry.py` | provider 선택·allowlist 패턴 | 후속 `backend/app/llm_provider/factory.py` | 실제 provider 호출 |
 | `tool_0824/backend/app/schemas` | Pydantic schema와 JSON Schema 생성 | `backend/app/schemas/game_schema.py` | 교육용 lab schema |
 
 파일을 덮어쓰지 않고 현재 저장소의 import 경계에 맞춰 새 모듈을 추가한다. 참고

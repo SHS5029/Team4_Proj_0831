@@ -18,7 +18,9 @@ from backend.app.schemas.scaffold_schema import (
     ScaffoldOperationResponse,
     ScaffoldProposalResponse,
 )
-from backend.app.llm.client import get_proposal_adapter
+from backend.app.llm_provider.base import LLMRequest
+from backend.app.llm_provider.factory import get_llm_provider
+from backend.app.llm_provider.schemas import parse_game_proposal, proposal_schema
 from backend.app.mcp.game_client import GameMcpClient
 from backend.app.services.scaffold_game_service import ScaffoldGameService
 from backend.app.core.config import get_settings
@@ -87,11 +89,22 @@ async def proposal(game_id: UUID, x_user_id: str | None = Header(default=None)) 
     game = service._owned_game(owner, game_id)
     client = GameMcpClient(_settings.mafia_mcp_url)
     await client.get_context(str(game_id), game.state_version)
-    generated = get_proposal_adapter().propose(state_version=game.state_version)
-    receipt = await client.submit_proposal(generated.action, generated.source_state_version)
-    if generated.source_state_version != game.state_version or generated.action != "PING":
+    generated = await get_llm_provider(_settings).generate(
+        LLMRequest(
+            messages=(
+                {"role": "system", "content": "JSON만 반환한다. action은 PING, target_player_id는 null로 한다."},
+                {"role": "user", "content": f"source_state_version={game.state_version}"},
+            ),
+            response_schema=proposal_schema(),
+            max_output_tokens=_settings.llm_max_output_tokens,
+            timeout_seconds=_settings.llm_timeout_seconds,
+        )
+    )
+    proposal = parse_game_proposal(generated.output, expected_state_version=game.state_version)
+    if proposal.action != "PING":
         raise ApiError(status_code=409, code="INVALID_PROPOSAL", message="proposal이 현재 게임 상태와 일치하지 않습니다.")
-    return ScaffoldProposalResponse(action="PING", source_state_version=generated.source_state_version, mcp_receipt=receipt)
+    receipt = await client.submit_proposal(proposal.action, proposal.source_state_version)
+    return ScaffoldProposalResponse(action="PING", source_state_version=proposal.source_state_version, mcp_receipt=receipt)
 
 
 @router.get("/{game_id}/events")

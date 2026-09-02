@@ -111,7 +111,7 @@ MVP 이후에는 인간 다인 플레이, 음성 채팅, 사용자 제작 역할
 | `backend/app/models/` | 게임 상태, 역할, 행동, 이벤트와 페르소나 도메인 |
 | `backend/app/repositories/` | PostgreSQL 게임·피드백·로그 저장 |
 | `backend/app/agent/` | 플레이어·중재 에이전트 실행 조율 |
-| `backend/app/llm/` | 모델 공급자 독립 구조화 호출과 제한 시간 |
+| `backend/app/llm_provider/` | 모델 공급자 독립 구조화 호출과 제한 시간 |
 | `backend/app/mcp/` | 허용 MCP 서버·도구 등록, 호출 정책과 감사 기록 |
 | `backend/app/infrastructure/redis/` | 게임 lock, 실행 상태, event stream, idempotency |
 | `mcp_server/` | Backend가 허용한 게임 컨텍스트 resource/tool 제공 |

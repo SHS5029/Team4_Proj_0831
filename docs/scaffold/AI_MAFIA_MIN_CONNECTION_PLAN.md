@@ -155,7 +155,7 @@ event를 재조회한다.
 |---|---|
 | `backend/app/infrastructure/postgres/` | pool·transaction·repository adapter |
 | `backend/app/infrastructure/redis/` | Redis client·lock·projection·publish |
-| `backend/app/llm/` | dummy LLM adapter와 공통 proposal interface |
+| `backend/app/llm_provider/` | dummy·local·원격 LLM adapter와 공통 proposal interface |
 | `backend/app/mcp/` | MCP client와 Context/Proposal port |
 | `backend/app/routers/` | health·SSE·기존 scaffold API 연결 |
 | `backend/tests/` | DB·Redis·MCP·SSE contract test |

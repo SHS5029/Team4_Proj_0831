@@ -145,8 +145,13 @@ Team4_Proj_0831/
 │   │   │   ├── client.py
 │   │   │   ├── registry.py
 │   │   │   └── tool_router.py
-│   │   ├── llm/                    # 향후 LLM Provider adapter
-│   │   │   └── client.py
+│   │   ├── llm_provider/           # LLM Provider 공통 계약과 실제 adapter
+│   │   │   ├── base.py
+│   │   │   ├── factory.py
+│   │   │   ├── dummy.py
+│   │   │   ├── local.py
+│   │   │   ├── openai_provider.py
+│   │   │   └── gemini_provider.py
 │   │   ├── infrastructure/         # 외부 기술 구현과 실행 환경 연결
 │   │   │   ├── postgres.py          # PostgreSQL 연결 조립
 │   │   │   ├── migrations.py        # migration 실행
@@ -282,12 +287,12 @@ Streamlit 기본 `pages/` 디렉터리 명명 규칙을 사용하지 않아도 `
 | `repositories/` | PostgreSQL 저장소 구현 |
 | `agent/` | 향후 LLM Agent 실행 위치 |
 | `mcp/` | 향후 MCP Client·Tool registry 위치 |
-| `llm/` | 향후 LLM Provider adapter 위치 |
+| `llm_provider/` | Provider 공통 계약과 Dummy·Local·OpenAI·Gemini adapter |
 | `infrastructure/redis/` | 향후 Redis 연결·키·Pub/Sub 위치 |
 | `infrastructure/security/` | Frontend–Backend 내부 HMAC 검증 |
 | `core/` | 공통 설정, 오류, 응답, 로깅 |
 
-이번 단계에서는 `agent/`, `mcp/`, `llm/`, `infrastructure/redis/`에 Agent 업무나
+이번 단계에서는 `agent/`, `mcp/`, `llm_provider/`, `infrastructure/redis/`에 Agent 업무나
 외부 호출 코드를 넣지 않는다. 다만 인증 provision API를 위해
 `infrastructure/security/`의 HMAC 검증은 구현한다.
 
@@ -417,7 +422,7 @@ backend/routers/agent_router.py
 backend/services/agent_service.py
     ↓
 backend/agent/orchestrator.py
-    ├── llm/client.py
+    ├── llm_provider/factory.py
     └── mcp/client.py
              ↓ Streamable HTTP
        mcp_server/tour 또는 weather

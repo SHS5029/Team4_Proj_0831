@@ -47,6 +47,15 @@ class Settings:
     mcp_internal_secret: str = field(default="", repr=False)
     local_llm_base_url: str = "http://127.0.0.1:1234/v1"
     local_llm_model: str = "local-model"
+    openai_api_key: str = field(default="", repr=False)
+    openai_model: str = "gpt-4.1-mini"
+    gemini_api_key: str = field(default="", repr=False)
+    gemini_model: str = "gemini-2.5-flash"
+    llm_timeout_seconds: int = 30
+    llm_max_output_tokens: int = 400
+    game_max_total_tokens: int = 60_000
+    llm_input_cost_per_million_usd: float = 0.0
+    llm_output_cost_per_million_usd: float = 0.0
 
     def __post_init__(self) -> None:
         """불변 설정이 만들어지는 시점에 URL과 DB 이름을 한 번 검증한다.
@@ -88,6 +97,22 @@ class Settings:
             raise ValueError("MAFIA_MCP_URL must not be empty")
         if not self.local_llm_base_url.strip() or not self.local_llm_model.strip():
             raise ValueError("LOCAL_LLM_BASE_URL and LOCAL_LLM_MODEL must not be empty")
+        if self.llm_provider == "openai" and (
+            not self.openai_api_key.strip() or not self.openai_model.strip()
+        ):
+            raise ValueError("OPENAI_API_KEY and OPENAI_MODEL are required")
+        if self.llm_provider == "gemini" and (
+            not self.gemini_api_key.strip() or not self.gemini_model.strip()
+        ):
+            raise ValueError("GEMINI_API_KEY and GEMINI_MODEL are required")
+        if not 1 <= self.llm_timeout_seconds <= 300:
+            raise ValueError("LLM_TIMEOUT_SECONDS must be between 1 and 300")
+        if not 1 <= self.llm_max_output_tokens <= 16_384:
+            raise ValueError("LLM_MAX_OUTPUT_TOKENS must be between 1 and 16384")
+        if not 1 <= self.game_max_total_tokens <= 1_000_000:
+            raise ValueError("GAME_MAX_TOTAL_TOKENS must be between 1 and 1000000")
+        if self.llm_input_cost_per_million_usd < 0 or self.llm_output_cost_per_million_usd < 0:
+            raise ValueError("LLM token costs must not be negative")
 
         # frozen 데이터 클래스이므로 검증한 정규화 값은 object.__setattr__로
         # 한 번만 저장한다. 이후 요청 처리 중 설정이 바뀌지 않는다.
@@ -100,6 +125,10 @@ class Settings:
         object.__setattr__(self, "mcp_internal_secret", self.mcp_internal_secret.strip())
         object.__setattr__(self, "local_llm_base_url", self.local_llm_base_url.strip().rstrip("/"))
         object.__setattr__(self, "local_llm_model", self.local_llm_model.strip())
+        object.__setattr__(self, "openai_api_key", self.openai_api_key.strip())
+        object.__setattr__(self, "openai_model", self.openai_model.strip())
+        object.__setattr__(self, "gemini_api_key", self.gemini_api_key.strip())
+        object.__setattr__(self, "gemini_model", self.gemini_model.strip())
 
     @property
     def validated_internal_api_secret(self) -> bytes:
@@ -158,6 +187,27 @@ class Settings:
             mcp_internal_secret=os.getenv("MCP_INTERNAL_SECRET", ""),
             local_llm_base_url=os.getenv("LOCAL_LLM_BASE_URL", "http://127.0.0.1:1234/v1"),
             local_llm_model=os.getenv("LOCAL_LLM_MODEL", "local-model"),
+            openai_api_key=os.getenv("OPENAI_API_KEY", ""),
+            openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+            gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
+            gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+            llm_timeout_seconds=_read_positive_int(
+                os.getenv("LLM_TIMEOUT_SECONDS", "30"), name="LLM_TIMEOUT_SECONDS"
+            ),
+            llm_max_output_tokens=_read_positive_int(
+                os.getenv("LLM_MAX_OUTPUT_TOKENS", "400"), name="LLM_MAX_OUTPUT_TOKENS"
+            ),
+            game_max_total_tokens=_read_positive_int(
+                os.getenv("GAME_MAX_TOTAL_TOKENS", "60000"), name="GAME_MAX_TOTAL_TOKENS"
+            ),
+            llm_input_cost_per_million_usd=_read_nonnegative_float(
+                os.getenv("LLM_INPUT_COST_PER_MILLION_USD", "0"),
+                name="LLM_INPUT_COST_PER_MILLION_USD",
+            ),
+            llm_output_cost_per_million_usd=_read_nonnegative_float(
+                os.getenv("LLM_OUTPUT_COST_PER_MILLION_USD", "0"),
+                name="LLM_OUTPUT_COST_PER_MILLION_USD",
+            ),
         )
 
 
@@ -170,6 +220,18 @@ def _read_positive_int(value: str, *, name: str) -> int:
         raise ValueError(f"{name} must be an integer") from exc
     if parsed <= 0:
         raise ValueError(f"{name} must be positive")
+    return parsed
+
+
+def _read_nonnegative_float(value: str, *, name: str) -> float:
+    """환경 변수의 음이 아닌 실수를 비밀값 없이 검증해 반환한다."""
+
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a number") from exc
+    if parsed < 0:
+        raise ValueError(f"{name} must not be negative")
     return parsed
 
 

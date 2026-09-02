@@ -7,6 +7,8 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from .config import MCP_HOST, MCP_PORT
 
+ALLOWED_MCP_HOST = f"{MCP_HOST}:{MCP_PORT}"
+
 mcp = FastMCP(
     "ai-mafia-game",
     instructions="AI 마피아 게임 context와 상태 변경 proposal을 제공하는 서버입니다.",
@@ -15,7 +17,7 @@ mcp = FastMCP(
     stateless_http=True,
     json_response=True,
     transport_security=TransportSecuritySettings(
-        allowed_hosts=["127.0.0.1:8010", "localhost:8010", "testserver"],
+        allowed_hosts=[ALLOWED_MCP_HOST, "localhost:" + str(MCP_PORT), "testserver"],
         allowed_origins=["http://testserver"],
     ),
 )
