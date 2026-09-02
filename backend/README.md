@@ -19,6 +19,18 @@ Health endpoint는 `GET http://127.0.0.1:8000/health`이며 정상 응답은
 uv run python -m backend.app.infrastructure.migrations
 ```
 
+연결 뼈대에서는 별도 MCP 프로세스를 먼저 실행합니다.
+
+```bash
+python -m mcp_server.mcp_1
+uvicorn backend.app.main:app --reload --port 8000
+```
+
+게임 smoke API는 `X-User-Id`와 `ruleset_version=scaffold-v1`을 사용합니다. Swagger는
+`http://127.0.0.1:8000/docs`, MCP 연결 확인은
+`GET http://127.0.0.1:8000/api/v1/mcp/health`입니다. 실제 게임 규칙과 `basic-v1`은
+연결 뼈대 완료 후 별도 단계에서 추가합니다.
+
 ## 보안 경계
 
 `POST /api/v1/identity/provision`은 timestamp, UUID request id, raw JSON body를

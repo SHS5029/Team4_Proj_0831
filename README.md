@@ -21,10 +21,13 @@ PostgreSQL 사용자 저장을 독립 실행 단위로 분리한 프로젝트입
 - Backend 소유 PostgreSQL migration 실행기
 - 독립 관리자 Streamlit 앱과 MCP 서버 예약 구조(`mcp_server/mcp_1`, `mcp_2`)
 
-LLM Agent loop, MCP Tool·Resource·Prompt, 관리자 업무 기능, Redis 연결은 아직
-구현하지 않았습니다. 예약 모듈은 향후 연결 위치만 고정하며 외부 호출을 수행하지
-않습니다. 상세 경계는 [아키텍처 개편 문서](docs/ARCHITECTURE_REFACTOR_PLAN.md)를
-참고하세요.
+LLM Agent loop, 실제 마피아 규칙, 관리자 업무 기능은 아직 구현하지 않았습니다.
+연결 뼈대 단계에서는 dummy 게임 REST API, operation·SSE smoke, 게임 MCP의 최소
+JSON-RPC(`initialize`, `tools/list`, `tools/call`, `resources/list`, `resources/read`)
+왕복만 구현했습니다. 다음 최소 인프라 연결은 PostgreSQL 원본 저장, Redis 보조
+연결, Backend dummy LLM·MCP 왕복, SSE replay·polling fallback 순서로 진행하며,
+기본 LLM provider는 외부 키가 필요 없는 `dummy`입니다. 상세 경계와 다음 구현 순서는
+[연결 뼈대 계획](docs/scaffold/AI_MAFIA_SCAFFOLD_PLAN.md)을 참고하세요.
 
 현재 구조를 이용해 1명의 인간 플레이어와 AI 에이전트가 기본 마피아 게임을
 진행하는 후속 MVP의 확정 설계는
@@ -80,6 +83,7 @@ SSE와 operation polling, HMAC 기반 MCP 내부 context 조회를 최소 구현
 │   └── README.md
 ├── frontend_user/
 │   ├── app.py                        # 얇은 Streamlit 실행 진입점
+│   ├── game_scaffold_app.py          # 로그인 없는 연결 뼈대 smoke 진입점
 │   ├── app_pages/login_page.py       # OIDC 로그인·프로필 화면 흐름
 │   ├── auth/                         # OIDC 설정·claim·접근·저장 결과 정책
 │   ├── components/ui.py              # 안전한 HTML·CSS 표현
@@ -97,7 +101,8 @@ SSE와 operation polling, HMAC 기반 MCP 내부 context 조회를 최소 구현
 │   │   ├── AI_MAFIA_SCAFFOLD_FILE_PLAN.md # 뼈대 파일별 책임과 구현 순서
 │   │   ├── AI_MAFIA_SCAFFOLD_SCHEMA.md    # 뼈대 JSON 입출력 계약
 │   │   ├── AI_MAFIA_SCAFFOLD_RUNBOOK.md   # 뼈대 실행·smoke 절차
-│   │   └── AI_MAFIA_SCAFFOLD_TEST_PLAN.md # 뼈대 테스트 계획
+│   │   ├── AI_MAFIA_SCAFFOLD_TEST_PLAN.md # 뼈대 테스트 계획
+│   │   └── AI_MAFIA_MIN_CONNECTION_PLAN.md # DB·Redis·LLM·SSE 최소 연결 계획
 │   ├── AI_MAFIA_GAME_RULES.md        # basic-v1 규칙·상태 전이·해소 로직
 │   ├── AI_MAFIA_API_CONTRACT.md     # 계약 문서 인덱스
 │   ├── AI_MAFIA_BACKEND_API_CONTRACT.md # Frontend·Backend REST/SSE 계약
@@ -300,7 +305,7 @@ uv run ruff check .
 - 현재 timestamp 만료만 재전송 범위를 제한합니다. UUID nonce의 일회성 저장은 Redis
   연결 후 추가할 보안 확장 지점입니다.
 - 현재 관리자 앱에는 인증·권한과 업무 기능이 없으며 준비 화면만 표시합니다.
-- 현재 MCP 디렉터리에는 실행 서버와 Tool이 없고 외부 API를 호출하지 않습니다.
+- 현재 MCP는 `mcp_server/mcp_1`의 연결 뼈대만 실행하며 외부 API·DB를 호출하지 않습니다.
 - 게임 MVP 구현 후에도 개발용 `X-User-Id`와 관리자 API는 인증 수단이 아니므로
   외부 공개 배포에 사용할 수 없습니다. MCP 전용 `MCP_INTERNAL_SECRET`은 Frontend와
   공유하지 않습니다.

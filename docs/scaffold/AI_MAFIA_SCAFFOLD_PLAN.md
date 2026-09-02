@@ -14,7 +14,11 @@
 세부 실행 문서는 [파일별 구현 계획](AI_MAFIA_SCAFFOLD_FILE_PLAN.md),
 [JSON Schema 계약](AI_MAFIA_SCAFFOLD_SCHEMA.md),
 [실행 절차](AI_MAFIA_SCAFFOLD_RUNBOOK.md),
-[테스트 계획](AI_MAFIA_SCAFFOLD_TEST_PLAN.md)을 함께 사용한다.
+[테스트 계획](AI_MAFIA_SCAFFOLD_TEST_PLAN.md)을 함께 사용한다. 현재 구현 이후의
+최소 DB·Redis·LLM·SSE 연결 범위와 구현 순서는
+[최소 인프라 연결 계획](AI_MAFIA_MIN_CONNECTION_PLAN.md)을 우선 적용한다.
+최소 영속 테이블은 `scaffold_games`, `scaffold_operations`, `scaffold_events`로
+고정하고, 참가자·역할 데이터는 후속 `basic-v1` 단계로 미룬다.
 
 ## 1. 뼈대 단계의 완료 범위
 
@@ -223,12 +227,12 @@ dummy context로만 검증한다. 상세 최종 MCP 계약은
 
 ### 4단계 — PostgreSQL·Redis 연결
 
-- game 핵심 migration을 추가한다.
+- `scaffold_games`, `scaffold_operations`, `scaffold_events` migration을 적용한다.
 - repository를 in-memory에서 PostgreSQL adapter로 교체한다.
 - Redis는 lock·operation projection·rate limit smoke만 연결한다.
 - Redis 중단 시 operation GET과 game GET은 PostgreSQL로 동작하게 한다.
 
-완료: 재시작 후 생성한 dummy game과 operation을 조회할 수 있다.
+완료: 재시작 후 생성한 dummy game·operation·event를 조회할 수 있다.
 
 ### 5단계 — Frontend smoke
 

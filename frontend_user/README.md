@@ -38,6 +38,17 @@ Backend를 먼저 실행한 뒤 별도 터미널에서 사용자 앱을 시작�
 uv run streamlit run frontend_user/app.py --server.port 8501
 ```
 
+연결 뼈대 smoke 화면은 로그인 없이 다음 명령으로 실행한다.
+
+```powershell
+py -3.12 -m streamlit run frontend_user/game_scaffold_app.py --server.port 8501
+```
+
+기존 OIDC 앱은 로그인 화면만 제공한다. 연결 뼈대 화면은 위의 독립 실행 명령으로
+접근한다. Backend가 실행 중인 상태에서 개발용 UUID로 dummy game 생성과 `PING`
+command를 확인한다. 이 화면은 실제 OIDC 게임 화면과 분리되어 있으며 Backend URL만
+호출한다.
+
 브라우저에서 `http://localhost:8501`을 엽니다. OIDC 설정이 빠졌거나 잘못되면
 로그인 버튼을 비활성화합니다. Backend 설정·서명·저장에 실패하면 애플리케이션 접근을
 허용하지 않고 비밀값 없는 고정 안내만 표시합니다.

@@ -10,6 +10,8 @@ from backend.app.core.logging import configure_logging
 from backend.app.core.responses import api_error_response
 from backend.app.routers.health_router import router as health_router
 from backend.app.routers.identity_router import router as identity_router
+from backend.app.routers.scaffold_game_router import router as scaffold_game_router
+from backend.app.routers.scaffold_mcp_router import router as scaffold_mcp_router
 
 
 def _trace_id_from_header(value: str | None) -> str:
@@ -69,6 +71,8 @@ def create_app() -> FastAPI:
 
     application.include_router(health_router)
     application.include_router(identity_router)
+    application.include_router(scaffold_mcp_router)
+    application.include_router(scaffold_game_router)
     return application
 
 

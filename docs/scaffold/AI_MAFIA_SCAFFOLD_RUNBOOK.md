@@ -30,7 +30,7 @@ BACKEND_API_URL=http://127.0.0.1:8000
 python -m mcp_server.mcp_1
 ```
 
-확인: `http://127.0.0.1:8010/health`
+확인: MCP inspector에서 `initialize`와 `tools/list` 실행
 
 터미널 2:
 
@@ -43,10 +43,10 @@ uvicorn backend.app.main:app --reload --port 8000
 터미널 3:
 
 ```powershell
-streamlit run frontend_user/app.py --server.port 8501
+py -3.12 -m streamlit run frontend_user/game_scaffold_app.py --server.port 8501
 ```
 
-관리자 화면은 별도 터미널에서 `streamlit run frontend_admin/app.py --server.port 8502`로 실행한다.
+관리자 화면은 별도 터미널에서 `py -3.12 -m streamlit run frontend_admin/app.py --server.port 8502`로 실행한다. OIDC 로그인 앱과 뼈대 smoke 앱은 서로 다른 진입점으로 실행한다.
 
 ## 3. smoke 순서
 
@@ -62,7 +62,7 @@ Invoke-RestMethod "http://127.0.0.1:8000/api/v1/games/$($game.game_id)/operation
 
 기대 결과는 생성 201, 상태 조회 200, command 202, operation 200이다. 다른 UUID로 조회하면 404, `expected_version=0` 또는 현재와 다른 값은 409, 같은 idempotency key의 동일 body는 같은 응답을 반환해야 한다.
 
-Swagger UI는 `http://127.0.0.1:8000/docs`에서 확인한다. MCP는 MCP inspector 또는 Backend의 `/api/v1/mcp/health`로 확인한다.
+Swagger UI는 `http://127.0.0.1:8000/docs`에서 확인한다. MCP는 MCP inspector 또는 Backend의 `/api/v1/mcp/health`로 확인한다. Backend health는 MCP의 `initialize`와 `game_ping` 성공 여부를 검사한다.
 
 ## 4. 장애 확인
 
