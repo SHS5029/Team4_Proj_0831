@@ -10,6 +10,8 @@ from backend.app.core.logging import configure_logging
 from backend.app.core.responses import api_error_response
 from backend.app.routers.health_router import router as health_router
 from backend.app.routers.identity_router import router as identity_router
+from backend.app.routers import scaffold_game_router as scaffold_game_module
+from backend.app.routers.scaffold_mcp_router import router as scaffold_mcp_router
 
 
 def _trace_id_from_header(value: str | None) -> str:
@@ -26,7 +28,7 @@ def _trace_id_from_header(value: str | None) -> str:
     return str(uuid4())
 
 
-def create_app() -> FastAPI:
+def create_app(scaffold_repository=None) -> FastAPI:
     """서버별 router와 비밀정보 비노출 오류 계약을 가진 앱을 생성한다."""
 
     configure_logging()
@@ -69,6 +71,10 @@ def create_app() -> FastAPI:
 
     application.include_router(health_router)
     application.include_router(identity_router)
+    application.include_router(scaffold_mcp_router)
+    if scaffold_repository is not None:
+        scaffold_game_module.configure_scaffold_dependencies(scaffold_repository)
+    application.include_router(scaffold_game_module.router)
     return application
 
 

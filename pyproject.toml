@@ -13,7 +13,9 @@ dependencies = [
   # --- AI 마피아 MVP(docs/플랜/AI_MAFIA_MVP_FINAL_PLAN.md)용 의존성 ---
   # Redis: 게임 lock·idempotency·runtime cache·event stream (10장)
   "redis>=5.0.0,<7",
-  # LLM 이중 공급자: LLM_PROVIDER 환경 변수로 선택 (7장, 통합 결정)
+  # 역할 배정 seed를 AES-256-GCM으로 암호화해 PostgreSQL에 보관
+  "cryptography>=50.0.1,<51",
+  # LLM provider 3종(local·OpenAI·Gemini): LLM_PROVIDER 환경 변수로 선택
   "openai>=1.50.0,<3",
   "google-genai>=1.0.0,<2",
   # MCP SDK: mcp_server/mcp_1 게임 컨텍스트 서버와 backend MCP client (8장)
