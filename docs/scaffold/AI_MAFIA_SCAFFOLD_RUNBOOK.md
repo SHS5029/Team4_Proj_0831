@@ -17,6 +17,7 @@ Copy-Item .env.example .env
 ```env
 DATABASE_URL=postgresql://app_user:change-me@127.0.0.1:5432/Team4_Proj
 REDIS_URL=redis://127.0.0.1:6379/0
+LLM_PROVIDER=dummy
 MAFIA_MCP_URL=http://127.0.0.1:8010/mcp
 MCP_INTERNAL_SECRET=replace-with-local-random-secret
 BACKEND_API_URL=http://127.0.0.1:8000
@@ -40,6 +41,12 @@ uvicorn backend.app.main:app --reload --port 8000
 
 확인: `Invoke-RestMethod http://127.0.0.1:8000/health`
 
+Backend를 처음 실행하기 전 migration을 적용한다.
+
+```powershell
+py -3.12 -m backend.app.infrastructure.migrations
+```
+
 터미널 3:
 
 ```powershell
@@ -58,6 +65,7 @@ Invoke-RestMethod "http://127.0.0.1:8000/api/v1/games/$($game.game_id)" -Headers
 $command = @{command="PING"; expected_version=1; idempotency_key="00000000-0000-4000-8000-000000000012"} | ConvertTo-Json
 $op = Invoke-RestMethod "http://127.0.0.1:8000/api/v1/games/$($game.game_id)/commands" -Method Post -Headers $headers -ContentType "application/json" -Body $command
 Invoke-RestMethod "http://127.0.0.1:8000/api/v1/games/$($game.game_id)/operations/$($op.operation_id)" -Headers $headers
+Invoke-RestMethod "http://127.0.0.1:8000/api/v1/games/$($game.game_id)/proposal" -Method Post -Headers $headers
 ```
 
 기대 결과는 생성 201, 상태 조회 200, command 202, operation 200이다. 다른 UUID로 조회하면 404, `expected_version=0` 또는 현재와 다른 값은 409, 같은 idempotency key의 동일 body는 같은 응답을 반환해야 한다.

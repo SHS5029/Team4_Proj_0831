@@ -108,13 +108,15 @@ game GET과 operation GET은 PostgreSQL로 성공한다.
 
 ### 4단계 — LLM·MCP 최소 왕복
 
-- Backend의 `LLM Adapter`는 우선 deterministic dummy response를 반환한다.
+- Backend의 `LLM Adapter`는 `dummy` 또는 OpenAI 호환 `local` provider를 선택한다.
+- `local` provider는 설정된 base URL에 `/chat/completions`를 붙여 호출하고
+  `LOCAL_LLM_MODEL`을 사용한다.
 - Backend MCP Client는 `game_get_context`와 `game_submit_proposal`만 호출한다.
 - MCP Server는 DB·Redis를 조회하지 않고 Backend Context Port를 호출한다.
 - Context Port는 `game_id`, `viewer_player_id`, `state_version`을 검증하고
   dummy 공개 context를 반환한다.
 - LLM proposal에는 `action`, `target_player_id`(선택), `source_state_version`을
-  포함한다.
+  포함한다. scaffold-v1의 action은 `PING`, target은 `null`로 고정한다.
 - 호출 순서는 `LLM Adapter → MCP Client → game_get_context → LLM Adapter의
   proposal 생성 → Backend 검증`으로 고정한다. MCP Server 내부에는 LLM Adapter를
   두지 않는다.

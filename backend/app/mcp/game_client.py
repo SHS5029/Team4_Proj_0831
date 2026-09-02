@@ -43,3 +43,13 @@ class GameMcpClient:
         if result.isError:
             raise RuntimeError("MCP tool call failed")
         return {"content": [{"type": "text", "text": item.text} for item in result.content if hasattr(item, "text")]}
+
+    async def get_context(self, game_id: str, state_version: int) -> dict[str, Any]:
+        """MCP context tool을 호출해 Backend가 사용할 공개 projection을 받는다."""
+
+        return await self.call_tool("game_get_context", {"game_id": game_id, "state_version": state_version})
+
+    async def submit_proposal(self, action: str, state_version: int) -> dict[str, Any]:
+        """검증 전 proposal을 MCP에 전달하고 receipt를 받는다."""
+
+        return await self.call_tool("game_submit_proposal", {"action": action, "expected_version": state_version})

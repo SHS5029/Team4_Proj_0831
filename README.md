@@ -26,7 +26,8 @@ LLM Agent loop, 실제 마피아 규칙, 관리자 업무 기능은 아직 구�
 JSON-RPC(`initialize`, `tools/list`, `tools/call`, `resources/list`, `resources/read`)
 왕복만 구현했습니다. 다음 최소 인프라 연결은 PostgreSQL 원본 저장, Redis 보조
 연결, Backend dummy LLM·MCP 왕복, SSE replay·polling fallback 순서로 진행하며,
-기본 LLM provider는 외부 키가 필요 없는 `dummy`입니다. 상세 경계와 다음 구현 순서는
+기본 LLM provider는 외부 키가 필요 없는 `dummy`이며, 설정을 `local`로 바꾸면
+OpenAI 호환 로컬 `/chat/completions` endpoint를 호출합니다. 상세 경계와 다음 구현 순서는
 [연결 뼈대 계획](docs/scaffold/AI_MAFIA_SCAFFOLD_PLAN.md)을 참고하세요.
 
 현재 구조를 이용해 1명의 인간 플레이어와 AI 에이전트가 기본 마피아 게임을

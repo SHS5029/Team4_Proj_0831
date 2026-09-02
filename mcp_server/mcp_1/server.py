@@ -2,9 +2,8 @@
 
 from typing import Any
 
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from .config import MCP_HOST, MCP_PORT
 
@@ -15,6 +14,10 @@ mcp = FastMCP(
     port=MCP_PORT,
     stateless_http=True,
     json_response=True,
+    transport_security=TransportSecuritySettings(
+        allowed_hosts=["127.0.0.1:8010", "localhost:8010", "testserver"],
+        allowed_origins=["http://testserver"],
+    ),
 )
 
 
@@ -26,10 +29,10 @@ def game_ping(expected_version: int) -> dict[str, Any]:
 
 
 @mcp.tool()
-def game_get_context() -> dict[str, Any]:
+def game_get_context(game_id: str, state_version: int) -> dict[str, Any]:
     """뼈대 단계의 공개 dummy context를 반환한다."""
 
-    return {"schema_version": "scaffold-v1", "phase": "ROLE_REVEAL", "state_version": 1, "players": []}
+    return {"schema_version": "scaffold-v1", "game_id": game_id, "phase": "ROLE_REVEAL", "state_version": state_version, "players": []}
 
 
 @mcp.tool()
@@ -48,15 +51,6 @@ def scaffold_context() -> dict[str, Any]:
     return {"schema_version": "scaffold-v1", "phase": "ROLE_REVEAL", "state_version": 1, "players": []}
 
 
-mcp_http_app = mcp.streamable_http_app()
-app = FastAPI(title="AI Mafia Game MCP", version="scaffold-v1")
-
-
-@app.get("/health")
-def health() -> JSONResponse:
-    """MCP 프로세스가 요청을 처리할 수 있음을 반환한다."""
-
-    return JSONResponse({"status": "ok", "server": "game", "transport": "streamable-http"})
-
-
-app.mount("/", mcp_http_app)
+# FastMCP가 생성한 ASGI 앱을 직접 사용해 transport와 세션 수명주기를
+# FastMCP가 일관되게 관리한다. 별도 FastAPI wrapper는 두지 않는다.
+streamable_http_app = mcp.streamable_http_app()

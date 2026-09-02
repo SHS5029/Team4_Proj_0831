@@ -1,6 +1,7 @@
 # AI 마피아 게임 MCP 연결 뼈대
 
 참조 프로젝트의 `FastMCP`·Streamable HTTP 구조를 사용한 게임 MCP smoke 서버다.
+FastAPI wrapper 없이 FastMCP가 제공하는 ASGI 앱을 직접 실행한다.
 현재는 외부 API·DB·Redis·LLM을 호출하지 않는다.
 
 ```powershell

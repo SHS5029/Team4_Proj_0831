@@ -22,8 +22,11 @@ from backend.app.schemas.scaffold_schema import (
 class ScaffoldGameService:
     """후속 규칙 엔진을 끼울 수 있는 최소 game service다."""
 
-    def __init__(self, repository: ScaffoldRepository) -> None:
+    def __init__(self, repository: ScaffoldRepository, redis=None, llm=None, mcp_client=None) -> None:
         self.repository = repository
+        self.redis = redis
+        self.llm = llm
+        self.mcp_client = mcp_client
 
     def create(self, owner_user_id: UUID, payload: CreateScaffoldGameRequest) -> CreateScaffoldGameResponse:
         """소유자와 인간 참가자 한 명을 가진 dummy game을 생성한다."""
@@ -78,15 +81,38 @@ class ScaffoldGameService:
             if previous[0] != fingerprint:
                 raise ApiError(status_code=409, code="IDEMPOTENCY_CONFLICT", message="idempotency key가 다른 요청에 사용되었습니다.")
             return previous[1]  # type: ignore[return-value]
+        lock_token = None
+        if self.redis is not None:
+            try:
+                lock_token = self.redis.acquire_lock(str(game_id))
+            except Exception:
+                lock_token = None
+            if lock_token is None and self.redis is not None:
+                raise ApiError(status_code=503, code="GAME_LOCK_UNAVAILABLE", message="게임 잠금을 사용할 수 없습니다.")
         if payload.command != "PING":
             game.state_version += 1
             game.phase = "PAUSED" if payload.command == "PAUSE" else "ROLE_REVEAL"
             game.status = "PAUSED" if payload.command == "PAUSE" else "IN_PROGRESS"
             game.updated_at = datetime.now(timezone.utc)
         operation = ScaffoldOperation(uuid4(), game_id, payload.command, payload.expected_version, game.state_version)
-        self.repository.save_operation(operation)
+        event_payload = {"game_id": str(game_id), "state_version": game.state_version, "command": payload.command}
+        if hasattr(self.repository, "save_command"):
+            self.repository.save_command(game, operation, event_payload)
+        else:
+            self.repository.save_operation(operation)
         response = ScaffoldCommandAcceptedResponse(operation_id=operation.operation_id, state_version=game.state_version, phase=game.phase, status="COMPLETED")
         self.repository.idempotency[key] = (fingerprint, response)
+        if self.redis is not None:
+            try:
+                self.redis.set_operation(str(operation.operation_id), response.model_dump(mode="json"))
+                self.redis.publish_event(str(game_id), {"sequence": len(self.repository.events_after(game_id, 0)), **event_payload})
+            except Exception:
+                pass
+            finally:
+                try:
+                    self.redis.release_lock(str(game_id), lock_token)
+                except Exception:
+                    pass
         return response
 
     def operation(self, owner_user_id: UUID, game_id: UUID, operation_id: UUID) -> ScaffoldOperationResponse:

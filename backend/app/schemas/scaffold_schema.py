@@ -88,3 +88,12 @@ class ScaffoldOperationResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+
+class ScaffoldProposalResponse(BaseModel):
+    """dummy LLM과 MCP 왕복 결과를 표현한다."""
+
+    model_config = ConfigDict(extra="forbid")
+    accepted: Literal[True] = True
+    action: Literal["PING"]
+    source_state_version: int
+    mcp_receipt: dict

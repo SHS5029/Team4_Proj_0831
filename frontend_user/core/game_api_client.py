@@ -38,6 +38,35 @@ class GameApiClient:
 
         return self._request("POST", f"/api/v1/games/{UUID(game_id)}/commands", {"command": "PING", "expected_version": expected_version, "idempotency_key": "00000000-0000-4000-8000-000000000012"})
 
+    def read_events(self, game_id: str, last_event_id: int = 0) -> str:
+        """SSE 첫 event frame을 읽는 즉시 반환해 화면이 멈추지 않게 한다.
+
+        SSE 연결은 서버가 계속 유지하므로 전체 body를 ``read``로 읽으면
+        연결 종료까지 반환되지 않는다. 한 frame의 끝을 의미하는 빈 줄까지만
+        읽고 반환해 Streamlit 요청이 즉시 완료되도록 한다.
+        """
+
+        request = Request(
+            f"{self.api_url}/api/v1/games/{UUID(game_id)}/events",
+            headers={"X-User-Id": self.user_id, "Accept": "text/event-stream", "Last-Event-ID": str(last_event_id)},
+        )
+        try:
+            with urlopen(request, timeout=3) as response:  # noqa: S310 - 설정된 Backend만 호출한다.
+                frame: list[str] = []
+                while len(frame) < 32:
+                    line = response.readline()
+                    if not line:
+                        break
+                    decoded = line.decode()
+                    frame.append(decoded)
+                    if decoded in {"\n", "\r\n"}:
+                        break
+                if not frame:
+                    raise GameApiError(503, "SSE_EMPTY")
+                return "".join(frame)
+        except (OSError, URLError, TimeoutError) as error:
+            raise GameApiError(503, "SSE_UNAVAILABLE") from error
+
     def _request(self, method: str, path: str, body: dict | None = None) -> dict:
         """JSON object만 허용하고 Backend 오류를 고정 타입으로 변환한다."""
 

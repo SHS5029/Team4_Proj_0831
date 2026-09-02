@@ -26,3 +26,17 @@ def main() -> None:
                 st.json(GameApiClient(user_id=user_id).ping(game["game_id"], game["state_version"]))
             except GameApiError as error:
                 st.error(f"command 실패: {error.code}")
+        if st.button("SSE 연결 확인", key="scaffold-sse"):
+            try:
+                frame = GameApiClient(user_id=user_id).read_events(game["game_id"])
+                st.session_state["scaffold_connection"] = "connected"
+                st.session_state["scaffold_sse_frame"] = frame
+                st.session_state["scaffold_sse_message"] = "첫 SSE event를 수신했습니다."
+            except GameApiError:
+                st.session_state["scaffold_connection"] = "polling"
+                st.session_state["scaffold_sse_frame"] = "SSE 실패: game 상태 polling으로 전환"
+                st.session_state["scaffold_sse_message"] = "SSE 연결에 실패해 polling 상태로 전환했습니다."
+        if st.session_state.get("scaffold_connection"):
+            st.caption(f"연결 상태: {st.session_state['scaffold_connection']}")
+            st.info(st.session_state.get("scaffold_sse_message", ""))
+            st.code(st.session_state.get("scaffold_sse_frame", ""), language="text")

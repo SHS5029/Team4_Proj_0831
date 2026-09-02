@@ -41,6 +41,12 @@ class Settings:
     app_env: str = "development"
     internal_api_secret: str = field(default="", repr=False)
     internal_api_max_age_seconds: int = 300
+    redis_url: str = field(default="redis://127.0.0.1:6379/0", repr=False)
+    llm_provider: str = "dummy"
+    mafia_mcp_url: str = "http://127.0.0.1:8010/mcp"
+    mcp_internal_secret: str = field(default="", repr=False)
+    local_llm_base_url: str = "http://127.0.0.1:1234/v1"
+    local_llm_model: str = "local-model"
 
     def __post_init__(self) -> None:
         """불변 설정이 만들어지는 시점에 URL과 DB 이름을 한 번 검증한다.
@@ -74,12 +80,26 @@ class Settings:
             raise ValueError("DATABASE_NAME contains an invalid character")
         if not 1 <= self.internal_api_max_age_seconds <= 3_600:
             raise ValueError("INTERNAL_API_MAX_AGE_SECONDS must be between 1 and 3600")
+        if not self.redis_url.strip():
+            raise ValueError("REDIS_URL must not be empty")
+        if self.llm_provider.strip().lower() not in {"dummy", "local", "openai", "gemini"}:
+            raise ValueError("LLM_PROVIDER is not supported")
+        if not self.mafia_mcp_url.strip():
+            raise ValueError("MAFIA_MCP_URL must not be empty")
+        if not self.local_llm_base_url.strip() or not self.local_llm_model.strip():
+            raise ValueError("LOCAL_LLM_BASE_URL and LOCAL_LLM_MODEL must not be empty")
 
         # frozen 데이터 클래스이므로 검증한 정규화 값은 object.__setattr__로
         # 한 번만 저장한다. 이후 요청 처리 중 설정이 바뀌지 않는다.
         object.__setattr__(self, "database_url", raw_url)
         object.__setattr__(self, "database_name", self.database_name.strip())
         object.__setattr__(self, "internal_api_secret", self.internal_api_secret.strip())
+        object.__setattr__(self, "redis_url", self.redis_url.strip())
+        object.__setattr__(self, "llm_provider", self.llm_provider.strip().lower())
+        object.__setattr__(self, "mafia_mcp_url", self.mafia_mcp_url.strip().rstrip("/"))
+        object.__setattr__(self, "mcp_internal_secret", self.mcp_internal_secret.strip())
+        object.__setattr__(self, "local_llm_base_url", self.local_llm_base_url.strip().rstrip("/"))
+        object.__setattr__(self, "local_llm_model", self.local_llm_model.strip())
 
     @property
     def validated_internal_api_secret(self) -> bytes:
@@ -132,6 +152,12 @@ class Settings:
                 os.getenv("INTERNAL_API_MAX_AGE_SECONDS", "300"),
                 name="INTERNAL_API_MAX_AGE_SECONDS",
             ),
+            redis_url=os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0"),
+            llm_provider=os.getenv("LLM_PROVIDER", "dummy"),
+            mafia_mcp_url=os.getenv("MAFIA_MCP_URL", "http://127.0.0.1:8010/mcp"),
+            mcp_internal_secret=os.getenv("MCP_INTERNAL_SECRET", ""),
+            local_llm_base_url=os.getenv("LOCAL_LLM_BASE_URL", "http://127.0.0.1:1234/v1"),
+            local_llm_model=os.getenv("LOCAL_LLM_MODEL", "local-model"),
         )
 
 
