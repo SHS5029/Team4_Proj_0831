@@ -2,8 +2,8 @@
 
 **문서 상태:** 확정 통합본 (구현 기준 문서)
 **기준일:** 2026년 9월 1일
-**통합 원본:** `docs/mafia_game_plan.md`, `docs/AI_MAFIA_MVP_PLAN.md`,
-`docs/ai_mafia_game_engine분리규칙.md`
+**통합 원본:** `docs/초기기획안/mafia_game_plan.md`,
+`docs/플랜/AI_MAFIA_MVP_PLAN.md`, `docs/규칙/ai_mafia_game_engine분리규칙.md`
 **변경 근거:** 통합 과정의 충돌 항목과 결정 사유는
 [통합·수정 내역](AI_MAFIA_PLAN_INTEGRATION_NOTES.md)에 기록되어 있다.
 
@@ -43,7 +43,8 @@
 ### MVP 제외 (후속 확장)
 
 - 추리극 요소 전체: 사건 시나리오 패턴, 사건 진실 생성, 개인 비밀, 공개
-  단서 배치, Red Herring, AI GM의 사건 해설 (`mafia_game_plan.md`의 확장 기획)
+  단서 배치, Red Herring, AI GM의 사건 해설
+  (`../초기기획안/mafia_game_plan.md`의 확장 기획)
 - 인간 다인 플레이, 음성 채팅, 사용자 제작 역할·시나리오
 - 랭킹·친구·길드·결제, 완성형 신고·제재
 

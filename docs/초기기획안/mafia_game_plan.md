@@ -1,11 +1,11 @@
 # AI 마피아 추리게임 기획안
 
 > **[대체됨]** 이 문서의 기본 마피아 게임 범위는
-> [AI_MAFIA_MVP_FINAL_PLAN.md](AI_MAFIA_MVP_FINAL_PLAN.md)로 통합·대체되었습니다.
+> [AI_MAFIA_MVP_FINAL_PLAN.md](../플랜/AI_MAFIA_MVP_FINAL_PLAN.md)로 통합·대체되었습니다.
 > 추리극 요소(시나리오 패턴, 사건 진실, 단서, Red Herring, AI GM 해설)는
 > MVP에서 제외되었으며 이 문서를 후속 확장 기획 참고 자료로 유지합니다.
 > 충돌 시 최종 플랜을 우선하며, 조정 내역은
-> [통합·수정 내역](AI_MAFIA_PLAN_INTEGRATION_NOTES.md)을 참고하세요.
+> [통합·수정 내역](../플랜/AI_MAFIA_PLAN_INTEGRATION_NOTES.md)을 참고하세요.
 
 ## 1. 문서 목적
 

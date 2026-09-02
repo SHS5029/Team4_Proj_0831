@@ -2,7 +2,7 @@
 
 AI 마피아 게임의 에이전트에게 허용된 게임 컨텍스트(Resource)와 행동 제안
 (Tool)을 제공할 MCP 서버 패키지입니다. 상세 명세는
-[상세 구현 계획서 6장](../../docs/AI_MAFIA_IMPLEMENTATION_PLAN.md)을
+[상세 구현 계획서 6장](../../docs/개발상세플랜/AI_MAFIA_IMPLEMENTATION_PLAN.md)을
 따릅니다.
 
 현재 단계에는 서버 실행 파일, MCP Tool, Backend 연동 코드가 없는 예약

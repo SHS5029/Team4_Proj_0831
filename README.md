@@ -1,9 +1,19 @@
-# Team4 서비스 아키텍처와 Google OIDC 로그인
+# AI 마피아
 
-일반 사용자용 Streamlit OIDC 로그인, 서명된 내부 요청을 받는 FastAPI Backend,
-PostgreSQL 사용자 저장을 독립 실행 단위로 분리한 프로젝트입니다. Google로 처음
-로그인하면 내부 계정이 생성되고, 이후 로그인에서는 프로필과 최근 로그인 시각이
-갱신됩니다.
+**AI 마피아**는 함께할 사람을 기다리지 않아도 1명의 인간 플레이어와 개성 있는
+여러 AI 플레이어가 바로 한 판을 완주할 수 있도록 만드는 소셜 디덕션 게임입니다.
+5~9명 규모의 기본 마피아 게임에서 AI마다 말투·공격성·기만 성향·추론 능력을
+달리해 반복 플레이의 변화를 만들고, 규칙과 승패는 Backend 게임 엔진이 결정하며
+LLM은 허용된 정보 안에서 대화와 선택만 담당하는 것을 핵심 원칙으로 삼습니다.
+제품 목표와 MVP 범위는
+[AI 마피아 MVP 최종 통합 플랜](docs/플랜/AI_MAFIA_MVP_FINAL_PLAN.md)을 기준으로
+합니다.
+
+현재 저장소는 이 MVP를 구현하기 위한 기반 단계로, 일반 사용자용 Streamlit OIDC
+로그인, 서명된 내부 요청을 받는 FastAPI Backend, PostgreSQL 사용자 저장을 독립
+실행 단위로 분리했습니다. Google로 처음 로그인하면 내부 계정이 생성되고, 이후
+로그인에서는 프로필과 최근 로그인 시각이 갱신됩니다. 실제 마피아 게임 엔진과
+AI 플레이어 기능은 아래 계획에 따른 후속 구현 범위입니다.
 
 개발하거나 기여하기 전에 반드시 [AGENTS.MD](AGENTS.MD)의 브랜치, 커밋,
 파일·디렉터리 구조, 테스트, 주석 및 문서화 규칙을 확인하세요.
@@ -23,23 +33,49 @@ PostgreSQL 사용자 저장을 독립 실행 단위로 분리한 프로젝트입
 
 LLM Agent loop, MCP Tool·Resource·Prompt, 관리자 업무 기능, Redis 연결은 아직
 구현하지 않았습니다. 예약 모듈은 향후 연결 위치만 고정하며 외부 호출을 수행하지
-않습니다. 상세 경계는 [아키텍처 개편 문서](docs/ARCHITECTURE_REFACTOR_PLAN.md)를
+않습니다. 상세 경계는 [아키텍처 개편 문서](docs/플랜/ARCHITECTURE_REFACTOR_PLAN.md)를
 참고하세요.
 
 현재 구조를 이용해 1명의 인간 플레이어와 AI 에이전트가 기본 마피아 게임을
 진행하는 후속 MVP의 확정 설계는
-[AI 마피아 MVP 최종 통합 플랜](docs/AI_MAFIA_MVP_FINAL_PLAN.md)에 정리되어
-있습니다. 이 문서는 세 기획 초안(`docs/mafia_game_plan.md`,
-`docs/AI_MAFIA_MVP_PLAN.md`, `docs/ai_mafia_game_engine분리규칙.md`)을 현재
+[AI 마피아 MVP 최종 통합 플랜](docs/플랜/AI_MAFIA_MVP_FINAL_PLAN.md)에 정리되어
+있습니다. 이 문서는 세 기획 초안(`docs/초기기획안/mafia_game_plan.md`,
+`docs/플랜/AI_MAFIA_MVP_PLAN.md`, `docs/규칙/ai_mafia_game_engine분리규칙.md`)을 현재
 저장소 구조 기준으로 검증·통합한 구현 기준 문서이며, 통합 시 변경·결정된
-항목은 [통합·수정 내역](docs/AI_MAFIA_PLAN_INTEGRATION_NOTES.md)에 기록되어
+항목은 [통합·수정 내역](docs/플랜/AI_MAFIA_PLAN_INTEGRATION_NOTES.md)에 기록되어
 있습니다. 최종 플랜은 구현 계획이며 아래의 현재 구현 범위를 확장했다고
 간주하지 않습니다.
 
 3인(Front·Backend·MCP Server) 섹터 분담, 섹터 간 API·DB·MCP 계약 명세와
-작업 순서는 [상세 구현 계획서](docs/AI_MAFIA_IMPLEMENTATION_PLAN.md)에
+작업 순서는 [상세 구현 계획서](docs/개발상세플랜/AI_MAFIA_IMPLEMENTATION_PLAN.md)에
 정리되어 있습니다. 이 계획서에는 [AGENTS.MD](AGENTS.MD)의 작업 지침 요약이
 포함되어 있으며, 계약(명세) 변경은 계획서 갱신과 섹터 합의를 먼저 거칩니다.
+
+섹터별 담당자는 별도 시스템에서 개발 후 merge하며, 착수 전에 자기 섹터
+지침서를 반드시 읽어야 합니다. 각 지침서는 작업 단위(WU) 분해, coding AI
+agent 사용 규칙(한 세션 = WU 1개 이하), 중간 merge·테스트 체크포인트를
+확정합니다.
+
+- Front: [docs/개발상세플랜/SECTOR_PLAN_FRONT.md](docs/개발상세플랜/SECTOR_PLAN_FRONT.md)
+- Backend: [docs/개발상세플랜/SECTOR_PLAN_BACKEND.md](docs/개발상세플랜/SECTOR_PLAN_BACKEND.md)
+- MCP Server: [docs/개발상세플랜/SECTOR_PLAN_MCP.md](docs/개발상세플랜/SECTOR_PLAN_MCP.md)
+
+## 개발상세플랜 문서 업데이트 (2026-09-02)
+
+`docs` 루트에 섞여 있던 문서를 `규칙`, `초기기획안`, `플랜`,
+`개발상세플랜`으로 분류했습니다. 이 중 `docs/개발상세플랜/`에는 구현 착수 시
+직접 사용하는 공통 계약과 섹터별 작업 지침서만 배치했습니다.
+
+| 문서 | 기록된 내용 |
+|---|---|
+| [AI_MAFIA_IMPLEMENTATION_PLAN.md](docs/개발상세플랜/AI_MAFIA_IMPLEMENTATION_PLAN.md) | Front·Backend·MCP 공통 API·DB·MCP 계약, 승인된 파일 범위, 마일스톤과 계약 변경 절차 |
+| [SECTOR_PLAN_FRONT.md](docs/개발상세플랜/SECTOR_PLAN_FRONT.md) | Front 소유 경계, WU-F1~F8, CP-F0~F4와 검증 기준 |
+| [SECTOR_PLAN_BACKEND.md](docs/개발상세플랜/SECTOR_PLAN_BACKEND.md) | Backend 소유 경계, WU-B1~B7, CP-B0~B5와 고위험 검증 기준 |
+| [SECTOR_PLAN_MCP.md](docs/개발상세플랜/SECTOR_PLAN_MCP.md) | MCP Server 소유 경계, WU-M1~M5, CP-M0~M4와 컨텍스트 격리 기준 |
+
+문서 이동에 맞춰 루트 `AGENTS.MD`, README, 환경 설정 예시와 패키지 안내의
+참조 경로도 갱신했습니다. 이번 분류는 문서 위치와 탐색 경로를 정리한 것이며,
+각 계획서에 적힌 후속 기능을 구현 완료 상태로 변경하지는 않습니다.
 
 ## 프로젝트 구조
 
@@ -74,13 +110,20 @@ LLM Agent loop, MCP Tool·Resource·Prompt, 관리자 업무 기능, Redis 연�
 │   ├── mafia_game/                   # 게임 컨텍스트 MCP 예약 패키지(MVP 대상)
 │   └── mcp_2/                        # 후속 MCP 독립 예약 패키지
 ├── docs/
-│   ├── AI_MAFIA_MVP_FINAL_PLAN.md    # AI 마피아 MVP 최종 통합 플랜(구현 기준)
-│   ├── AI_MAFIA_IMPLEMENTATION_PLAN.md  # 3인 섹터 분담 상세 구현 계획·API·DB 명세
-│   ├── AI_MAFIA_PLAN_INTEGRATION_NOTES.md  # 기획 문서 통합·수정 내역
-│   ├── AI_MAFIA_MVP_PLAN.md          # (대체됨) MVP 설계 초안
-│   ├── ai_mafia_game_engine분리규칙.md  # (대체됨) 엔진/Agent/MCP 분리 규칙
-│   ├── mafia_game_plan.md            # (대체됨) 추리게임 기획안·확장 참고
-│   └── ARCHITECTURE_REFACTOR_PLAN.md # 구조 개편 계획과 적용 기록
+│   ├── 규칙/
+│   │   └── ai_mafia_game_engine분리규칙.md # (대체됨) 엔진/Agent/MCP 분리 규칙
+│   ├── 초기기획안/
+│   │   └── mafia_game_plan.md         # (대체됨) 추리게임 기획안·확장 참고
+│   ├── 플랜/
+│   │   ├── AI_MAFIA_MVP_FINAL_PLAN.md # AI 마피아 MVP 최종 통합 플랜(구현 기준)
+│   │   ├── AI_MAFIA_MVP_PLAN.md       # (대체됨) MVP 설계 초안
+│   │   ├── AI_MAFIA_PLAN_INTEGRATION_NOTES.md # 기획 문서 통합·수정 내역
+│   │   └── ARCHITECTURE_REFACTOR_PLAN.md # 구조 개편 계획과 적용 기록
+│   └── 개발상세플랜/
+│       ├── AI_MAFIA_IMPLEMENTATION_PLAN.md # 3인 섹터 분담 상세 구현 계획·API·DB 명세
+│       ├── SECTOR_PLAN_FRONT.md       # Front 섹터 작업 지침서(WU·CP)
+│       ├── SECTOR_PLAN_BACKEND.md     # Backend 섹터 작업 지침서(WU·CP)
+│       └── SECTOR_PLAN_MCP.md         # MCP 섹터 작업 지침서(WU·CP)
 ├── tests/{integration,e2e}/          # 서버 간·브라우저 검증 확장 위치
 └── scripts/configure_google_oidc.py  # Google client JSON → Streamlit secrets 생성
 ```
@@ -222,19 +265,37 @@ Backend 설정이 없거나 안전성 검사를 통과하지 못하면 접근을
 uv run streamlit run frontend_admin/app.py --server.port 8502
 ```
 
-## 로그인과 내부 API 흐름
+## 구현 완료: Google 로그인
 
-1. `frontend_user`가 Streamlit OIDC 로그인과 cookie session을 소유합니다.
-2. 외부 claim을 길이·문자·HTTPS 규칙으로 정규화합니다.
-3. `core/api_client.py`가 `timestamp.request_id.raw_body`를 HMAC-SHA256으로 서명합니다.
-4. Backend가 UUID, 기본 300초 시간 오차, HMAC, 요청 schema를 모두 다시 검증합니다.
-5. `IdentityService`가 PostgreSQL 저장소를 호출해 사용자를 생성하거나 갱신합니다.
-6. 저장된 활성 사용자 응답을 받은 실행에서만 애플리케이션 접근을 허용합니다.
+Google OIDC 인증부터 내부 사용자 계정 연결, 로그인 프로필 표시와 로그아웃까지
+구현되어 있습니다. 로그인 성공 후 현재 제공되는 화면은 연결된 계정의 프로필과
+로그아웃 UI이며, AI 마피아 홈·게임 화면은 개발상세플랜에 따른 후속 구현 범위입니다.
 
-이메일은 변경 가능한 프로필일 뿐 계정 연결 키가 아닙니다. `(provider,
-provider_subject)`만 외부 계정 연결에 사용하며 동시 첫 로그인은 PostgreSQL advisory
-transaction lock으로 직렬화합니다. `request_id`는 현재 추적 상관관계에 사용하고,
-Redis가 추가되는 후속 단계에서 짧은 TTL의 재전송 차단 키로 확장합니다.
+1. 앱 시작 시 `auth.redirect_uri`, 32자 이상의 cookie secret, Google client
+   ID·secret과 HTTPS metadata URL을 검사합니다. 설정이 누락되거나 안전하지 않으면
+   로그인 버튼을 비활성화하고, 남아 있는 OIDC cookie도 인증 상태로 사용하지 않습니다.
+2. 사용자가 `Google로 계속하기`를 누르면 `st.login("google")`이 Google OIDC
+   리디렉션을 시작하고 Streamlit이 `/oauth2callback`과 cookie session을 처리합니다.
+3. 콜백 후 `st.user`의 `sub`, email, 표시명, email 검증 여부와 프로필 이미지를
+   공급자 중립 신원 모델로 변환합니다. 문자열은 제어 문자와 길이를 제한하고,
+   아바타는 HTTPS 절대 URL만 허용합니다.
+4. Frontend는 정규화한 신원을 JSON body로 만들고
+   `timestamp.request_id.raw_body`를 HMAC-SHA256으로 서명해
+   `POST /api/v1/identity/provision`만 호출합니다. DB에는 직접 접근하지 않습니다.
+5. Backend는 UUID request id, 기본 300초 시간 오차, HMAC과 요청 schema를 다시
+   검증한 뒤 `IdentityService`와 PostgreSQL 저장소를 호출합니다.
+6. 첫 로그인은 `users`와 `oauth_identities`를 한 트랜잭션에서 생성하고,
+   재로그인은 프로필과 최근 로그인 시각을 갱신합니다. 동시 첫 로그인은
+   `(provider, provider_subject)` 기준 advisory transaction lock으로 직렬화합니다.
+7. 저장된 활성 사용자 응답을 받은 실행에서만 애플리케이션 접근을 허용합니다.
+   설정 오류, 서명 실패, Backend·DB 장애와 비활성 계정은 모두 접근 거부로 끝납니다.
+8. 로그아웃은 세션에 캐시한 계정 연결 결과를 제거한 뒤 `st.logout()`을 호출해
+   다른 Google 계정으로 다시 로그인할 때 이전 사용자 상태가 재사용되지 않게 합니다.
+
+이메일은 변경 가능한 프로필일 뿐 계정 연결 키가 아니며, `(provider,
+provider_subject)`만 외부 계정 연결에 사용합니다. `request_id`는 현재 추적
+상관관계에 사용하고, Redis가 추가되는 후속 단계에서 짧은 TTL의 재전송 차단 키로
+확장합니다.
 
 ## 테스트와 정적 검사
 

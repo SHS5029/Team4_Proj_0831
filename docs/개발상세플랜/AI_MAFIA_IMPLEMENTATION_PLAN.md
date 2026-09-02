@@ -1,20 +1,25 @@
 # AI 마피아 MVP 상세 구현 계획서 (3인 섹터 분담)
 
 **문서 상태:** 구현 착수용 상세 계획 (추후 수정 가능)
-**기준 문서:** [AI 마피아 MVP 최종 통합 플랜](AI_MAFIA_MVP_FINAL_PLAN.md)
-**작업 규칙 원본:** [AGENTS.MD](../AGENTS.MD) — 이 계획서의 모든 작업에 적용
+**기준 문서:** [AI 마피아 MVP 최종 통합 플랜](../플랜/AI_MAFIA_MVP_FINAL_PLAN.md)
+**작업 규칙 원본:** [AGENTS.MD](../../AGENTS.MD) — 이 계획서의 모든 작업에 적용
 **분담:** 3인 — Front 섹터, Backend 섹터, MCP Server 섹터
+**섹터별 작업 지침서 (착수 전 필독):**
+[Front](SECTOR_PLAN_FRONT.md) ·
+[Backend](SECTOR_PLAN_BACKEND.md) ·
+[MCP Server](SECTOR_PLAN_MCP.md)
 
 이 문서는 최종 통합 플랜을 실제 작업 단위로 쪼개고, 섹터 간 병렬 작업이
 가능하도록 **API 명세와 DB 설계서를 계약으로 먼저 고정**한다. 명세 변경이
 필요하면 임의로 바꾸지 말고 3인 합의 후 이 문서를 먼저 갱신한 뒤 코드를
-수정한다.
+수정한다. 각 섹터의 작업 단위(WU) 분해, coding AI agent 사용 규칙(한 세션
+= WU 1개 이하), 중간 merge·테스트 체크포인트는 섹터 지침서가 확정한다.
 
 ---
 
 ## 0. 공통 작업 지침 (AGENTS.MD 요약 — 전 섹터 필수)
 
-아래 지침은 [AGENTS.MD](../AGENTS.MD)의 요약이며, 충돌 시 AGENTS.MD 원문이
+아래 지침은 [AGENTS.MD](../../AGENTS.MD)의 요약이며, 충돌 시 AGENTS.MD 원문이
 우선한다. 세 섹터 담당자 모두 작업 시작 전에 원문을 읽어야 한다.
 
 ### 0.1 브랜치와 Git
@@ -574,6 +579,9 @@ backend/tests/test_game_rules.py, test_game_state_machine.py,
 
 ### 4.2 작업 순서 (최종 플랜 14장 단계와 대응)
 
+아래 B1~B5는 [Backend 섹터 지침서](SECTOR_PLAN_BACKEND.md)의 WU-B1~B7로
+세분화되어 있다. coding AI agent 세션은 WU 단위로만 지시한다.
+
 1. **B1. 규칙 엔진(LLM·DB 없음)** — `models/game.py`에 순수 함수형 상태 머신.
    역할 배정(seed 결정적), 밤 해소(보호=공격 취소), 투표·재투표·무처형,
    승패 판정. fake agent로 5~9명 전 구성 자동 완주 테스트.
@@ -722,6 +730,9 @@ Tools — 모두 5장 `/actions`로 전달하는 **행동 제안**이며 상태�
 
 ### 6.3 작업 순서
 
+아래 M1~M4는 [MCP 섹터 지침서](SECTOR_PLAN_MCP.md)의 WU-M1~M5로 세분화되어
+있다(격리 불변식 WU-M0 포함). coding AI agent 세션은 WU 단위로만 지시한다.
+
 1. **M1. 골격+fake 엔진** — server, 세션 고정, fake engine으로 Resource 7종.
 2. **M2. Tool 6종** — 1차 검증, `/actions` 전달, 거부 응답 정제.
 3. **M3. 실제 Engine 연결** — HMAC 클라이언트, capability 전달, 오류 변환.
@@ -775,6 +786,9 @@ frontend_admin/tests/ (신설: test_admin_api.py, test_admin_pages_smoke.py)
 
 ### 7.3 작업 순서
 
+아래 F1~F5는 [Front 섹터 지침서](SECTOR_PLAN_FRONT.md)의 WU-F1~F8로
+세분화되어 있다. coding AI agent 세션은 WU 단위로만 지시한다.
+
 1. **F1. game_api + fake transport** — 2장 명세 그대로 클라이언트·모델.
 2. **F2. 홈·생성·불러오기** — fake 데이터로 화면 완성.
 3. **F3. 진행·결과 화면** — 타임라인, 행동 버튼, 관전·빠른 진행, 저장.
@@ -785,16 +799,43 @@ frontend_admin/tests/ (신설: test_admin_api.py, test_admin_pages_smoke.py)
 
 ## 8. 마일스톤과 통합 순서
 
+각 섹터는 별도 시스템에서 개발한 뒤 통합 브랜치로 merge한다. 섹터별 작업
+단위(WU)·coding AI agent 사용 규칙·체크포인트(CP) 상세는 섹터 지침서를
+따른다.
+
+- Front: [SECTOR_PLAN_FRONT.md](SECTOR_PLAN_FRONT.md) (WU-F1~F8, CP-F0~F4)
+- Backend: [SECTOR_PLAN_BACKEND.md](SECTOR_PLAN_BACKEND.md) (WU-B1~B7, CP-B0~B5)
+- MCP: [SECTOR_PLAN_MCP.md](SECTOR_PLAN_MCP.md) (WU-M1~M5, CP-M0~M4)
+
 | 마일스톤 | Front | Backend | MCP | 통합 검증 |
 |---|---|---|---|---|
-| **M-A 계약 고정** | fake client 작성 | 2·3·5장 계약 스텁 | fake 엔진 작성 | 이 문서 리뷰 합의 |
-| **M-B 단독 완성** | F1~F3 (fake) | B1~B3 | M1~M2 (fake) | 섹터별 테스트 통과 |
-| **M-C 1차 통합** | F4 | B3 API 안정화 | M3 | 인간 1 + fake LLM로 한 판 완주 |
-| **M-D 에이전트 통합** | 진행 UX 다듬기 | B4 | M4 | 실제 LLM 수동 1회(비용 승인 후), 회귀는 fake |
-| **M-E 관리자·알파** | F5 | B5 | 감사 보강 | 5~9명 자동 시뮬레이션, 최종 플랜 15장 완료 조건 |
+| **M-A 계약 고정** | CP-F0 | CP-B0 | CP-M0 | 이 문서 리뷰 3인 합의 |
+| **M-B 단독 완성** | CP-F1~F2 (fake) | CP-B1~B2 | CP-M1~M2 (fake) | 섹터별 focused+회귀 통과 |
+| **M-C 1차 통합** | CP-F3 | CP-B3, CP-B4 | CP-M3 | 인간 1 + fake LLM로 한 판 완주 |
+| **M-D 에이전트 통합** | 진행 UX 다듬기 | CP-B5(B6) | CP-M4 | 실제 LLM 수동 1회(비용 승인 후), 회귀는 fake |
+| **M-E 관리자·알파** | CP-F4 | CP-B5(B7) | 감사 보강 | 5~9명 자동 시뮬레이션, 최종 플랜 15장 완료 조건 |
 
-통합 브랜치 규칙: 각 섹터 브랜치 → 검토 → 통합 브랜치(예: `develop`) 병합.
-`main` 병합은 M-C 이후 사용자 승인 시에만.
+### 8.1 중간 merge 절차 (전 섹터 공통)
+
+1. 섹터 브랜치(`feat/<섹터>-<기능>`)에서 CP 단위로만 merge를 요청한다.
+   CP를 건너뛴 대량 merge는 금지한다.
+2. merge 전: `develop`을 자기 브랜치에 반영해 충돌을 자기 쪽에서 해소하고
+   전체 회귀(`uv run pytest` + compileall + ruff)를 통과시킨다.
+3. merge 후: `develop`에서 통합 스모크를 실행하고 결과를 팀에 공유한다.
+   - CP-B3/CP-F3 이후: Backend 기동 → `/health` 200 → 게임 생성 1회
+   - CP-B4/CP-M3 이후: Backend + MCP 기동 → Resource 1종 조회 성공
+4. 통합 스모크 실패 시 원인 섹터가 수정 브랜치로 후속 조치한다. 다른
+   섹터 코드를 임의 수정하지 않는다.
+5. `main` 병합은 M-C 이후 사용자 승인 시에만.
+
+### 8.2 섹터 간 의존 순서 (병렬 계획의 기준)
+
+```text
+CP-B3(사용자 API) ──▶ CP-F3(Front 실연동)
+CP-B4(내부 Engine API) ──▶ CP-M3(MCP 실연동)
+CP-B5 + CP-M4 ──▶ M-E 통합 알파
+그 외 모든 CP는 fake 기반으로 상호 독립 진행 가능
+```
 
 ## 9. 계약 변경 절차 (추후 수정 가능 원칙)
 
@@ -807,6 +848,7 @@ frontend_admin/tests/ (신설: test_admin_api.py, test_admin_pages_smoke.py)
 |---|---|---|---|
 | 2026-09-01 | 초판 작성 | — | — |
 | 2026-09-01 | `mcp_server/mcp_1` → `mcp_server/mafia_game` 개명 | 예약명 대신 담당 게임 도메인이 드러나는 이름 사용 | 사용자 승인 |
+| 2026-09-02 | 섹터별 작업 지침서 3종 분리, 8장을 CP 기반 중간 merge·통합 스모크 절차로 개정 | 별도 시스템 개발 후 merge 전제의 세부 지침과 AI agent 세션 범위(WU 1개 이하) 강제 | 사용자 요청 |
 
 ## 10. 환경 변수 (전 섹터 공통, `.env.example` 참조)
 

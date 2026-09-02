@@ -4,9 +4,9 @@
 **통합 결과:** [AI_MAFIA_MVP_FINAL_PLAN.md](AI_MAFIA_MVP_FINAL_PLAN.md)
 **통합 원본 3개:**
 
-1. `docs/mafia_game_plan.md` — 추리게임 기획안 (제품 기획 관점)
-2. `docs/AI_MAFIA_MVP_PLAN.md` — MVP 구현 설계 초안 (기술 설계 관점)
-3. `docs/ai_mafia_game_engine분리규칙.md` — 엔진/Agent/MCP 분리 규칙 (보안 경계 관점)
+1. `docs/초기기획안/mafia_game_plan.md` — 추리게임 기획안 (제품 기획 관점)
+2. `docs/플랜/AI_MAFIA_MVP_PLAN.md` — MVP 구현 설계 초안 (기술 설계 관점)
+3. `docs/규칙/ai_mafia_game_engine분리규칙.md` — 엔진/Agent/MCP 분리 규칙 (보안 경계 관점)
 
 이 문서는 세 문서를 현재 저장소 구조 기준으로 검증하면서 발견한 불일치,
 결정한 통합 방향, 최종 플랜에 반영한 수정 사항을 기록한다.
@@ -121,7 +121,7 @@
 
 ### 3.3 문서
 
-- `docs/AI_MAFIA_MVP_FINAL_PLAN.md` 신규 작성 (구현 기준 문서).
+- `docs/플랜/AI_MAFIA_MVP_FINAL_PLAN.md` 신규 작성 (구현 기준 문서).
 - 원본 3개 문서 서두에 최종 플랜으로 대체되었음을 알리는 안내 추가.
 - 루트 `README.md`의 문서 링크·프로젝트 구조 표기를 실제 구조
   (`mcp_server/mcp_1`, `mcp_2`)와 최종 플랜 기준으로 갱신.

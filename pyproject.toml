@@ -10,7 +10,7 @@ dependencies = [
   "python-dotenv>=1.1.0,<2",
   "streamlit[auth]>=1.55.0,<2",
   "uvicorn>=0.35.0,<1",
-  # --- AI 마피아 MVP(docs/AI_MAFIA_MVP_FINAL_PLAN.md)용 의존성 ---
+  # --- AI 마피아 MVP(docs/플랜/AI_MAFIA_MVP_FINAL_PLAN.md)용 의존성 ---
   # Redis: 게임 lock·idempotency·runtime cache·event stream (10장)
   "redis>=5.0.0,<7",
   # LLM 이중 공급자: LLM_PROVIDER 환경 변수로 선택 (7장, 통합 결정)
