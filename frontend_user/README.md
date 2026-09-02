@@ -32,7 +32,9 @@ http://localhost:8501/oauth2callback
 
 ## 실행
 
-Backend를 먼저 실행한 뒤 별도 터미널에서 사용자 앱을 시작합니다.
+MCP 담당자가 PostgreSQL(게임 기능 구현 후 Redis 포함)을 준비하고 Backend가
+기동된 뒤, 별도 터미널에서 사용자 앱을 시작합니다. Front 담당자는 DB·Redis를
+직접 설치·실행하거나 접속하지 않습니다.
 
 ```bash
 uv run streamlit run frontend_user/app.py --server.port 8501

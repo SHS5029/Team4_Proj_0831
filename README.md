@@ -1,9 +1,19 @@
-# Team4 서비스 아키텍처와 Google OIDC 로그인
+# AI 마피아
 
-일반 사용자용 Streamlit OIDC 로그인, 서명된 내부 요청을 받는 FastAPI Backend,
-PostgreSQL 사용자 저장을 독립 실행 단위로 분리한 프로젝트입니다. Google로 처음
-로그인하면 내부 계정이 생성되고, 이후 로그인에서는 프로필과 최근 로그인 시각이
-갱신됩니다.
+**AI 마피아**는 함께할 사람을 기다리지 않아도 1명의 인간 플레이어와 개성 있는
+여러 AI 플레이어가 바로 한 판을 완주할 수 있도록 만드는 소셜 디덕션 게임입니다.
+5~9명 규모의 기본 마피아 게임에서 AI마다 말투·공격성·기만 성향·추론 능력을
+달리해 반복 플레이의 변화를 만들고, 규칙과 승패는 Backend 게임 엔진이 결정하며
+LLM은 허용된 정보 안에서 대화와 선택만 담당하는 것을 핵심 원칙으로 삼습니다.
+제품 목표와 MVP 범위는
+[AI 마피아 MVP 최종 통합 플랜](docs/플랜/AI_MAFIA_MVP_FINAL_PLAN.md)을 기준으로
+합니다.
+
+현재 저장소는 이 MVP를 구현하기 위한 기반 단계로, 일반 사용자용 Streamlit OIDC
+로그인, 서명된 내부 요청을 받는 FastAPI Backend, PostgreSQL 사용자 저장을 독립
+실행 단위로 분리했습니다. Google로 처음 로그인하면 내부 계정이 생성되고, 이후
+로그인에서는 프로필과 최근 로그인 시각이 갱신됩니다. 실제 마피아 게임 엔진과
+AI 플레이어 기능은 아래 계획에 따른 후속 구현 범위입니다.
 
 개발하거나 기여하기 전에 반드시 [AGENTS.MD](AGENTS.MD)의 브랜치, 커밋,
 파일·디렉터리 구조, 테스트, 주석 및 문서화 규칙을 확인하세요.
@@ -18,49 +28,61 @@ PostgreSQL 사용자 저장을 독립 실행 단위로 분리한 프로젝트입
 - 첫 로그인 시 `users`와 `oauth_identities` 레코드의 원자적 생성
 - 재로그인 프로필·최근 로그인 시각 갱신과 비활성 사용자 fail-closed 차단
 - 외부 프로필 HTML escape와 HTTPS 아바타 URL 제한
-- Backend 소유 PostgreSQL migration 실행기
-- 독립 관리자 Streamlit 앱과 MCP 서버 예약 구조(`mcp_server/mcp_1`, `mcp_2`)
+- Backend 소유 PostgreSQL migration 실행 코드(MCP 섹터가 실제 실행)
+- 독립 관리자 Streamlit 앱과 MCP 서버 예약 구조(`mcp_server/mafia_game`, `mcp_2`)
 
-LLM Agent loop, 실제 마피아 규칙, 관리자 업무 기능은 아직 구현하지 않았습니다.
-연결 뼈대 단계에서는 dummy 게임 REST API, operation·SSE smoke, 게임 MCP의 최소
-JSON-RPC(`initialize`, `tools/list`, `tools/call`, `resources/list`, `resources/read`)
-왕복만 구현했습니다. 다음 최소 인프라 연결은 PostgreSQL 원본 저장, Redis 보조
-연결, Backend dummy LLM·MCP 왕복, SSE replay·polling fallback 순서로 진행하며,
-기본 LLM provider는 외부 키가 필요 없는 `dummy`이며, 설정을 `local`로 바꾸면
-OpenAI 호환 로컬 `/chat/completions` endpoint를 호출합니다. 상세 경계와 다음 구현 순서는
-[연결 뼈대 계획](docs/scaffold/AI_MAFIA_SCAFFOLD_PLAN.md)을 참고하세요.
+개발 섹터 역할은 코드 소유권과 실행 환경 책임을 분리합니다. Backend 섹터는
+DB schema·migration SQL·repository와 Redis client·lock 코드를 작성하고, MCP
+섹터는 PostgreSQL·Redis 인스턴스 구축·기동·중지, 접속 계정·권한 준비,
+migration 실행과 health 확인을 담당합니다. 실제 Backend 프로세스는 DB·Redis에
+직접 연결하며 MCP 서버를 데이터 프록시로 사용하지 않습니다.
+
+LLM Agent loop, MCP Tool·Resource·Prompt, 관리자 업무 기능, Redis 연결은 아직
+구현하지 않았습니다. 예약 모듈은 향후 연결 위치만 고정하며 외부 호출을 수행하지
+않습니다. 상세 경계는 [아키텍처 개편 문서](docs/플랜/ARCHITECTURE_REFACTOR_PLAN.md)를
+참고하세요.
 
 현재 구조를 이용해 1명의 인간 플레이어와 AI 에이전트가 기본 마피아 게임을
 진행하는 후속 MVP의 확정 설계는
-[AI 마피아 MVP 최종 통합 플랜](docs/AI_MAFIA_MVP_FINAL_PLAN.md)에 정리되어
-있습니다. 이 문서는 세 기획 초안(`docs/mafia_game_plan.md`,
-`docs/AI_MAFIA_MVP_PLAN.md`, `docs/ai_mafia_game_engine분리규칙.md`)을 제품 범위와
-책임 경계 기준으로 검증·통합한 구현 기준 문서이며, 통합 시 변경·결정된
-항목은 [통합·수정 내역](docs/AI_MAFIA_PLAN_INTEGRATION_NOTES.md)에 기록되어
+[AI 마피아 MVP 최종 통합 플랜](docs/플랜/AI_MAFIA_MVP_FINAL_PLAN.md)에 정리되어
+있습니다. 이 문서는 세 기획 초안(`docs/초기기획안/mafia_game_plan.md`,
+`docs/플랜/AI_MAFIA_MVP_PLAN.md`, `docs/규칙/ai_mafia_game_engine분리규칙.md`)을 현재
+저장소 구조 기준으로 검증·통합한 구현 기준 문서이며, 통합 시 변경·결정된
+항목은 [통합·수정 내역](docs/플랜/AI_MAFIA_PLAN_INTEGRATION_NOTES.md)에 기록되어
 있습니다. 최종 플랜은 구현 계획이며 아래의 현재 구현 범위를 확장했다고
 간주하지 않습니다.
 
-게임 MVP는 기존 OIDC 로그인·인증 경계를 사용하지 않는다. 화면에서 입력한
-UUID `user_id`를 `X-User-Id` 헤더로 전달해 게임 소유자와 메모 작성자를 구분하며,
-이 식별 방식은 로컬·내부 테스트 범위로 제한한다.
+3인(Front / Backend / MCP Server·Data Infrastructure) 섹터 분담, 섹터 간
+API·DB·MCP 계약 명세와
+작업 순서는 [상세 구현 계획서](docs/개발상세플랜/AI_MAFIA_IMPLEMENTATION_PLAN.md)에
+정리되어 있습니다. 이 계획서에는 [AGENTS.MD](AGENTS.MD)의 작업 지침 요약이
+포함되어 있으며, 계약(명세) 변경은 계획서 갱신과 섹터 합의를 먼저 거칩니다.
 
-구현 계약은 [연결 뼈대 우선 구현 계획](docs/scaffold/AI_MAFIA_SCAFFOLD_PLAN.md),
-[게임 규칙·로직](docs/AI_MAFIA_GAME_RULES.md),
-[Backend REST·SSE API 계약](docs/AI_MAFIA_BACKEND_API_CONTRACT.md),
-[게임 MCP API 계약](docs/AI_MAFIA_MCP_API_CONTRACT.md),
-[DB·Redis 설계](docs/AI_MAFIA_DATA_REDIS_DESIGN.md),
-[Frontend 화면 설계](docs/AI_MAFIA_FRONTEND_SPEC.md)로 분리했습니다.
-세부 문서는 `minimum-v1`의 확정 규칙·요청·응답, 저장·캐시, 화면 상태 계약입니다.
-최종 플랜의 현재 디렉터리 안내는 구현 계약이 아니며, 실제 파일 배치는 기존
-import 경계에 맞춰 정합니다. AI 페르소나의 수치 변환과 적용 순서는 최종 플랜
-7.3이 단일 기준이고, API 문서는 해당 값의 wire schema만 소유합니다.
-단일 Backend worker의 복구 실행기, PostgreSQL operation·idempotency 원본,
-SSE와 operation polling, HMAC 기반 MCP 내부 context 조회를 최소 구현 방식으로
-고정했습니다. 현재 코드가 이 계약을 구현했다는 의미는 아닙니다.
+섹터별 담당자는 별도 시스템에서 개발 후 merge하며, 착수 전에 자기 섹터
+지침서를 반드시 읽어야 합니다. 각 지침서는 작업 단위(WU) 분해, coding AI
+agent 사용 규칙(한 세션 = WU 1개 이하), 중간 merge·테스트 체크포인트를
+확정합니다.
 
-운영 기본값은 게임당 총 60,000 token, agent 호출당 최대 출력 400 token,
-원격 모델 예상 비용 1 USD 경고선, `PAUSED` 게임 30일과 `FINISHED` 게임 90일
-보존입니다. 사용자 즉시 삭제 API와 다중 Backend worker는 MVP 범위에서 제외합니다.
+- Front: [docs/개발상세플랜/SECTOR_PLAN_FRONT.md](docs/개발상세플랜/SECTOR_PLAN_FRONT.md)
+- Backend: [docs/개발상세플랜/SECTOR_PLAN_BACKEND.md](docs/개발상세플랜/SECTOR_PLAN_BACKEND.md)
+- MCP Server·Data Infrastructure: [docs/개발상세플랜/SECTOR_PLAN_MCP.md](docs/개발상세플랜/SECTOR_PLAN_MCP.md)
+
+## 개발상세플랜 문서 업데이트 (2026-09-02)
+
+`docs` 루트에 섞여 있던 문서를 `규칙`, `초기기획안`, `플랜`,
+`개발상세플랜`으로 분류했습니다. 이 중 `docs/개발상세플랜/`에는 구현 착수 시
+직접 사용하는 공통 계약과 섹터별 작업 지침서만 배치했습니다.
+
+| 문서 | 기록된 내용 |
+|---|---|
+| [AI_MAFIA_IMPLEMENTATION_PLAN.md](docs/개발상세플랜/AI_MAFIA_IMPLEMENTATION_PLAN.md) | Front·Backend·MCP 공통 API·DB·MCP 계약, 승인된 파일 범위, 마일스톤과 계약 변경 절차 |
+| [SECTOR_PLAN_FRONT.md](docs/개발상세플랜/SECTOR_PLAN_FRONT.md) | Front 소유 경계, WU-F1~F8, CP-F0~F4와 검증 기준 |
+| [SECTOR_PLAN_BACKEND.md](docs/개발상세플랜/SECTOR_PLAN_BACKEND.md) | Backend 소유 경계, WU-B1~B7, CP-B0~B5와 고위험 검증 기준 |
+| [SECTOR_PLAN_MCP.md](docs/개발상세플랜/SECTOR_PLAN_MCP.md) | MCP Server·DB·Redis 실행 환경 책임, WU-M1~M6, CP-M0~M5와 컨텍스트 격리 기준 |
+
+문서 이동에 맞춰 루트 `AGENTS.MD`, README, 환경 설정 예시와 패키지 안내의
+참조 경로도 갱신했습니다. 이번 분류는 문서 위치와 탐색 경로를 정리한 것이며,
+각 계획서에 적힌 후속 기능을 구현 완료 상태로 변경하지는 않습니다.
 
 ## 프로젝트 구조
 
@@ -78,13 +100,12 @@ SSE와 operation polling, HMAC 기반 MCP 내부 context 조회를 최소 구현
 │   ├── app/models/identity.py        # 외부 identity·내부 사용자 도메인 모델
 │   ├── app/repositories/             # PostgreSQL 사용자 저장소
 │   ├── app/infrastructure/           # migration·PostgreSQL·HMAC 구현
-│   ├── app/{agent,llm_provider,mcp}/ # Agent·LLM Provider·MCP 연결 위치
-│   ├── migrations/                   # Backend 소유 SQL migration
+│   ├── app/{agent,llm,mcp}/          # 후속 Agent 연결 예약 위치
+│   ├── migrations/                   # Backend 작성 SQL migration(MCP 실행)
 │   ├── tests/
 │   └── README.md
 ├── frontend_user/
 │   ├── app.py                        # 얇은 Streamlit 실행 진입점
-│   ├── game_scaffold_app.py          # 로그인 없는 연결 뼈대 smoke 진입점
 │   ├── app_pages/login_page.py       # OIDC 로그인·프로필 화면 흐름
 │   ├── auth/                         # OIDC 설정·claim·접근·저장 결과 정책
 │   ├── components/ui.py              # 안전한 HTML·CSS 표현
@@ -93,42 +114,37 @@ SSE와 operation polling, HMAC 기반 MCP 내부 context 조회를 최소 구현
 │   └── tests/
 ├── frontend_admin/                   # 관리자 독립 앱의 최소 실행 골격
 ├── mcp_server/
-│   ├── mcp_1/                        # 게임 컨텍스트 MCP 예약 패키지(MVP 대상)
+│   ├── mafia_game/                   # 게임 컨텍스트 MCP 예약 패키지(MVP 대상)
 │   └── mcp_2/                        # 후속 MCP 독립 예약 패키지
 ├── docs/
-│   ├── AI_MAFIA_MVP_FINAL_PLAN.md    # 제품 범위·책임 경계·구현 단계
-│   ├── scaffold/                     # 연결 뼈대 구현 계획 모음
-│   │   ├── AI_MAFIA_SCAFFOLD_PLAN.md      # 연결 뼈대 우선 구현 계획
-│   │   ├── AI_MAFIA_SCAFFOLD_FILE_PLAN.md # 뼈대 파일별 책임과 구현 순서
-│   │   ├── AI_MAFIA_SCAFFOLD_SCHEMA.md    # 뼈대 JSON 입출력 계약
-│   │   ├── AI_MAFIA_SCAFFOLD_RUNBOOK.md   # 뼈대 실행·smoke 절차
-│   │   ├── AI_MAFIA_SCAFFOLD_TEST_PLAN.md # 뼈대 테스트 계획
-│   │   └── AI_MAFIA_MIN_CONNECTION_PLAN.md # DB·Redis·LLM·SSE 최소 연결 계획
-│   ├── AI_MAFIA_GAME_RULES.md        # basic-v1 규칙·상태 전이·해소 로직
-│   ├── AI_MAFIA_API_CONTRACT.md     # 계약 문서 인덱스
-│   ├── AI_MAFIA_BACKEND_API_CONTRACT.md # Frontend·Backend REST/SSE 계약
-│   ├── AI_MAFIA_BACKEND_OPENAPI.yaml # Swagger UI 생성용 OpenAPI 3.1 원본
-│   ├── AI_MAFIA_MCP_API_CONTRACT.md # Backend·게임 MCP 계약
-│   ├── AI_MAFIA_DATA_REDIS_DESIGN.md # PostgreSQL·Redis 저장·복구 계약
-│   ├── AI_MAFIA_FRONTEND_SPEC.md    # 사용자·관리자 화면·상태·호출 순서
-│   ├── AI_MAFIA_PLAN_INTEGRATION_NOTES.md  # 기획 문서 통합·수정 내역
-│   ├── LLM_PROVIDER_IMPLEMENTATION_PLAN.md # LLM Provider 명칭 변경·구현 계획
-│   ├── AI_MAFIA_MVP_PLAN.md          # (대체됨) MVP 설계 초안
-│   ├── ai_mafia_game_engine분리규칙.md  # (대체됨) 엔진/Agent/MCP 분리 규칙
-│   ├── mafia_game_plan.md            # (대체됨) 추리게임 기획안·확장 참고
-│   └── ARCHITECTURE_REFACTOR_PLAN.md # 구조 개편 계획과 적용 기록
+│   ├── 규칙/
+│   │   └── ai_mafia_game_engine분리규칙.md # (대체됨) 엔진/Agent/MCP 분리 규칙
+│   ├── 초기기획안/
+│   │   └── mafia_game_plan.md         # (대체됨) 추리게임 기획안·확장 참고
+│   ├── 플랜/
+│   │   ├── AI_MAFIA_MVP_FINAL_PLAN.md # AI 마피아 MVP 최종 통합 플랜(구현 기준)
+│   │   ├── AI_MAFIA_MVP_PLAN.md       # (대체됨) MVP 설계 초안
+│   │   ├── AI_MAFIA_PLAN_INTEGRATION_NOTES.md # 기획 문서 통합·수정 내역
+│   │   └── ARCHITECTURE_REFACTOR_PLAN.md # 구조 개편 계획과 적용 기록
+│   └── 개발상세플랜/
+│       ├── AI_MAFIA_IMPLEMENTATION_PLAN.md # 3인 섹터 분담 상세 구현 계획·API·DB 명세
+│       ├── SECTOR_PLAN_FRONT.md       # Front 섹터 작업 지침서(WU·CP)
+│       ├── SECTOR_PLAN_BACKEND.md     # Backend 섹터 작업 지침서(WU·CP)
+│       └── SECTOR_PLAN_MCP.md         # MCP 섹터 작업 지침서(WU·CP)
 ├── tests/{integration,e2e}/          # 서버 간·브라우저 검증 확장 위치
 └── scripts/configure_google_oidc.py  # Google client JSON → Streamlit secrets 생성
 ```
 
 `frontend_user`와 `frontend_admin`은 Backend만 HTTP로 호출합니다. Frontend가 DB,
 Redis, MCP 서버에 직접 연결하거나 MCP 서버끼리 서로의 내부 모듈을 import하지
-않습니다.
+않습니다. MCP 섹터가 DB·Redis 실행 환경을 운영해도 `mcp_server/mafia_game`
+runtime은 DB·Redis에 직접 접근하지 않습니다.
 
 ## 사전 준비
 
 - Python 3.12 이상
-- PostgreSQL 서버와 데이터베이스 생성 권한
+- PostgreSQL 서버와 데이터베이스 생성 권한(MCP 섹터 운영 책임)
+- Redis 실행 환경(MCP 섹터 운영 책임, 게임 기능 구현 단계부터 필요)
 - Google Cloud 프로젝트와 OAuth 2.0 웹 애플리케이션 client
 - 권장 패키지 관리자: [uv](https://docs.astral.sh/uv/)
 
@@ -138,15 +154,11 @@ Redis, MCP 서버에 직접 연결하거나 MCP 서버끼리 서로의 내부 �
 uv sync --dev
 ```
 
-uv를 사용하지 않는 Backend 환경에서는 운영 의존성을
-`backend/requirements.txt`, 테스트·정적 검사 포함 환경을
-`backend/requirements-dev.txt`로 설치할 수 있습니다.
+현재 코드에 연결된 외부 자격증명은 Google OIDC뿐입니다. AI 마피아 MVP에서
+후속 연결할 OpenAI·Gemini API 키와 Redis 주소는 `.env.example`의 예약 항목을
+참고하세요.
 
-현재 코드에 연결된 외부 자격증명은 Google OIDC뿐입니다. LLM은 기본적으로
-`dummy` Provider를 사용하며, local·OpenAI·Gemini Provider 설정은 `.env.example`과
-[LLM Provider 구현 계획](docs/LLM_PROVIDER_IMPLEMENTATION_PLAN.md)을 참고하세요.
-
-## Backend 환경 설정
+## Backend·Data Infrastructure 환경 설정
 
 기존 `.env`에는 다른 로컬 설정이나 비밀값이 있을 수 있으므로 덮어쓰지 마세요.
 파일이 없을 때만 예시를 복사하고 소유자 전용 권한을 적용합니다.
@@ -171,22 +183,27 @@ INTERNAL_API_MAX_AGE_SECONDS=300
 - 같은 `INTERNAL_API_SECRET`을 `frontend_user/.streamlit/secrets.toml`의
   `backend.internal_api_secret`에도 설정합니다. 브라우저나 소스 코드에는 넣지 않습니다.
 - Backend의 기본 서명 허용 시간 오차는 300초이며 최대 3600초로 제한됩니다.
-- `.env.example`의 `REDIS_URL`, `LLM_PROVIDER`, `LOCAL_LLM_BASE_URL`,
-  `LOCAL_LLM_MODEL`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `GEMINI_API_KEY`,
-  `GEMINI_MODEL`, `LLM_TIMEOUT_SECONDS`, `LLM_MAX_OUTPUT_TOKENS`,
-  `MAFIA_MCP_URL`, `BACKEND_INTERNAL_URL`, `MCP_INTERNAL_SECRET`,
-  `GAME_SEED_ENCRYPTION_KEY` 등은 AI 마피아 MVP 설정입니다. API key와 실제
-  운영 단가는 `.env`에만 보관합니다.
-- 원격 LLM을 선택하면 `LLM_INPUT_COST_PER_MILLION_USD`와
-  `LLM_OUTPUT_COST_PER_MILLION_USD`를 선택 모델의 현재 가격으로 설정합니다.
-  Provider 선택과 구조화 응답 검증은 `backend/app/llm_provider/`가 담당합니다.
+- `.env.example`의 `REDIS_URL`, `LLM_PROVIDER`, `OPENAI_API_KEY`,
+  `GEMINI_API_KEY`, `MAFIA_MCP_URL`, `ENGINE_INTERNAL_API_SECRET`,
+  `ENGINE_API_URL` 등은 AI 마피아 MVP용 예약 항목입니다.
+  아직 코드가 읽지 않으며 실제 키 값은 `.env`에만 보관합니다.
+  `ENGINE_INTERNAL_API_SECRET`은 MCP→Backend 내부 경계용으로
+  `INTERNAL_API_SECRET`과 다른 값을 사용해야 합니다.
 
-`Team4_Proj` 데이터베이스는 앱이 만들지 않습니다. 마이그레이션 전에 관리 도구로
-데이터베이스를 생성하고 `.env` 계정에 연결·스키마 생성 권한을 부여하세요.
+섹터 작업에서는 MCP 담당자가 PostgreSQL·Redis를 구축하고 실제 접속 값을 비밀
+채널로 Backend 담당자에게 제공합니다. Backend 담당자는 제공받은 URL을 소비하며
+DB·Redis 프로세스를 직접 설치·기동하지 않습니다. 실제 URL·비밀번호는 문서,
+로그, 완료 보고에 기록하지 않습니다.
+
+`Team4_Proj` 데이터베이스는 앱이 만들지 않습니다. MCP 담당자가 migration 전에
+관리 도구로 데이터베이스와 최소 권한 계정을 준비하고 `.env` 계정에 연결·스키마
+생성 권한을 부여합니다.
 
 ## 데이터베이스 마이그레이션
 
-Backend가 소유하는 `backend/migrations/`의 SQL을 이름순으로 실행합니다.
+Backend가 작성·소유하는 `backend/migrations/`의 SQL을 MCP 담당자가 이름순으로
+실행합니다. 아래 명령은 Backend 실행기를 사용하지만 실행 책임은 MCP 섹터에
+있습니다.
 
 ```bash
 uv run python -m backend.app.infrastructure.migrations
@@ -241,7 +258,9 @@ chmod 600 frontend_user/.streamlit/secrets.toml
 
 ## 실행
 
-Backend를 먼저 실행합니다.
+MCP 담당자가 PostgreSQL을 먼저 기동하고 연결·migration 상태를 확인한 뒤
+Backend를 실행합니다. 게임용 Redis가 구현된 이후에는 Redis health도 먼저
+확인합니다.
 
 ```bash
 uv run uvicorn backend.app.main:app --reload --port 8000
@@ -265,19 +284,37 @@ Backend 설정이 없거나 안전성 검사를 통과하지 못하면 접근을
 uv run streamlit run frontend_admin/app.py --server.port 8502
 ```
 
-## 로그인과 내부 API 흐름
+## 구현 완료: Google 로그인
 
-1. `frontend_user`가 Streamlit OIDC 로그인과 cookie session을 소유합니다.
-2. 외부 claim을 길이·문자·HTTPS 규칙으로 정규화합니다.
-3. `core/api_client.py`가 `timestamp.request_id.raw_body`를 HMAC-SHA256으로 서명합니다.
-4. Backend가 UUID, 기본 300초 시간 오차, HMAC, 요청 schema를 모두 다시 검증합니다.
-5. `IdentityService`가 PostgreSQL 저장소를 호출해 사용자를 생성하거나 갱신합니다.
-6. 저장된 활성 사용자 응답을 받은 실행에서만 애플리케이션 접근을 허용합니다.
+Google OIDC 인증부터 내부 사용자 계정 연결, 로그인 프로필 표시와 로그아웃까지
+구현되어 있습니다. 로그인 성공 후 현재 제공되는 화면은 연결된 계정의 프로필과
+로그아웃 UI이며, AI 마피아 홈·게임 화면은 개발상세플랜에 따른 후속 구현 범위입니다.
 
-이메일은 변경 가능한 프로필일 뿐 계정 연결 키가 아닙니다. `(provider,
-provider_subject)`만 외부 계정 연결에 사용하며 동시 첫 로그인은 PostgreSQL advisory
-transaction lock으로 직렬화합니다. `request_id`는 현재 추적 상관관계에 사용하고,
-Redis가 추가되는 후속 단계에서 짧은 TTL의 재전송 차단 키로 확장합니다.
+1. 앱 시작 시 `auth.redirect_uri`, 32자 이상의 cookie secret, Google client
+   ID·secret과 HTTPS metadata URL을 검사합니다. 설정이 누락되거나 안전하지 않으면
+   로그인 버튼을 비활성화하고, 남아 있는 OIDC cookie도 인증 상태로 사용하지 않습니다.
+2. 사용자가 `Google로 계속하기`를 누르면 `st.login("google")`이 Google OIDC
+   리디렉션을 시작하고 Streamlit이 `/oauth2callback`과 cookie session을 처리합니다.
+3. 콜백 후 `st.user`의 `sub`, email, 표시명, email 검증 여부와 프로필 이미지를
+   공급자 중립 신원 모델로 변환합니다. 문자열은 제어 문자와 길이를 제한하고,
+   아바타는 HTTPS 절대 URL만 허용합니다.
+4. Frontend는 정규화한 신원을 JSON body로 만들고
+   `timestamp.request_id.raw_body`를 HMAC-SHA256으로 서명해
+   `POST /api/v1/identity/provision`만 호출합니다. DB에는 직접 접근하지 않습니다.
+5. Backend는 UUID request id, 기본 300초 시간 오차, HMAC과 요청 schema를 다시
+   검증한 뒤 `IdentityService`와 PostgreSQL 저장소를 호출합니다.
+6. 첫 로그인은 `users`와 `oauth_identities`를 한 트랜잭션에서 생성하고,
+   재로그인은 프로필과 최근 로그인 시각을 갱신합니다. 동시 첫 로그인은
+   `(provider, provider_subject)` 기준 advisory transaction lock으로 직렬화합니다.
+7. 저장된 활성 사용자 응답을 받은 실행에서만 애플리케이션 접근을 허용합니다.
+   설정 오류, 서명 실패, Backend·DB 장애와 비활성 계정은 모두 접근 거부로 끝납니다.
+8. 로그아웃은 세션에 캐시한 계정 연결 결과를 제거한 뒤 `st.logout()`을 호출해
+   다른 Google 계정으로 다시 로그인할 때 이전 사용자 상태가 재사용되지 않게 합니다.
+
+이메일은 변경 가능한 프로필일 뿐 계정 연결 키가 아니며, `(provider,
+provider_subject)`만 외부 계정 연결에 사용합니다. `request_id`는 현재 추적
+상관관계에 사용하고, Redis가 추가되는 후속 단계에서 짧은 TTL의 재전송 차단 키로
+확장합니다.
 
 ## 테스트와 정적 검사
 
@@ -299,7 +336,8 @@ uv run ruff check .
 
 자동 테스트는 synthetic identity, 가짜 DB 연결, mock HTTP transport를 사용해 Google,
 운영 DB, 유료 API를 호출하지 않습니다. 실제 Google OAuth 왕복과 실제 PostgreSQL
-마이그레이션은 자격 증명과 로컬 인프라가 필요하므로 별도 수동 검증 대상입니다.
+마이그레이션은 자격 증명과 로컬 인프라가 필요하므로 MCP 담당자가 실행 환경을
+준비·검증하고 Backend 담당자와 결과를 공동 판정합니다.
 
 ## 보안 원칙과 알려진 제약
 
@@ -312,12 +350,7 @@ uv run ruff check .
 - 현재 timestamp 만료만 재전송 범위를 제한합니다. UUID nonce의 일회성 저장은 Redis
   연결 후 추가할 보안 확장 지점입니다.
 - 현재 관리자 앱에는 인증·권한과 업무 기능이 없으며 준비 화면만 표시합니다.
-- 현재 MCP는 `mcp_server/mcp_1`의 연결 뼈대만 실행하며 외부 API·DB를 호출하지 않습니다.
-- 게임 MVP 구현 후에도 개발용 `X-User-Id`와 관리자 API는 인증 수단이 아니므로
-  외부 공개 배포에 사용할 수 없습니다. MCP 전용 `MCP_INTERNAL_SECRET`은 Frontend와
-  공유하지 않습니다.
-- 게임 MVP의 사용자 즉시 삭제 API는 제공하지 않으며, 확정 보존 기간이 지난 데이터만
-  Backend 복구 실행기가 정리하도록 설계되어 있습니다.
+- 현재 MCP 디렉터리에는 실행 서버와 Tool이 없고 외부 API를 호출하지 않습니다.
 
 비밀값 노출이 의심되면 값을 다시 출력하지 말고 즉시 폐기·재발급한 뒤 Git 이력과
 외부 로그를 별도로 점검하세요.
@@ -330,10 +363,10 @@ uv run ruff check .
 - Backend API client: `frontend_user/core/api_client.py`
 - identity API와 유스케이스: `backend/app/routers/identity_router.py`, `services/identity_service.py`
 - 사용자 저장소: `backend/app/repositories/user_repository.py`
-- schema 변경: `backend/migrations/`에 다음 번호의 순방향 SQL 추가
-- Agent·LLM Provider·MCP client: `backend/app/agent/`, `backend/app/llm_provider/`, `backend/app/mcp/`
-- LLM Provider 구현 순서와 공통 계약: [LLM Provider 구현 계획](docs/LLM_PROVIDER_IMPLEMENTATION_PLAN.md)
-- 독립 MCP 기능: `mcp_server/mcp_1/`(게임 컨텍스트 MCP 예정) 또는
+- schema 변경: Backend가 `backend/migrations/`에 다음 번호의 순방향 SQL을
+  추가하고 MCP 담당자가 실제 환경에서 실행·재실행 검증
+- Agent·LLM·MCP client: `backend/app/agent/`, `llm/`, `mcp/`
+- 독립 MCP 기능: `mcp_server/mafia_game/`(게임 컨텍스트 MCP 예정) 또는
   `mcp_server/mcp_2/` 내부 계층에만 추가
 
 ## 기여

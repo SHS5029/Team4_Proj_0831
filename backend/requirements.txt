@@ -4,7 +4,7 @@ pydantic>=2.11,<3.0
 psycopg[binary]>=3.2,<4.0
 python-dotenv>=1.1,<2.0
 uvicorn>=0.35,<1.0
-# AI 마피아 MVP(docs/AI_MAFIA_MVP_FINAL_PLAN.md)용 의존성
+# AI 마피아 MVP(docs/플랜/AI_MAFIA_MVP_FINAL_PLAN.md)용 의존성
 redis>=5.0,<7.0
 # 역할 배정 seed의 AES-256-GCM 암호화
 cryptography>=50.0.1,<51.0

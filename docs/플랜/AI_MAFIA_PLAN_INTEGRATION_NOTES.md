@@ -4,13 +4,12 @@
 **통합 결과:** [AI_MAFIA_MVP_FINAL_PLAN.md](AI_MAFIA_MVP_FINAL_PLAN.md)
 **통합 원본 3개:**
 
-1. `docs/mafia_game_plan.md` — 추리게임 기획안 (제품 기획 관점)
-2. `docs/AI_MAFIA_MVP_PLAN.md` — MVP 구현 설계 초안 (기술 설계 관점)
-3. `docs/ai_mafia_game_engine분리규칙.md` — 엔진/Agent/MCP 분리 규칙 (보안 경계 관점)
+1. `docs/초기기획안/mafia_game_plan.md` — 추리게임 기획안 (제품 기획 관점)
+2. `docs/플랜/AI_MAFIA_MVP_PLAN.md` — MVP 구현 설계 초안 (기술 설계 관점)
+3. `docs/규칙/ai_mafia_game_engine분리규칙.md` — 엔진/Agent/MCP 분리 규칙 (보안 경계 관점)
 
-이 문서는 세 문서의 역할·계약을 대조하면서 발견한 불일치, 결정한 통합 방향,
-최종 플랜과 세부 계약에 반영한 수정 사항을 기록한다. 현재 디렉터리 목록은
-구현 계약이 아니라 참고용 검증 기록이다.
+이 문서는 세 문서를 현재 저장소 구조 기준으로 검증하면서 발견한 불일치,
+결정한 통합 방향, 최종 플랜에 반영한 수정 사항을 기록한다.
 
 ## 1. 현재 저장소 구조 대비 검증 결과
 
@@ -22,9 +21,8 @@
   infrastructure(redis, security)/core 경계는 문서 설계와 실제 구조가 일치.
 - `backend/migrations/` 소유권과 실행기
   (`backend.app.infrastructure.migrations`) 일치.
-- Google OIDC 로그인, HMAC 내부 서명, identity provision API는 저장소의 기존
-  identity 기능으로 구현 완료 상태다. 단, 게임 MVP 경로에서는 이를 호출하지 않고
-  별도 `X-User-Id` 식별자 계약을 사용한다.
+- Google OIDC 로그인, HMAC 내부 서명, identity provision API는 구현 완료
+  상태로 세 문서의 전제와 일치.
 
 ### 1.2 문서와 실제 구조가 불일치한 항목 (최종 플랜에서 교정)
 
@@ -33,7 +31,7 @@
 | MCP 패키지 이름 | MVP_PLAN·README는 `mcp_server/tour`, `mcp_server/weather` 언급 | 실제는 `mcp_server/mcp_1`, `mcp_server/mcp_2` (범용 예약 이름으로 개편됨) | 게임 컨텍스트 MCP를 `mcp_1`에 배치, `mcp_2`는 후속 예약으로 명시 |
 | MCP README 내용 | — | `mcp_1`/`mcp_2` README에 Tour·Weather 설명이 잔존 | 과거 예약 명칭임을 최종 플랜에 주석, 구현 시 README 갱신 예정 |
 | 미추적 잔여 디렉터리 | — | `backend/app/api`, `backend/app/auth`, `backend/app/db`, `mcp_server/src`가 빈 디렉터리/캐시로 잔존 (git 미추적, 구조 개편 이전 잔재) | 구조 변경 없이 현황만 기록. 정리는 별도 승인 필요 |
-| LLM 공급자 | 문서에 미확정 | `.env`에 OpenAI·Gemini·로컬 endpoint 항목이 존재 | local·OpenAI·Gemini 중 `LLM_PROVIDER` 선택 계약으로 확정 |
+| LLM 공급자 | 문서에 미확정 | `.env`에 OpenAI·Gemini·Ollama 키 항목이 이미 존재 | OpenAI·Gemini 이중 지원으로 확정 (사용자 결정) |
 
 ### 1.3 세 문서 간 충돌 항목과 결정
 
@@ -83,36 +81,26 @@
   API 계약, 페르소나 파라미터 10종, fallback 표, 구현 단계**를 골격으로
   유지.
 - mafia_game_plan의 **호스트 정책**(생성자는 소유자 메타정보만),
-  **명시적 PAUSE 후 동일 좌석 복귀**(브라우저 강제 종료 자동 감지는 MVP 제외,
-  AI 자동 교체 금지),
+  **접속 종료 처리**(PAUSED 저장 후 동일 좌석 복귀, AI 자동 교체 금지),
   **경찰 결과는 진영만 반환**(정확한 역할명 비공개), **비공개 투표**,
-  **처형자 역할 공개** 규칙을 최종 플랜과 `AI_MAFIA_GAME_RULES.md`에 편입.
+  **처형자 역할 공개** 규칙을 최종 플랜 4·6·12장에 편입.
 
 ## 2. 최종 플랜에서 새로 확정한 사항
 
 1. 역할표를 5~9명 기준으로 확정 (7명 이상 마피아 2명, 주범·공범 구분 없음).
-   정확한 배정·해소 순서는 `AI_MAFIA_GAME_RULES.md`에 별도 고정했다.
 2. 상태 전이에 `DAY_REVOTE`(동점자 재투표 1회) 단계 추가.
-3. LLM 공급자를 local·OpenAI·Google Gemini 중 하나로 선택하고
-   `LLM_PROVIDER` 환경 변수로 고정.
+3. LLM 공급자를 OpenAI + Google Gemini 이중 지원으로 확정하고
+   `LLM_PROVIDER` 환경 변수로 선택.
 4. 게임 MCP 배치 위치를 `mcp_server/mcp_1`로 확정.
-5. 구현 단계 0단계의 규칙·명칭·공급자·MCP 위치와 `X-User-Id` 식별자 계약을
-   확정했다(로그인·인증 제외).
-6. 최소 비동기 실행을 단일 Uvicorn worker의 복구 실행기,
-   PostgreSQL `game_operations`·`api_idempotency_records` 원본, SSE와 operation
-   polling으로 확정했다.
-7. 게임당 60,000 token, 호출당 출력 400 token, 원격 모델 예상 비용 1 USD 경고선,
-   PAUSED 30일·FINISHED 90일·audit 180일 보존을 확정했다.
-8. MCP가 Backend의 필터링된 context만 HMAC 내부 endpoint로 조회하도록
-   `MCP_INTERNAL_SECRET`과 session header 계약을 확정했다.
+5. 구현 단계 0단계(계약 고정)의 미결 항목 중 규칙·명칭·공급자·MCP 위치를
+   확정 처리하고, 인증 방식·비용 상한만 남은 결정으로 이월.
 
 ## 3. 함께 변경한 프로젝트 파일
 
 ### 3.1 패키지 목록
 
 - `pyproject.toml`: MVP 구현에 필요한 런타임 의존성 추가
-  — `redis`(lock/cache/stream), `cryptography`(seed AES-256-GCM 암호화),
-  `openai`, `google-genai`(local·OpenAI·Gemini provider 계약),
+  — `redis`(lock/cache/stream), `openai`, `google-genai`(LLM 이중 공급자),
   `mcp`(MCP 서버/클라이언트 SDK), `httpx`(LLM·MCP 비동기 HTTP,
   FastAPI TestClient 의존성이기도 함), `sse-starlette`(SSE 이벤트 구독).
   dev 그룹에 `pytest-asyncio`(비동기 엔진·agent 테스트) 추가.
@@ -126,52 +114,38 @@
 실제 키 값은 `.env`에만 보관한다.
 
 - `REDIS_URL`: 게임 lock/cache/stream용 Redis 연결
-- `LLM_PROVIDER`, `LOCAL_LLM_BASE_URL`, `LOCAL_LLM_MODEL`,
-  `OPENAI_API_KEY`, `OPENAI_MODEL`, `GEMINI_API_KEY`, `GEMINI_MODEL`:
-  LLM provider 선택 설정
-- `LLM_TIMEOUT_SECONDS`, `LLM_MAX_OUTPUT_TOKENS`, `GAME_MAX_TOTAL_TOKENS`,
-  `GAME_COST_WARNING_USD`, provider token 가격: agent·게임 비용 제한
-- `GAME_SEED_ENCRYPTION_KEY`: 역할 배정 seed 암호화 키
-- `PAUSED_GAME_RETENTION_DAYS`, `FINISHED_GAME_RETENTION_DAYS`,
-  `AUDIT_LOG_RETENTION_DAYS`: 보존 기간
-- `MAFIA_MCP_URL`, `BACKEND_INTERNAL_URL`, `MCP_INTERNAL_SECRET`: 게임 컨텍스트
-  MCP 주소와 전용 내부 HMAC 경계
+- `LLM_PROVIDER`, `OPENAI_API_KEY`, `OPENAI_MODEL`,
+  `GEMINI_API_KEY`, `GEMINI_MODEL`: LLM 이중 공급자 설정
+- `LLM_TIMEOUT_SECONDS`, `GAME_MAX_TOKENS_PER_RUN`: agent run 제한
+- `MAFIA_MCP_URL`: 게임 컨텍스트 MCP(`mcp_server/mcp_1`) 주소
 
 ### 3.3 문서
 
-- `docs/AI_MAFIA_MVP_FINAL_PLAN.md` 신규 작성·정리 (제품 범위·책임 경계·구현 단계).
-- `docs/AI_MAFIA_GAME_RULES.md` 신규 작성 (basic-v1 규칙·상태 전이·행동 해소 정본).
-- `docs/AI_MAFIA_BACKEND_API_CONTRACT.md`와 `docs/AI_MAFIA_MCP_API_CONTRACT.md`로 Backend REST·SSE와 게임 MCP wire 계약을 분리했다. `docs/AI_MAFIA_API_CONTRACT.md`는 인덱스만 유지한다.
-- `docs/AI_MAFIA_DATA_REDIS_DESIGN.md` 신규 작성·정리 (PostgreSQL schema·transaction·Redis 저장·복구 계약).
-- `docs/AI_MAFIA_FRONTEND_SPEC.md` 신규 작성·정리 (사용자·관리자 화면과 호출 순서).
-- 게임 화면 최하단에 개인 단서 메모 카드를 추가하고 `game_notes` 저장 계약과
-  동기화했다. 구현 파일명은 계획서가 고정하지 않으며, 최종 플랜의 구현 경계와
-  각 세부 계약(Frontend·API·DB)을 기준으로 실제 import 경계에 맞춰 정한다.
-- 피드백은 결과 화면의 1~5 평점만 저장하도록 축소하고, 별도 서술·카테고리·상태
-  변경 기능은 MVP에서 제외했다.
+- `docs/플랜/AI_MAFIA_MVP_FINAL_PLAN.md` 신규 작성 (구현 기준 문서).
 - 원본 3개 문서 서두에 최종 플랜으로 대체되었음을 알리는 안내 추가.
 - 루트 `README.md`의 문서 링크·프로젝트 구조 표기를 실제 구조
   (`mcp_server/mcp_1`, `mcp_2`)와 최종 플랜 기준으로 갱신.
 
 ## 4. 검증
 
-- 문서 간 역할표·상태 머신·endpoint·`user_id` 헤더·메모 version을 상호 대조했다.
-- 최종 플랜의 책임 경계와 Frontend·API·DB 세부 계약을 상호 대조했다. 저장소의
-  현재 디렉터리 목록은 구현 계획의 계약으로 취급하지 않는다.
-- JSON 예시 block, Markdown 로컬 링크, TOML 구문과 `git diff --check`를 확인했다.
-- 실제 게임 코드·migration·LLM/MCP 서버는 아직 없으므로 실행 테스트는 대상이 아니다.
-
-## 5. 후속 문서 동기화 반영
-
-이후 게임 MVP 범위에서 로그인·인증을 제외하고 `X-User-Id`를 식별자로 사용하도록
-결정했다. 상세 Backend 계약은 `AI_MAFIA_BACKEND_API_CONTRACT.md`, MCP 계약은
-`AI_MAFIA_MCP_API_CONTRACT.md`, DB의 users FK 예외와 Redis
-변경은 `AI_MAFIA_DATA_REDIS_DESIGN.md`, user_id 입력 화면은
-`AI_MAFIA_FRONTEND_SPEC.md`를 기준으로 한다. 기존 Google OIDC 구현은 저장소의
-별도 기능으로 보존하지만 게임 MVP의 선행 조건으로 사용하지 않는다.
-
 - 문서 통합은 실행 동작 변경이 없으므로 자동 테스트 대상이 아니며, 세 원본
-  문서와 최종 플랜·게임 규칙 문서의 역할표·상태 머신·URI·Tool 명세를 상호 대조해 확인했다.
-- 현재 작업 환경에는 `uv` 실행 파일이 없어 `uv sync --dev`, pytest, ruff와
-  compileall은 실행하지 않았다. `py -c`의 Python 3.12 `tomllib`으로
-  `pyproject.toml` 구문을 대신 검증했다.
+  문서와 최종 플랜의 규칙 표·상태 머신·URI·Tool 명세를 상호 대조해 확인했다.
+- 패키지·환경변수 변경은 `uv sync --dev` 성공과 `uv run pytest`,
+  `uv run ruff check .`, compileall 통과로 검증했다 (결과는 완료 보고 참조).
+
+## 5. 2026-09-02 섹터 역할 변경
+
+사용자 요청에 따라 PostgreSQL·Redis의 설치, 인스턴스·DB 생성, 기동, 중지,
+접속 계정·권한 준비, Backend migration 실행과 health 확인 책임을 Backend
+섹터에서 MCP 섹터로 이동했다.
+
+- Backend는 DB schema·migration SQL·repository와 Redis client·key·TTL·lock
+  의미 등 application code·data contract를 계속 소유한다.
+- MCP 담당자는 Backend가 제공한 migration과 Redis 계약을 수정하지 않고 실제
+  환경에서 실행·재실행·health를 확인한다.
+- Backend runtime은 PostgreSQL·Redis에 직접 연결한다. MCP 서버 runtime은
+  데이터 프록시가 아니며 DB·Redis에 직접 접근하지 않는다.
+- MCP 지침서는 Data Infrastructure WU-M1을 추가해 WU-M1~M6, CP-M0~M5로
+  재편했고 Backend·Front 통합 체크포인트가 MCP CP-M1을 선행 조건으로 참조한다.
+- 실제 접속 URL·비밀번호는 `.env`와 승인된 비밀 전달 채널에만 두며 문서·로그·
+  완료 보고에는 서비스 상태와 적용 migration 파일명만 기록한다.

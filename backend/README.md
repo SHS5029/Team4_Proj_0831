@@ -3,10 +3,16 @@
 FastAPI가 외부 HTTP 요청을 받고 사용자 identity와 PostgreSQL 저장을 소유합니다.
 Frontend는 DB에 직접 연결하지 않으며 공유 비밀로 HMAC 서명한 요청만 보냅니다.
 
+섹터 분담에서는 Backend가 DB schema·migration·repository와 Redis application
+코드를 작성하고, MCP 섹터가 PostgreSQL·Redis 실행 환경 구축·기동·migration
+실행·health 확인을 담당합니다. Backend는 MCP 담당자가 준비한 서비스에 직접
+연결하며 MCP 서버 runtime을 데이터 프록시로 사용하지 않습니다.
+
 ## 실행
 
-저장소 루트의 `.env`에 `DATABASE_URL`, `DATABASE_NAME`, 32자 이상의
-`INTERNAL_API_SECRET`을 설정한 뒤 실행합니다.
+MCP 담당자가 PostgreSQL을 기동하고 migration 상태를 확인한 후, 저장소 루트의
+`.env`에 전달받은 `DATABASE_URL`, `DATABASE_NAME`과 32자 이상의
+`INTERNAL_API_SECRET`을 설정해 Backend를 실행합니다.
 
 requirements 파일로 설치할 때 운영 의존성은 `backend/requirements.txt`, 테스트와
 정적 검사를 포함한 개발 환경은 `backend/requirements-dev.txt`를 사용합니다.
@@ -20,7 +26,8 @@ uv run uvicorn backend.app.main:app --reload --port 8000
 ```
 
 Health endpoint는 `GET http://127.0.0.1:8000/health`이며 정상 응답은
-`{"status":"ok"}`입니다. 마이그레이션은 다음 명령으로 적용합니다.
+`{"status":"ok"}`입니다. 마이그레이션 파일과 실행기는 Backend 소유지만 다음
+실제 적용 명령은 MCP 담당자가 실행합니다.
 
 ```bash
 uv run python -m backend.app.infrastructure.migrations
