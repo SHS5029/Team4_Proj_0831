@@ -292,7 +292,7 @@ CREATED → ROLE_REVEAL(round=0) → DAY_ANNOUNCEMENT(round=0, scenario 공개)
 `NIGHT_ACTION` 진입을 한 트랜잭션에서 1로 올린다. 그 밤 뒤의 announcement·낮·
 투표는 같은 값을 유지하며, 다음 `NIGHT_ACTION` 진입 때만 1 증가한다. 따라서
 5번째 밤과 그 아침·최종 단계는 모두 `round=5`이고 5를 초과하지 않는다.
-완료한 밤 수는 성공 commit된 `NIGHT_RESOLUTION` event 수로 계산하며, timeout·
+완료한 밤 수는 성공 commit된 SYSTEM `NIGHT_RESOLVED` event 수로 계산하며, timeout·
 재시도·재개가 같은 round 값을 다시 증가시키거나 완료 밤으로 중복 집계하지 않는다.
 
 - `DAY_DISCUSSION`과 `FINAL_DISCUSSION`은 타이머가 아닌 좌석 순서 턴제다. 생존자가
@@ -327,7 +327,9 @@ CREATED → ROLE_REVEAL(round=0) → DAY_ANNOUNCEMENT(round=0, scenario 공개)
 - `FINAL_VOTE` 직전 AI GM은 "이번 투표는 마지막 판정 투표입니다. 마피아를
   찾으면 시민이 승리하고, 시민을 선택하면 마피아가 승리합니다."를 그대로
   공개한다. AI GM 호출이 실패하면 Backend가 보유한 동일 고정 문구를 사용하며,
-  AI GM은 토론 순환·phase·승패를 임의로 바꾸지 않는다.
+  AI GM은 토론 순환·phase·승패를 임의로 바꾸지 않는다. 공개 발언을 중립적으로
+  요약할 뿐 모순을 정답·유죄 판단처럼 지적하거나 catalog 밖 사건 사실·알리바이·
+  관찰을 만들어서는 안 된다.
 
 ### 2.0.3 `scenario-v1` 정적 catalog ID
 
@@ -418,9 +420,11 @@ CREATED → ROLE_REVEAL(round=0) → DAY_ANNOUNCEMENT(round=0, scenario 공개)
 snapshot/event 복구 검증과 version CAS를 수행하고 status를 `IN_PROGRESS`로 바꾼다.
 일시 정지한 phase가 deadline phase면 저장한 `paused_remaining_ms`를 현재 서버
 시각에 더해 새 `phase_deadline_at`을 발급하고 값을 비운다. deadline이 없는 토론
-phase에는 새 deadline을 만들지 않는다. 모든 기존 AI reservation·MCP session·
-capability는 재개 전에 폐기하고 현재 phase/version 기준으로 필요할 때 다시
-bootstrap한다. timer index 등록까지 성공한 뒤 GameStateView를 반환한다.
+phase에는 새 deadline을 만들지 않는다. 모든 기존 AI reservation·MCP transport
+session·capability는 재개 전에 폐기하고 현재 phase/version 기준으로 필요한
+subject session·reservation·capability를 새로 발급한다. MCP instance `/bootstrap`은
+instance·clock anchor가 없거나 만료된 경우에만 별도로 수행한다. timer index
+등록까지 성공한 뒤 GameStateView를 반환한다.
 
 같은 idempotency key의 재전송은 최초 resume outcome을 재사용하되 GameStateView는
 현재 권한으로 다시 투영한다. 다른 요청으로 이미 재개된
@@ -690,9 +694,9 @@ chain-of-thought, 전체 prompt·응답, 비공개 메모리를 저장하거나 
 | `winner` | text | NULL, CHECK in (`MAFIA`,`CITIZEN`) | 승리 진영 |
 | `finish_reason` | text | NULL, CHECK (FinishReason enum) | 표준·최종 급사 종료 사유 |
 | `player_count` | int | NOT NULL, CHECK 6~9 | 전체 인원 |
-| `ruleset_version` | text | NOT NULL | 규칙 버전(`mystery-v1`) |
-| `scenario_id` | text | NOT NULL | 5종 catalog의 불변 ID |
-| `scenario_version` | text | NOT NULL | `scenario-v1` |
+| `ruleset_version` | text | NOT NULL, CHECK = `mystery-v1` | 규칙 버전 |
+| `scenario_id` | text | NOT NULL, CHECK in (2.0.3의 5개 ID) | catalog의 불변 ID |
+| `scenario_version` | text | NOT NULL, CHECK = `scenario-v1` | 시나리오 버전 |
 | `scenario_snapshot` | jsonb | NOT NULL | 공개 `title/background/victim/locations/objective`의 생성 시점 본 |
 | `state_version` | int | NOT NULL DEFAULT 0 | optimistic lock 버전 |
 | `random_seed` | text | NOT NULL | 재현용 seed. **API 응답 금지** |
@@ -904,9 +908,14 @@ PUBLIC : GAME_CREATED, SCENARIO_REVEALED, PHASE_CHANGED, PLAYER_SPEECH,
 PRIVATE: ROLE_ASSIGNED, PRIVATE_PROFILE_ASSIGNED, INVESTIGATION_RESULT,
          ACTION_ACCEPTED
 SYSTEM : VOTE_BALLOTS_RAW, NIGHT_ACTIONS_RAW, ACTION_AUTO_SELECTED,
-         RESOLUTION_DETAIL, AGENT_TURN_RESERVED, AGENT_TURN_STALE,
+         NIGHT_RESOLVED, RESOLUTION_DETAIL, AGENT_TURN_RESERVED, AGENT_TURN_STALE,
          AGENT_FALLBACK, DEADLINE_EXPIRED, AUDIT_DELIVERY_PENDING, SEED_RECORDED
 ```
+
+`NIGHT_RESOLVED`는 해당 round의 보호·공격·조사와 공개 결과를 모두 같은
+transaction에서 정상 확정할 때 정확히 한 번 기록하는 완료 marker다. repository는
+`(game_id, round, NIGHT_RESOLVED)`를 멱등하게 강제하고 이 marker가 없는
+`NIGHT_RESOLUTION` 진입·재시도는 완료 밤 수로 세지 않는다.
 
 ### 3.3 Redis Key 설계 (최종 플랜 10장 그대로 채택)
 
@@ -1033,7 +1042,8 @@ backend/tests/test_game_rules.py, test_game_state_machine.py,
    `MAFIA_MCP_URL`은 `/mcp`까지 포함한 full endpoint이며 client가 경로를 다시
    붙이지 않는다. 운영 endpoint는 5.1의 TLS 정책에 따라 `https://.../mcp`여야 한다.
    *완료 기준: 다른 플레이어 비밀·SYSTEM marker를 주입한 fallback 카나리와
-   출력 비간섭성, 20초 절대 deadline fake-clock, 늦은 결과 CAS 거부 테스트.
+   출력 비간섭성, GM의 유죄 단정·catalog 외 사실 생성 거부, 20초 절대 deadline
+   fake-clock, 늦은 결과 CAS 거부 테스트.
    deadline 없는 토론에서 현재 좌석이 AI면 `next_wakeup_at=now()`로 등록해 client·
    SSE 접속 없이도 처리하고, restart 후 pending AI turn을 이어가는 테스트.*
 9. **WU-B9. 관리자 API** — `user_roles` 검증, 6~9명·scenario별 KPI,
@@ -1130,7 +1140,7 @@ Backend 응답도 `X-Engine-Response-Timestamp`, 원 요청 ID,
 | Method | Endpoint | 용도 |
 |---|---|---|
 | `POST` | `/internal/v1/engine/bootstrap` | MCP instance·계약 버전·시계 검증 |
-| `POST` | `/internal/v1/engine/context` | agent별 허용 컨텍스트 조회 (Resource 데이터 원천) |
+| `POST` | `/internal/v1/engine/context` | subject별 허용 컨텍스트 조회 (Resource 데이터 원천) |
 | `POST` | `/internal/v1/engine/actions` | Tool 행동 제안 제출 → 엔진 최종 검증·반영 |
 | `POST` | `/internal/v1/engine/audit` | MCP 조회·행동·거부 감사 batch sink |
 
@@ -1349,7 +1359,7 @@ mcp_server/mafia_game/server.py                # MCP 서버 생성·의존성 �
 mcp_server/mafia_game/api/resources/game_resources.py
 mcp_server/mafia_game/api/tools/game_tools.py
 mcp_server/mafia_game/core/config.py           # env 로딩(secret 검증)
-mcp_server/mafia_game/core/session.py          # 세션↔agent 고정, capability 회전
+mcp_server/mafia_game/core/session.py          # 세션↔subject 고정, capability 회전
 mcp_server/mafia_game/core/transport_auth.py   # Bearer token·TLS fail-closed
 mcp_server/mafia_game/core/audit.py            # bounded outbox·감사 sink 재시도
 mcp_server/mafia_game/services/context_service.py   # Resource 유스케이스
@@ -1677,7 +1687,8 @@ set을 재실행한다. `mystery-v1` 규칙 변경이면 9장의 계약 변경 �
 | `REDIS_URL` | MCP(구축·실행·전달), Backend(소비) | lock·cache·stream |
 | `LLM_PROVIDER` / `OPENAI_*` / `GEMINI_*` | Backend | LLM 이중 공급자 |
 | `LLM_TIMEOUT_SECONDS` / `GAME_MAX_TOKENS_PER_RUN` | Backend | run 제한; LLM timeout 기본 15초는 단일 호출 상한 |
-| `MCP_TIMEOUT_SECONDS` / `AGENT_EXTERNAL_CALL_BUDGET_SECONDS` | Backend·MCP | 기본 3초 / 16초; MCP 단일 호출·총 외부 작업 상한이며 절대 phase deadline보다 우선할 수 없음 |
+| `MCP_TIMEOUT_SECONDS` | Backend·MCP | 기본 3초; MCP/Engine 단일 호출 상한이며 절대 phase deadline보다 우선할 수 없음 |
+| `AGENT_EXTERNAL_CALL_BUDGET_SECONDS` | Backend | 기본 16초; Agent Manager의 MCP+LLM 총 외부 작업 상한 |
 | `AGENT_COMMIT_NETWORK_RESERVE_SECONDS` | Backend | deadline 전 CAS·commit·네트워크 여유, 기본·권장 3초 |
 | `MCP_CLOCK_SYNC_MAX_RTT_SECONDS` | MCP | bootstrap monotonic clock anchor의 최대 허용 왕복 시간, 기본 2초 |
 | `MCP_AUDIT_OUTBOX_MAX_RECORDS` | MCP | 기본·최대 1,000; 낮출 수 있으나 초과 설정은 fail-closed. record 4 KiB·총 4 MiB·15분 등 나머지 한계는 5.4 적용 |
