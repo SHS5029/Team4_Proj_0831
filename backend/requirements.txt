@@ -5,6 +5,8 @@ python-dotenv>=1.1,<2.0
 uvicorn>=0.35,<1.0
 # AI 마피아 MVP(docs/AI_MAFIA_MVP_FINAL_PLAN.md)용 의존성
 redis>=5.0,<7.0
+# 역할 배정 seed의 AES-256-GCM 암호화
+cryptography>=50.0.1,<51.0
 openai>=1.50,<3.0
 google-genai>=1.0,<2.0
 mcp>=1.2,<2.0

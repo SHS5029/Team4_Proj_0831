@@ -30,11 +30,33 @@ LLM Agent loop, MCP Tool·Resource·Prompt, 관리자 업무 기능, Redis 연�
 진행하는 후속 MVP의 확정 설계는
 [AI 마피아 MVP 최종 통합 플랜](docs/AI_MAFIA_MVP_FINAL_PLAN.md)에 정리되어
 있습니다. 이 문서는 세 기획 초안(`docs/mafia_game_plan.md`,
-`docs/AI_MAFIA_MVP_PLAN.md`, `docs/ai_mafia_game_engine분리규칙.md`)을 현재
-저장소 구조 기준으로 검증·통합한 구현 기준 문서이며, 통합 시 변경·결정된
+`docs/AI_MAFIA_MVP_PLAN.md`, `docs/ai_mafia_game_engine분리규칙.md`)을 제품 범위와
+책임 경계 기준으로 검증·통합한 구현 기준 문서이며, 통합 시 변경·결정된
 항목은 [통합·수정 내역](docs/AI_MAFIA_PLAN_INTEGRATION_NOTES.md)에 기록되어
 있습니다. 최종 플랜은 구현 계획이며 아래의 현재 구현 범위를 확장했다고
 간주하지 않습니다.
+
+게임 MVP는 기존 OIDC 로그인·인증 경계를 사용하지 않는다. 화면에서 입력한
+UUID `user_id`를 `X-User-Id` 헤더로 전달해 게임 소유자와 메모 작성자를 구분하며,
+이 식별 방식은 로컬·내부 테스트 범위로 제한한다.
+
+구현 계약은 [연결 뼈대 우선 구현 계획](docs/scaffold/AI_MAFIA_SCAFFOLD_PLAN.md),
+[게임 규칙·로직](docs/AI_MAFIA_GAME_RULES.md),
+[Backend REST·SSE API 계약](docs/AI_MAFIA_BACKEND_API_CONTRACT.md),
+[게임 MCP API 계약](docs/AI_MAFIA_MCP_API_CONTRACT.md),
+[DB·Redis 설계](docs/AI_MAFIA_DATA_REDIS_DESIGN.md),
+[Frontend 화면 설계](docs/AI_MAFIA_FRONTEND_SPEC.md)로 분리했습니다.
+세부 문서는 `minimum-v1`의 확정 규칙·요청·응답, 저장·캐시, 화면 상태 계약입니다.
+최종 플랜의 현재 디렉터리 안내는 구현 계약이 아니며, 실제 파일 배치는 기존
+import 경계에 맞춰 정합니다. AI 페르소나의 수치 변환과 적용 순서는 최종 플랜
+7.3이 단일 기준이고, API 문서는 해당 값의 wire schema만 소유합니다.
+단일 Backend worker의 복구 실행기, PostgreSQL operation·idempotency 원본,
+SSE와 operation polling, HMAC 기반 MCP 내부 context 조회를 최소 구현 방식으로
+고정했습니다. 현재 코드가 이 계약을 구현했다는 의미는 아닙니다.
+
+운영 기본값은 게임당 총 60,000 token, agent 호출당 최대 출력 400 token,
+원격 모델 예상 비용 1 USD 경고선, `PAUSED` 게임 30일과 `FINISHED` 게임 90일
+보존입니다. 사용자 즉시 삭제 API와 다중 Backend worker는 MVP 범위에서 제외합니다.
 
 ## 프로젝트 구조
 
@@ -69,7 +91,20 @@ LLM Agent loop, MCP Tool·Resource·Prompt, 관리자 업무 기능, Redis 연�
 │   ├── mcp_1/                        # 게임 컨텍스트 MCP 예약 패키지(MVP 대상)
 │   └── mcp_2/                        # 후속 MCP 독립 예약 패키지
 ├── docs/
-│   ├── AI_MAFIA_MVP_FINAL_PLAN.md    # AI 마피아 MVP 최종 통합 플랜(구현 기준)
+│   ├── AI_MAFIA_MVP_FINAL_PLAN.md    # 제품 범위·책임 경계·구현 단계
+│   ├── scaffold/                     # 연결 뼈대 구현 계획 모음
+│   │   ├── AI_MAFIA_SCAFFOLD_PLAN.md      # 연결 뼈대 우선 구현 계획
+│   │   ├── AI_MAFIA_SCAFFOLD_FILE_PLAN.md # 뼈대 파일별 책임과 구현 순서
+│   │   ├── AI_MAFIA_SCAFFOLD_SCHEMA.md    # 뼈대 JSON 입출력 계약
+│   │   ├── AI_MAFIA_SCAFFOLD_RUNBOOK.md   # 뼈대 실행·smoke 절차
+│   │   └── AI_MAFIA_SCAFFOLD_TEST_PLAN.md # 뼈대 테스트 계획
+│   ├── AI_MAFIA_GAME_RULES.md        # basic-v1 규칙·상태 전이·해소 로직
+│   ├── AI_MAFIA_API_CONTRACT.md     # 계약 문서 인덱스
+│   ├── AI_MAFIA_BACKEND_API_CONTRACT.md # Frontend·Backend REST/SSE 계약
+│   ├── AI_MAFIA_BACKEND_OPENAPI.yaml # Swagger UI 생성용 OpenAPI 3.1 원본
+│   ├── AI_MAFIA_MCP_API_CONTRACT.md # Backend·게임 MCP 계약
+│   ├── AI_MAFIA_DATA_REDIS_DESIGN.md # PostgreSQL·Redis 저장·복구 계약
+│   ├── AI_MAFIA_FRONTEND_SPEC.md    # 사용자·관리자 화면·상태·호출 순서
 │   ├── AI_MAFIA_PLAN_INTEGRATION_NOTES.md  # 기획 문서 통합·수정 내역
 │   ├── AI_MAFIA_MVP_PLAN.md          # (대체됨) MVP 설계 초안
 │   ├── ai_mafia_game_engine분리규칙.md  # (대체됨) 엔진/Agent/MCP 분리 규칙
@@ -97,7 +132,7 @@ uv sync --dev
 ```
 
 현재 코드에 연결된 외부 자격증명은 Google OIDC뿐입니다. AI 마피아 MVP에서
-후속 연결할 OpenAI·Gemini API 키와 Redis 주소는 `.env.example`의 예약 항목을
+후속 연결할 local·OpenAI·Gemini provider 설정과 Redis 주소는 `.env.example`의 예약 항목을
 참고하세요.
 
 ## Backend 환경 설정
@@ -125,9 +160,14 @@ INTERNAL_API_MAX_AGE_SECONDS=300
 - 같은 `INTERNAL_API_SECRET`을 `frontend_user/.streamlit/secrets.toml`의
   `backend.internal_api_secret`에도 설정합니다. 브라우저나 소스 코드에는 넣지 않습니다.
 - Backend의 기본 서명 허용 시간 오차는 300초이며 최대 3600초로 제한됩니다.
-- `.env.example`의 `REDIS_URL`, `LLM_PROVIDER`, `OPENAI_API_KEY`,
-  `GEMINI_API_KEY`, `MAFIA_MCP_URL` 등은 AI 마피아 MVP용 예약 항목입니다.
+- `.env.example`의 `REDIS_URL`, `LLM_PROVIDER`, `LOCAL_LLM_BASE_URL`,
+  `LOCAL_LLM_MODEL`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `MAFIA_MCP_URL`,
+  `BACKEND_INTERNAL_URL`, `MCP_INTERNAL_SECRET`, `GAME_SEED_ENCRYPTION_KEY` 등은
+  AI 마피아 MVP용 예약 항목입니다.
   아직 코드가 읽지 않으며 실제 키 값은 `.env`에만 보관합니다.
+- 원격 LLM을 선택하면 `LLM_INPUT_COST_PER_MILLION_USD`와
+  `LLM_OUTPUT_COST_PER_MILLION_USD`를 선택 모델의 현재 가격으로 설정해야 하며,
+  0 이하인 값에서는 Backend가 시작을 거부하도록 설계했습니다.
 
 `Team4_Proj` 데이터베이스는 앱이 만들지 않습니다. 마이그레이션 전에 관리 도구로
 데이터베이스를 생성하고 `.env` 계정에 연결·스키마 생성 권한을 부여하세요.
@@ -261,6 +301,11 @@ uv run ruff check .
   연결 후 추가할 보안 확장 지점입니다.
 - 현재 관리자 앱에는 인증·권한과 업무 기능이 없으며 준비 화면만 표시합니다.
 - 현재 MCP 디렉터리에는 실행 서버와 Tool이 없고 외부 API를 호출하지 않습니다.
+- 게임 MVP 구현 후에도 개발용 `X-User-Id`와 관리자 API는 인증 수단이 아니므로
+  외부 공개 배포에 사용할 수 없습니다. MCP 전용 `MCP_INTERNAL_SECRET`은 Frontend와
+  공유하지 않습니다.
+- 게임 MVP의 사용자 즉시 삭제 API는 제공하지 않으며, 확정 보존 기간이 지난 데이터만
+  Backend 복구 실행기가 정리하도록 설계되어 있습니다.
 
 비밀값 노출이 의심되면 값을 다시 출력하지 말고 즉시 폐기·재발급한 뒤 Git 이력과
 외부 로그를 별도로 점검하세요.
