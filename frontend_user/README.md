@@ -1,5 +1,10 @@
 # 일반 사용자 Frontend
 
+> 현재 이 패키지에는 아래 legacy OIDC 화면이 남아 있습니다. 목표 MVP는
+> [화면 흐름도](../docs/개발상세플랜/AI_MAFIA_SCREEN_FLOW.md)에 따라 로그인 없이
+> 브라우저 UUID와 `X-User-Id`만 사용하며 `WU-F1`에서 OIDC·Front HMAC 코드를
+> 제거합니다.
+
 Streamlit 네이티브 OIDC(`st.login`, `st.user`, `st.logout`)를 사용하는 Google
 로그인 앱입니다. 로그인 화면과 외부 claim 정규화는 이 서버가 담당하지만 사용자
 저장은 DB 직접 연결 없이 서명된 Backend API로 요청합니다.

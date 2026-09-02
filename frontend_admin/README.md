@@ -9,3 +9,5 @@ uv run streamlit run frontend_admin/app.py --server.port 8502
 
 관리자 기능은 Backend가 검증하는 별도의 인증·권한 계약이 추가된 뒤 구현해야 하며,
 사용자 Frontend의 내부 identity 서명을 관리자 권한 증명으로 사용하지 않습니다.
+목표 MVP는 [화면 흐름도](../docs/개발상세플랜/AI_MAFIA_SCREEN_FLOW.md)의 UUID allowlist
+기반 read-only 화면이며 loopback 또는 사설망에서만 활성화합니다.
