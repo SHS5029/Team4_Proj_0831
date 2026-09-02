@@ -91,7 +91,7 @@ README 갱신 / 구조 임의 변경 없음 / 승인 없는 커밋·푸시 없�
 |---|---|---|
 | **Front** | `frontend_user/`, `frontend_admin/` | 홈·생성·진행·불러오기·결과 화면, 관리자 KPI·로그·피드백 화면, API client 확장 |
 | **Backend** | `backend/` (app 전체, migrations) | 게임 규칙 엔진, 상태 머신, 게임·관리자 API, DB·Redis, Agent Manager, LLM client, MCP client·capability 정책 |
-| **MCP Server** | `mcp_server/mcp_1/` | 게임 컨텍스트 MCP 서버(Resource/Tool), 세션·격리·감사 로그, Backend 내부 API 소비 |
+| **MCP Server** | `mcp_server/mafia_game/` | 게임 컨텍스트 MCP 서버(Resource/Tool), 세션·격리·감사 로그, Backend 내부 API 소비 |
 
 ### 1.1 공유 파일 규칙
 
@@ -122,7 +122,7 @@ AI Agent(Backend가 구동) ──(6장 MCP Resource/Tool)──▶ MCP Server
 | Backend API | `uv run uvicorn backend.app.main:app --port 8000` | 8000 |
 | 사용자 앱 | `uv run streamlit run frontend_user/app.py --server.port 8501` | 8501 |
 | 관리자 앱 | `uv run streamlit run frontend_admin/app.py --server.port 8502` | 8502 |
-| 게임 MCP 서버 | `uv run python -m mcp_server.mcp_1` (구현 시 확정) | 8100 |
+| 게임 MCP 서버 | `uv run python -m mcp_server.mafia_game` (구현 시 확정) | 8100 |
 
 ---
 
@@ -655,28 +655,30 @@ allowed-actions | persona`)
 
 ---
 
-## 6. MCP Server 섹터 상세 계획 (`mcp_server/mcp_1`)
+## 6. MCP Server 섹터 상세 계획 (`mcp_server/mafia_game`)
 
 ### 6.1 신규 파일 (승인된 구조 변경 범위)
 
 ```text
-mcp_server/mcp_1/__main__.py              # 서버 기동 진입점 (포트 8100)
-mcp_server/mcp_1/server.py                # MCP 서버 생성·의존성 조립
-mcp_server/mcp_1/api/resources/game_resources.py
-mcp_server/mcp_1/api/tools/game_tools.py
-mcp_server/mcp_1/core/config.py           # env 로딩(secret 검증)
-mcp_server/mcp_1/core/session.py          # 세션↔agent 고정, me 해석
-mcp_server/mcp_1/core/audit.py            # 감사 로그 전달
-mcp_server/mcp_1/services/context_service.py   # Resource 유스케이스
-mcp_server/mcp_1/services/action_service.py    # Tool 제안 유스케이스
-mcp_server/mcp_1/ports/engine_port.py     # Engine API Protocol
-mcp_server/mcp_1/integrations/engine/client.py # 5장 API HMAC 클라이언트
-mcp_server/mcp_1/integrations/engine/fake.py   # 개발·테스트용 fake 엔진
-mcp_server/mcp_1/schemas/contracts.py     # 입출력 계약 검증
-mcp_server/mcp_1/tests/ (test_resources.py, test_tools.py,
+mcp_server/mafia_game/__main__.py              # 서버 기동 진입점 (포트 8100)
+mcp_server/mafia_game/server.py                # MCP 서버 생성·의존성 조립
+mcp_server/mafia_game/api/resources/game_resources.py
+mcp_server/mafia_game/api/tools/game_tools.py
+mcp_server/mafia_game/core/config.py           # env 로딩(secret 검증)
+mcp_server/mafia_game/core/session.py          # 세션↔agent 고정, me 해석
+mcp_server/mafia_game/core/audit.py            # 감사 로그 전달
+mcp_server/mafia_game/services/context_service.py   # Resource 유스케이스
+mcp_server/mafia_game/services/action_service.py    # Tool 제안 유스케이스
+mcp_server/mafia_game/ports/engine_port.py     # Engine API Protocol
+mcp_server/mafia_game/integrations/engine/client.py # 5장 API HMAC 클라이언트
+mcp_server/mafia_game/integrations/engine/fake.py   # 개발·테스트용 fake 엔진
+mcp_server/mafia_game/schemas/contracts.py     # 입출력 계약 검증
+mcp_server/mafia_game/tests/ (test_resources.py, test_tools.py,
   test_session_isolation.py, test_audit.py)
-mcp_server/mcp_1/README.md                # Tour 잔존 설명 → 게임 MCP로 갱신
 ```
+
+패키지 이름은 예약명 `mcp_1`에서 `mafia_game`으로 변경 완료(2026-09-01,
+사용자 승인). README도 게임 컨텍스트 MCP 책임으로 갱신되어 있다.
 
 기존 계층(`api/ services/ ports/ integrations/ core/ schemas/`)을 그대로
 사용하며 새 최상위 디렉터리를 만들지 않는다. `mcp_2`는 건드리지 않는다.
@@ -804,6 +806,7 @@ frontend_admin/tests/ (신설: test_admin_api.py, test_admin_pages_smoke.py)
 | 날짜 | 변경 | 사유 | 합의 |
 |---|---|---|---|
 | 2026-09-01 | 초판 작성 | — | — |
+| 2026-09-01 | `mcp_server/mcp_1` → `mcp_server/mafia_game` 개명 | 예약명 대신 담당 게임 도메인이 드러나는 이름 사용 | 사용자 승인 |
 
 ## 10. 환경 변수 (전 섹터 공통, `.env.example` 참조)
 

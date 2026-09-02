@@ -87,10 +87,11 @@
   └──────────────┘ └──────────────┘ └──────┬───────┘
                                            │ 허용 목록만
                                            ▼
-                                  ┌──────────────────┐
-                                  │ mcp_server/mcp_1 │
-                                  │ 게임 컨텍스트MCP │
-                                  └──────────────────┘
+                                ┌──────────────────────┐
+                                │ mcp_server/          │
+                                │ mafia_game           │
+                                │ 게임 컨텍스트 MCP    │
+                                └──────────────────────┘
 ```
 
 ### 3.1 현재 저장소 디렉터리별 책임
@@ -116,12 +117,13 @@
 | `backend/app/mcp/` | 허용 MCP 서버·도구 등록, capability 정책, 감사 기록 |
 | `backend/app/infrastructure/redis/` | 게임 lock, 실행 상태, event stream, idempotency |
 | `backend/migrations/` | 게임 schema 순방향 SQL 추가 (`002_...` 이후 번호) |
-| `mcp_server/mcp_1/` | **마피아 게임 컨텍스트 MCP 서버** (resource/tool) |
+| `mcp_server/mafia_game/` | **마피아 게임 컨텍스트 MCP 서버** (resource/tool) |
 | `mcp_server/mcp_2/` | 후속 MCP 예약 (MVP에서 사용하지 않음) |
 
-`mcp_server/mcp_1`, `mcp_2` 내부 README에 남아 있는 Tour·Weather 설명은 과거
-예약 명칭이며, 게임 MCP를 구현할 때 `mcp_1`의 README를 게임 컨텍스트 MCP
-책임으로 갱신한다. 마피아 기능을 다른 예약 패키지와 섞지 않는다.
+게임 컨텍스트 MCP 패키지는 예약 이름 `mcp_1`에서 `mafia_game`으로 변경했다
+(2026-09-01, 사용자 승인). `mcp_2`는 용도 미정 예약 패키지로 유지하며 README의
+Tour·Weather 설명은 과거 예약 명칭이다. 마피아 기능을 다른 예약 패키지와 섞지
+않는다.
 
 ## 4. 사용자 화면과 전환
 
@@ -364,7 +366,7 @@ LLM/MCP 호출, timeout, 재시도, fallback과 사용량 기록을 조정한다
 
 내부 오류나 자격정보는 사용자에게 표시하지 않고 관리자 로그에만 기록한다.
 
-## 8. 게임 컨텍스트 MCP 서버 (`mcp_server/mcp_1`)
+## 8. 게임 컨텍스트 MCP 서버 (`mcp_server/mafia_game`)
 
 MCP는 규칙 엔진을 대신하지 않고 에이전트가 허용된 컨텍스트를 읽고 제한된
 행동을 **제안**하는 표준 경계다. MCP 서버는 게임 상태의 최종 판정자가 아니며
@@ -563,7 +565,7 @@ commit 전에 cache를 성공으로 갱신하지 않는다. Redis는 영구 게�
   (재투표 1회 후 무처형) 확정 — 이 문서 기준
 - 조사 역할 명칭 `경찰` 확정
 - LLM 공급자 OpenAI·Gemini 이중 지원, `LLM_PROVIDER`로 선택
-- 게임 MCP는 `mcp_server/mcp_1`에 배치
+- 게임 MCP는 `mcp_server/mafia_game`에 배치
 - 남은 결정: 사용자 게임 API 인증 방식, 게임당 비용 상한
 
 ### 1단계: LLM 없는 규칙 엔진
@@ -591,7 +593,7 @@ commit 전에 cache를 성공으로 갱신하지 않는다. Redis는 영구 게�
 
 - persona preset과 분리된 private memory
 - `llm/client.py`에 OpenAI·Gemini 구조화 client, 제한 시간, 비용 기록
-- `mcp_server/mcp_1`에 게임 MCP resource/tool, `backend/app/mcp/`에
+- `mcp_server/mafia_game`에 게임 MCP resource/tool, `backend/app/mcp/`에
   capability 정책
 - JSON 오류, timeout, 정보 누설(카나리), prompt injection 테스트
 

@@ -19,7 +19,7 @@ PostgreSQL 사용자 저장을 독립 실행 단위로 분리한 프로젝트입
 - 재로그인 프로필·최근 로그인 시각 갱신과 비활성 사용자 fail-closed 차단
 - 외부 프로필 HTML escape와 HTTPS 아바타 URL 제한
 - Backend 소유 PostgreSQL migration 실행기
-- 독립 관리자 Streamlit 앱과 MCP 서버 예약 구조(`mcp_server/mcp_1`, `mcp_2`)
+- 독립 관리자 Streamlit 앱과 MCP 서버 예약 구조(`mcp_server/mafia_game`, `mcp_2`)
 
 LLM Agent loop, MCP Tool·Resource·Prompt, 관리자 업무 기능, Redis 연결은 아직
 구현하지 않았습니다. 예약 모듈은 향후 연결 위치만 고정하며 외부 호출을 수행하지
@@ -71,7 +71,7 @@ LLM Agent loop, MCP Tool·Resource·Prompt, 관리자 업무 기능, Redis 연�
 │   └── tests/
 ├── frontend_admin/                   # 관리자 독립 앱의 최소 실행 골격
 ├── mcp_server/
-│   ├── mcp_1/                        # 게임 컨텍스트 MCP 예약 패키지(MVP 대상)
+│   ├── mafia_game/                   # 게임 컨텍스트 MCP 예약 패키지(MVP 대상)
 │   └── mcp_2/                        # 후속 MCP 독립 예약 패키지
 ├── docs/
 │   ├── AI_MAFIA_MVP_FINAL_PLAN.md    # AI 마피아 MVP 최종 통합 플랜(구현 기준)
@@ -284,7 +284,7 @@ uv run ruff check .
 - 사용자 저장소: `backend/app/repositories/user_repository.py`
 - schema 변경: `backend/migrations/`에 다음 번호의 순방향 SQL 추가
 - Agent·LLM·MCP client: `backend/app/agent/`, `llm/`, `mcp/`
-- 독립 MCP 기능: `mcp_server/mcp_1/`(게임 컨텍스트 MCP 예정) 또는
+- 독립 MCP 기능: `mcp_server/mafia_game/`(게임 컨텍스트 MCP 예정) 또는
   `mcp_server/mcp_2/` 내부 계층에만 추가
 
 ## 기여
