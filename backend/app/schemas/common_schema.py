@@ -12,11 +12,19 @@ class HealthResponse(BaseModel):
     status: Literal["ok"] = "ok"
 
 
-class ErrorResponse(BaseModel):
-    """비밀값이나 내부 예외 문자열을 포함하지 않는 공통 오류 계약."""
+class ErrorDetail(BaseModel):
+    """클라이언트가 오류를 이해하고 재시도 여부를 판단하는 정보."""
 
     model_config = ConfigDict(extra="forbid")
     code: str
     message: str
+    request_id: str
+    retryable: bool
     details: Any = None
-    trace_id: str
+
+
+class ErrorResponse(BaseModel):
+    """비밀값이나 내부 예외 문자열을 포함하지 않는 공통 오류 계약."""
+
+    model_config = ConfigDict(extra="forbid")
+    error: ErrorDetail

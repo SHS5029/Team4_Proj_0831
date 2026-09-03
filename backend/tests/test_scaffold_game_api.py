@@ -58,4 +58,4 @@ def test_scaffold_game_rejects_wrong_owner_and_version() -> None:
         json={"command": "PAUSE", "expected_version": 99, "idempotency_key": "00000000-0000-4000-8000-000000000014"},
     )
     assert stale.status_code == 409
-    assert stale.json()["code"] == "GAME_STATE_CONFLICT"
+    assert stale.json()["error"]["code"] == "GAME_STATE_CONFLICT"

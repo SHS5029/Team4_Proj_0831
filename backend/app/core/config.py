@@ -41,6 +41,11 @@ class Settings:
     app_env: str = "development"
     internal_api_secret: str = field(default="", repr=False)
     internal_api_max_age_seconds: int = 300
+    # 내부 Engine 서명과 MCP bootstrap 서명은 서로 다른 키를 사용한다.
+    # 두 키를 하나로 합치면 한 경계가 유출될 때 다른 경계까지 함께 무너진다.
+    engine_internal_api_secret: str = field(default="", repr=False)
+    mcp_server_auth_secret: str = field(default="", repr=False)
+    engine_internal_api_max_age_seconds: int = 60
     redis_url: str = field(default="redis://127.0.0.1:6379/0", repr=False)
     llm_provider: str = "dummy"
     mafia_mcp_url: str = "http://127.0.0.1:8010/mcp"
@@ -89,6 +94,10 @@ class Settings:
             raise ValueError("DATABASE_NAME contains an invalid character")
         if not 1 <= self.internal_api_max_age_seconds <= 3_600:
             raise ValueError("INTERNAL_API_MAX_AGE_SECONDS must be between 1 and 3600")
+        if not 1 <= self.engine_internal_api_max_age_seconds <= 3_600:
+            raise ValueError(
+                "ENGINE_INTERNAL_API_MAX_AGE_SECONDS must be between 1 and 3600"
+            )
         if not self.redis_url.strip():
             raise ValueError("REDIS_URL must not be empty")
         if self.llm_provider.strip().lower() not in {"dummy", "local", "openai", "gemini"}:
@@ -119,6 +128,16 @@ class Settings:
         object.__setattr__(self, "database_url", raw_url)
         object.__setattr__(self, "database_name", self.database_name.strip())
         object.__setattr__(self, "internal_api_secret", self.internal_api_secret.strip())
+        object.__setattr__(
+            self,
+            "engine_internal_api_secret",
+            self.engine_internal_api_secret.strip(),
+        )
+        object.__setattr__(
+            self,
+            "mcp_server_auth_secret",
+            self.mcp_server_auth_secret.strip(),
+        )
         object.__setattr__(self, "redis_url", self.redis_url.strip())
         object.__setattr__(self, "llm_provider", self.llm_provider.strip().lower())
         object.__setattr__(self, "mafia_mcp_url", self.mafia_mcp_url.strip().rstrip("/"))
@@ -142,6 +161,24 @@ class Settings:
         secret = self.internal_api_secret
         if len(secret) < 32 or secret.upper().startswith("REPLACE_"):
             raise RuntimeError("Internal API signing is not configured")
+        return secret.encode("utf-8")
+
+    @property
+    def validated_engine_internal_api_secret(self) -> bytes:
+        """Engine HMAC에 사용할 별도 비밀값을 검증해 바이트로 반환한다."""
+
+        secret = self.engine_internal_api_secret
+        if len(secret) < 32 or secret.upper().startswith("REPLACE_"):
+            raise RuntimeError("Engine internal API signing is not configured")
+        return secret.encode("utf-8")
+
+    @property
+    def validated_mcp_server_auth_secret(self) -> bytes:
+        """MCP bootstrap token 서명용 키를 검증해 바이트로 반환한다."""
+
+        secret = self.mcp_server_auth_secret
+        if len(secret) < 32 or secret.upper().startswith("REPLACE_"):
+            raise RuntimeError("MCP bootstrap signing is not configured")
         return secret.encode("utf-8")
 
     @property
@@ -180,6 +217,12 @@ class Settings:
             internal_api_max_age_seconds=_read_positive_int(
                 os.getenv("INTERNAL_API_MAX_AGE_SECONDS", "300"),
                 name="INTERNAL_API_MAX_AGE_SECONDS",
+            ),
+            engine_internal_api_secret=os.getenv("ENGINE_INTERNAL_API_SECRET", ""),
+            mcp_server_auth_secret=os.getenv("MCP_SERVER_AUTH_SECRET", ""),
+            engine_internal_api_max_age_seconds=_read_positive_int(
+                os.getenv("ENGINE_INTERNAL_API_MAX_AGE_SECONDS", "60"),
+                name="ENGINE_INTERNAL_API_MAX_AGE_SECONDS",
             ),
             redis_url=os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0"),
             llm_provider=os.getenv("LLM_PROVIDER", "dummy"),

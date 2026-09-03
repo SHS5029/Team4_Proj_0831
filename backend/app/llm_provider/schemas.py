@@ -1,6 +1,7 @@
 """모델이 반환한 신뢰할 수 없는 JSON을 게임 proposal로 검증한다."""
 
-from typing import Any
+import unicodedata
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -17,6 +18,81 @@ class GameProposal(BaseModel):
     target_player_id: UUID | None = None
     source_state_version: int = Field(ge=1)
     message: str | None = Field(default=None, max_length=2_000)
+
+
+class NormalizedAgentProposal(BaseModel):
+    """B6 Agent Manager가 사용하는 폐쇄형 proposal union이다.
+
+    LLM이 자연어 설명이나 내부 추론을 덧붙이지 못하도록 허용 field를 고정한다.
+    이 모델은 게임 규칙을 판정하지 않고 형식만 확인하며, role·phase·target의
+    실제 허용 여부는 Engine이 다시 검사한다.
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    type: Literal["SPEAK", "PASS", "NIGHT_ACTION", "VOTE"]
+    target_player_id: UUID | None = None
+    message: str | None = Field(default=None, max_length=2_000)
+    public_rationale: str | None = Field(default=None, max_length=500)
+
+
+def normalize_agent_proposal(payload: Any) -> NormalizedAgentProposal:
+    """Provider의 JSON을 canonical proposal로 바꾸고 형식 오류를 거부한다.
+
+    새 Provider는 ``type``을 반환한다. 기존 scaffold Provider가 사용하던 ``action``
+    응답은 B1~B4 호환을 위해 여기서만 임시 변환한다. 변환 후에는 DB와 Engine에
+    항상 canonical field만 전달되며, ``PING`` 같은 scaffold 전용 action은 거부된다.
+    """
+
+    if not isinstance(payload, dict):
+        raise LLMResponseError("Agent proposal must be a JSON object")
+    candidate = dict(payload)
+    legacy_payload = "type" not in candidate and "action" in candidate
+    if legacy_payload:
+        candidate["type"] = candidate.pop("action")
+    # 기존 응답의 version은 Agent proposal 최종 계약에 포함하지 않는다. 실제 상태
+    # version은 reservation과 재검증 결과를 Backend가 보유한다.
+    if legacy_payload:
+        candidate.pop("source_state_version", None)
+    try:
+        proposal = NormalizedAgentProposal.model_validate(candidate)
+    except ValidationError as error:
+        raise LLMResponseError("Agent proposal does not match the canonical schema") from error
+    if proposal.type == "SPEAK":
+        if not proposal.message:
+            raise LLMResponseError("SPEAK proposal requires message")
+        message = " ".join(unicodedata.normalize("NFC", proposal.message).split())
+        if not 1 <= len(message) <= 200 or any(ord(char) < 32 for char in message):
+            raise LLMResponseError("SPEAK proposal message length is invalid")
+        if proposal.target_player_id is not None:
+            raise LLMResponseError("SPEAK proposal cannot contain a target")
+        if message != proposal.message:
+            proposal = proposal.model_copy(update={"message": message})
+    elif proposal.type == "PASS":
+        if proposal.message is not None or proposal.target_player_id is not None or proposal.public_rationale is not None:
+            raise LLMResponseError("PASS proposal cannot contain message or target")
+    elif proposal.type in {"NIGHT_ACTION", "VOTE"}:
+        if proposal.target_player_id is None:
+            raise LLMResponseError(f"{proposal.type} proposal requires target")
+        if proposal.message is not None or proposal.public_rationale is not None:
+            raise LLMResponseError(f"{proposal.type} proposal cannot contain message or rationale")
+    return proposal
+
+
+def agent_proposal_schema() -> dict[str, Any]:
+    """새 Agent adapter에 전달할 Provider 공통 JSON schema를 반환한다."""
+
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "type": {"type": "string", "enum": ["SPEAK", "PASS", "NIGHT_ACTION", "VOTE"]},
+            "target_player_id": {"type": ["string", "null"], "format": "uuid"},
+            "message": {"type": ["string", "null"], "maxLength": 2_000},
+            "public_rationale": {"type": ["string", "null"], "maxLength": 500},
+        },
+        "required": ["type", "target_player_id", "message", "public_rationale"],
+    }
 
 
 def parse_game_proposal(payload: Any, *, expected_state_version: int) -> GameProposal:

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 
@@ -69,14 +70,12 @@ class ExternalIdentity:
 
 @dataclass(frozen=True, slots=True)
 class UserRecord:
-    """저장소가 UI 계층에 반환하는 내부 사용자 읽기 모델.
+    """정본 ``users`` 테이블과 일치하는 최소 사용자 읽기 모델.
 
-    외부 제공자의 subject나 토큰은 노출하지 않고, 애플리케이션 내부 UUID와
-    화면 표시에 필요한 현재 프로필 및 활성 상태만 전달한다.
+    B1에서는 OAuth 프로필을 저장하거나 반환하지 않는다. 사용자에게 필요한
+    것은 UUID와 생성·최근 확인 시각뿐이며, UUID 자체는 인증 수단이 아니다.
     """
 
     id: UUID
-    email: str | None
-    display_name: str | None
-    avatar_url: str | None
-    is_active: bool
+    created_at: datetime
+    last_seen_at: datetime

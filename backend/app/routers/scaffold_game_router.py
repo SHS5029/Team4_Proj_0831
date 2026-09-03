@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 
 from backend.app.core.errors import ApiError
 from backend.app.repositories.scaffold_repository import ScaffoldRepository
+from backend.app.repositories.user_repository import PostgresUserRepository
 from backend.app.schemas.scaffold_schema import (
     CreateScaffoldGameRequest,
     CreateScaffoldGameResponse,
@@ -23,6 +24,7 @@ from backend.app.llm_provider.factory import get_llm_provider
 from backend.app.llm_provider.schemas import parse_game_proposal, proposal_schema
 from backend.app.mcp.game_client import GameMcpClient
 from backend.app.services.scaffold_game_service import ScaffoldGameService
+from backend.app.services.identity_service import IdentityService
 from backend.app.core.config import get_settings
 from backend.app.infrastructure.postgres_scaffold import PostgresScaffoldRepository
 from backend.app.infrastructure.redis.scaffold import ScaffoldRedis
@@ -31,7 +33,10 @@ router = APIRouter(prefix="/api/v1/games", tags=["scaffold-games"])
 _settings = get_settings()
 repository = PostgresScaffoldRepository(_settings.effective_database_url)
 redis = ScaffoldRedis(_settings.redis_url)
-service = ScaffoldGameService(repository, redis=redis)
+# 사용자 저장소는 게임 저장소와 분리한다. 첫 쓰기에서만 user service가
+# 호출되며, 게임 조회·명령에서는 UUID가 있다고 사용자 행을 만들지 않는다.
+user_service = IdentityService(PostgresUserRepository(_settings.effective_database_url))
+service = ScaffoldGameService(repository, redis=redis, user_service=user_service)
 
 
 def configure_scaffold_dependencies(test_repository: ScaffoldRepository) -> None:
@@ -43,14 +48,21 @@ def configure_scaffold_dependencies(test_repository: ScaffoldRepository) -> None
 
 
 def user_id_header(value: str | None) -> UUID:
-    """개발용 사용자 식별자를 UUID로만 검증한다."""
+    """공개 게임 API의 사용자 식별자를 UUID v4로 검증한다.
+
+    이 값은 로그인 토큰이 아니라 요청 주체를 구분하는 식별자다. UUID
+    형식만 여기서 확인하고, 게임 접근 권한은 서비스가 소유자와 비교한다.
+    """
 
     if value is None:
-        raise ApiError(status_code=400, code="INVALID_USER_ID", message="사용자 식별자가 필요합니다.")
+        raise ApiError(status_code=400, code="MISSING_USER_ID", message="X-User-Id 헤더가 필요합니다.")
     try:
-        return UUID(value)
-    except ValueError as error:
-        raise ApiError(status_code=400, code="INVALID_USER_ID", message="사용자 식별자가 올바르지 않습니다.") from error
+        parsed = UUID(value)
+    except (ValueError, AttributeError) as error:
+        raise ApiError(status_code=400, code="INVALID_REQUEST", message="X-User-Id는 UUID 형식이어야 합니다.") from error
+    if parsed.version != 4 or str(parsed) != value.lower():
+        raise ApiError(status_code=400, code="INVALID_REQUEST", message="X-User-Id는 UUID v4여야 합니다.")
+    return parsed
 
 
 @router.post("", response_model=CreateScaffoldGameResponse, status_code=201)

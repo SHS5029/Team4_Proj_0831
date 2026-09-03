@@ -18,14 +18,21 @@ def request_trace_id(request: Request) -> str:
 
 
 def api_error_response(request: Request, error: ApiError) -> JSONResponse:
-    """예외 원문 대신 공개가 허용된 필드만 JSON 오류 응답에 담는다."""
+    """정본 문서의 ``{error: ...}`` 형식으로 오류를 반환한다.
+
+    클라이언트가 오류를 처리하는 위치를 항상 고정하고, 내부 예외 원문은
+    반환하지 않는 공통 보안 경계다.
+    """
 
     return JSONResponse(
         status_code=error.status_code,
         content={
-            "code": error.code,
-            "message": error.message,
-            "details": error.details,
-            "trace_id": request_trace_id(request),
+            "error": {
+                "code": error.code,
+                "message": error.message,
+                "request_id": request_trace_id(request),
+                "retryable": error.retryable,
+                "details": error.details,
+            },
         },
     )
