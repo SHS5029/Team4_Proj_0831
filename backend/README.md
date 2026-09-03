@@ -34,6 +34,10 @@ Health endpoint는 `GET http://127.0.0.1:8000/health`이며 정상 응답은
 uv run python -m backend.app.infrastructure.migrations
 ```
 
+현재 migration은 `001`·`002` legacy/scaffold 기반, `003` canonical `mystery-v1`
+schema, `004` 최소 정적 콘텐츠 순서로 실행됩니다. `004`는 시나리오 5개와 시나리오별
+알리바이·관찰 각 9개, 활성 persona 한 개를 고정 key로 멱등 등록합니다.
+
 현재 `mcp_server/mafia_game`에는 실행 가능한 서버 entrypoint가 없습니다. 따라서 MCP
 연결 endpoint는 호환 서버를 별도로 준비한 경우에만 확인할 수 있고, canonical MCP
 서버 실행 명령은 `WU-M2`에서 entrypoint를 구현한 뒤 이 문서에 추가합니다.

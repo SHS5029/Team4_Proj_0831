@@ -1,1 +1,1 @@
-"""향후 재사용 가능한 Tour MCP Prompt 등록 위치."""
+"""WU-M2에서는 사용하지 않는 향후 Mafia Game MCP Prompt 확장 위치."""

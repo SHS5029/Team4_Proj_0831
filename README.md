@@ -30,7 +30,9 @@ HMAC identity API와 scaffold game은 아직 코드에 남아 있지만 새 정�
 - 재로그인 프로필·최근 로그인 시각 갱신과 비활성 사용자 fail-closed 차단
 - 외부 프로필 HTML escape와 HTTPS 아바타 URL 제한
 - Backend 소유 PostgreSQL migration 실행 코드(MCP 섹터가 실제 실행)
-- 독립 관리자 Streamlit 앱과 MCP 서버 예약 구조(`mcp_server/mafia_game`, `mcp_2`)
+- 독립 관리자 Streamlit 앱과 후속 MCP 서버 예약 구조(`mcp_server/mcp_2`)
+- `WU-M2` Mafia Game MCP의 stateful `/mcp` initialize, 일회성 bootstrap 검증·Engine
+  consume, 30초 idle/DELETE session 정리
 
 개발 섹터 역할은 코드 소유권과 실행 환경 책임을 분리합니다. Backend 섹터는
 DB schema·migration SQL·repository와 Redis client·lock 코드를 작성하고, MCP
@@ -42,8 +44,10 @@ Backend의 영속 `event_outbox`와 Redis fan-out은 Backend 소유이며, MCP�
 `WU-M5`는 별도 영속 outbox 없이 구조화 감사 로그와 redaction만 검증합니다.
 
 LLM Agent loop, MCP Tool·Resource, 관리자 업무 기능과 canonical game의 Redis 연결은
-아직 구현하지 않았습니다. 기존 LLM Provider adapter는 연결돼 있지만 앱 수준의 LLM
-timeout 설정, token 상한·사용량, 비용·예산과 관련 KPI는 새 MVP 범위에서 제외합니다.
+아직 구현하지 않았습니다. WU-M2 서버는 bootstrap 뒤 빈 MCP capability 표면만 열며
+Resource는 WU-M3, Tool은 WU-M4에서 추가합니다. 기존 LLM Provider adapter는 연결돼
+있지만 앱 수준의 LLM timeout 설정, token 상한·사용량, 비용·예산과 관련 KPI는 새 MVP
+범위에서 제외합니다.
 
 ## 개발상세플랜 정본 (2026-09-03)
 
@@ -107,8 +111,9 @@ Front, Backend, MCP·Data 담당자는 정본 문서의 예시와 필드·enum·
 Front·MCP 계약을 차례로 완료한 뒤 사용할 수 있습니다. 규칙 수준의 밸런스는
 유료 LLM 없이 6~9명별 heuristic bot 시뮬레이션으로 검증합니다. 실제 Provider smoke는
 명시적으로 opt-in한 소수 표본만 사용하며 token·비용 KPI를 만들지 않습니다.
-마스터플랜의 개인 정보 문장은 현재 방향 예시이며, WU-B2에서 최대 9좌석용 최소
-90개 template record를 작성·제품 검수해야 `scenario-v1` 콘텐츠가 완료됩니다.
+마스터플랜의 개인 정보 문장 예시를 바탕으로 `004_seed_mystery_v1_catalog.sql`에
+최대 9좌석용 최소 90개 template record를 작성했습니다. 실제 환경에 적용하기 전에
+문장별 역할 중립성·무모순을 제품 검수해야 `scenario-v1` 콘텐츠가 완료됩니다.
 
 ## 프로젝트 구조
 
@@ -142,7 +147,9 @@ Front·MCP 계약을 차례로 완료한 뒤 사용할 수 있습니다. 규칙 
 │   └── tests/
 ├── frontend_admin/                   # 관리자 독립 앱의 최소 실행 골격
 ├── mcp_server/
-│   ├── mafia_game/                   # 독립 프로젝트의 게임 MCP package(MVP 대상)
+│   ├── pyproject.toml, uv.lock        # Python 3.12·MCP SDK 1.29.1 독립 실행 환경
+│   ├── mafia_game/                   # WU-M2 bootstrap/session MCP runtime
+│   ├── tests/                        # fake Engine·SDK-level WU-M2 계약 테스트
 │   └── mcp_2/                        # 후속 MCP 독립 예약 패키지
 ├── docs/
 │   └── 개발상세플랜/
@@ -164,9 +171,13 @@ runtime은 DB·Redis에 직접 접근하지 않습니다.
 MCP 구현부터 `mcp_server/`를 독립 프로젝트 루트, `mafia_game`을 공식 Python import
 package로 사용합니다. composition root는 `mafia_game/main.py`, module 진입점은
 `mafia_game/__main__.py`, package test 위치는 `mcp_server/tests/`로 고정했습니다.
-이 파일과 독립 `pyproject.toml`·`uv.lock`은 `WU-M2`에서 만들며, 구현 전인 현재는
-예약 디렉터리만 존재합니다. stateful MCP session은 initialize 전에 bootstrap을
-consume하고 명시적 DELETE·terminal 처리·30초 idle TTL에 메모리를 폐기합니다.
+독립 `pyproject.toml`과 `uv.lock`은 Python 3.12와 MCP SDK 1.29.1을 정확히 고정합니다.
+stateful MCP session은 initialize 전에 canonical bootstrap token을 검증하고 Backend
+Engine consume이 성공한 뒤에만 활성화되며, 명시적 DELETE와 30초 idle에 메모리를
+멱등 폐기합니다. bootstrap 만료가 idle보다 이르면 만료 시각을 우선하며 consume
+결과가 비확정이면 신규 HTTP code 없이 `403 BOOTSTRAP_DENIED`로 fail-closed합니다.
+fresh credential 조정은 `WU-M7` 범위입니다. 초기 요청의 capability header는 정확히
+한 번만 허용하고 후속 요청은 동일 bearer로만 session owner를 증명합니다.
 
 ## 사전 준비
 
@@ -220,8 +231,10 @@ INTERNAL_API_MAX_AGE_SECONDS=300
 - Backend의 기본 서명 허용 시간 오차는 300초이며 최대 3600초로 제한됩니다.
 - 현재 scaffold는 `.env.example`의 `REDIS_URL`, `LLM_PROVIDER`, 선택 Provider 설정과
   `MAFIA_MCP_URL`을 이미 읽습니다. game state keyring, `MCP_SERVER_AUTH_SECRET`,
-  `ENGINE_INTERNAL_API_SECRET`, `ADMIN_USER_IDS`와 `ENGINE_API_URL`은 canonical WU에서
-  연결할 목표 설정입니다. 실제 키 값은 승인된 비밀 저장소나 로컬의 권한 제한
+  `ENGINE_INTERNAL_API_SECRET`, `ADMIN_USER_IDS`와 `ENGINE_API_URL`은 Backend canonical
+  WU에서 연결할 목표 설정입니다. WU-M2 MCP runtime은 뒤의 세 MCP 관련 값 중
+  `MCP_SERVER_AUTH_SECRET`, `ENGINE_INTERNAL_API_SECRET`, `ENGINE_API_URL`만 process
+  환경에서 직접 읽습니다. 실제 키 값은 승인된 비밀 저장소나 로컬의 권한 제한
   파일에만 보관합니다.
 - 현재 Backend MCP client의 코드 기본값은 아직 `8010/mcp`이고 `game_ping`,
   `game_get_context`, `game_submit_proposal` placeholder Tool을 호출합니다. 목표값
@@ -286,9 +299,12 @@ uv run python -m backend.app.infrastructure.migrations
 테이블을 생성합니다. `003_create_mystery_v1_schema.sql`은 기존 객체와 데이터를
 삭제하지 않고 `users.last_seen_at`을 보강한 뒤
 [DB 설계 정본](docs/개발상세플랜/AI_MAFIA_DB_DESIGN.md)의 canonical `mystery-v1`
-테이블, 복합 FK, 상태 제약과 조회 index를 순방향으로 추가합니다. scenario·persona
-seed 데이터와 legacy cleanup은 아직 포함하지 않으며, 적용된 migration 파일은
-수정하지 않고 이후 번호의 순방향 migration으로 확장합니다.
+테이블, 복합 FK, 상태 제약과 조회 index를 순방향으로 추가합니다.
+`004_seed_mystery_v1_catalog.sql`은 정본 시나리오 5개, 시나리오별 알리바이 9개와
+관찰 9개로 구성된 최소 90개 문장, 최소 활성 persona 한 개를 고정 key 기반으로
+멱등 등록하고 콘텐츠 SHA-256 hash와 승인 시각을 기록합니다. legacy cleanup은 아직
+포함하지 않으며, 적용된 migration 파일은 수정하지 않고 이후 번호의 순방향
+migration으로 확장합니다.
 
 ## Legacy Google OAuth와 Streamlit secrets
 
@@ -348,6 +364,21 @@ uv run uvicorn backend.app.main:app --reload --port 8000
 
 `http://127.0.0.1:8000/health`의 정상 응답은 `{"status":"ok"}`입니다.
 
+Mafia Game MCP는 별도 프로젝트 환경을 동기화하고 MCP 전용 process 환경에 서로 다른
+32자 이상 secret과 Engine base URL을 주입한 뒤 실행합니다. 공용 루트 `.env`를 자동
+로딩하지 않으며 WU-M2의 평문 listen은 loopback만 허용합니다. 아래 명령은 저장소
+루트에서 실행합니다.
+
+```bash
+uv sync --project mcp_server --locked --dev
+uv run --project mcp_server --directory mcp_server --locked python -m mafia_game.main
+```
+
+기본 endpoint는 `http://127.0.0.1:8100/mcp`입니다. `/health`나 다른 공개 endpoint는
+WU-M2에 없고, 현재 Resource·Tool 및 legacy alias도 등록하지 않습니다. 실제 Backend의
+bootstrap 발급·consume endpoint가 아직 없으면 아래 package 테스트의 fake Engine으로
+독립 계약만 검증할 수 있습니다.
+
 일반 사용자 앱은 별도 터미널에서 실행합니다.
 
 ```bash
@@ -405,6 +436,8 @@ provider_subject)`만 외부 계정 연결에 사용합니다. `request_id`는 �
 uv run pytest backend/tests/test_identity_api.py
 uv run pytest backend/tests/test_users_repository.py
 uv run pytest frontend_user/tests
+uv run --project mcp_server pytest mcp_server/tests
+uv run --project mcp_server ruff check --config mcp_server/pyproject.toml mcp_server
 ```
 
 완료 전 전체 회귀·컴파일·lint는 다음 명령으로 확인합니다.
@@ -446,7 +479,8 @@ uv run ruff check .
 - LLM prompt, raw response, private context, token과 비용을 로그에 넣지 않습니다.
 - `ADMIN_USER_IDS`는 강한 인증이 아니므로 관리자 앱도 loopback·사설망에서만 사용합니다.
 - 현재 관리자 앱에는 인증·권한과 업무 기능이 없으며 준비 화면만 표시합니다.
-- 현재 MCP 디렉터리에는 실행 서버와 Tool이 없고 외부 API를 호출하지 않습니다.
+- 현재 Mafia Game MCP에는 `/mcp` 실행 서버와 bootstrap consume용 Engine HTTP adapter가
+  있으며 Resource·Tool과 DB·Redis 접근은 아직 없습니다.
 
 비밀값 노출이 의심되면 값을 다시 출력하지 말고 즉시 폐기·재발급한 뒤 Git 이력과
 외부 로그를 별도로 점검하세요.
