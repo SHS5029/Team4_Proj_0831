@@ -21,6 +21,7 @@ HMAC identity API와 scaffold game은 아직 코드에 남아 있지만 새 정�
 
 ## 현재 구현 범위
 
+- UUID-only 사용자 Frontend의 홈·새 게임 설정·역할 공개·낮 토론·밤 행동·투표·관전·서버 확정 결과 화면과 Backend 공개 API client
 - Streamlit `st.login("google")`, `st.user`, `st.logout()` 기반 Google OIDC 로그인
 - OIDC 설정 누락, placeholder, 취약한 cookie secret, 안전하지 않은 URL 사전 검사
 - Google `sub` 기반 provider-neutral 사용자 식별과 외부 프로필 정규화
@@ -133,11 +134,18 @@ Front·MCP 계약을 차례로 완료한 뒤 사용할 수 있습니다. 규칙 
 │   ├── tests/
 │   └── README.md
 ├── frontend_user/
-│   ├── app.py                        # 얇은 Streamlit 실행 진입점
-│   ├── app_pages/login_page.py       # OIDC 로그인·프로필 화면 흐름
+│   ├── app.py                        # UUID bootstrap·화면 dispatcher
+│   ├── app_pages/home_page.py         # 게임 목록·이어하기 홈
+│   ├── app_pages/game_create_page.py  # 새 게임·인원 선택·생성 UI
+│   ├── app_pages/settings_page.py    # UUID 확인·복구·교체 화면
+│   ├── components/identity_bridge.py # 브라우저 local storage UUID bridge
+│   ├── components/browser_components/identity/ # 정적 UUID bridge
+│   ├── core/identity.py              # UUID v4 검증·생성
+│   ├── core/session.py               # identity scope·session mirror
+│   ├── core/api_client.py            # UUID 공개 Backend API client
+│   ├── app_pages/login_page.py       # legacy OIDC 코드(실행 경로 제외)
 │   ├── auth/                         # OIDC 설정·claim·접근·저장 결과 정책
 │   ├── components/ui.py              # 안전한 HTML·CSS 표현
-│   ├── core/api_client.py            # HMAC Backend API client
 │   ├── .streamlit/secrets.toml.example
 │   └── tests/
 ├── frontend_admin/                   # 관리자 독립 앱의 최소 실행 골격
@@ -155,6 +163,25 @@ Front·MCP 계약을 차례로 완료한 뒤 사용할 수 있습니다. 규칙 
 ├── tests/{integration,e2e}/          # 서버 간·브라우저 검증 확장 위치
 └── scripts/configure_google_oidc.py  # Google client JSON → Streamlit secrets 생성
 ```
+
+### Frontend 컴포넌트별 가상환경
+
+Windows에서는 컴포넌트별 환경을 분리합니다. 기존 `.venv`가 있으면 삭제하지
+않고 재사용하며, 반드시 환경 내부 Python으로 설치합니다.
+
+```powershell
+& ".\backend\.venv\Scripts\python.exe" -m pip install -r ".\backend\requirements.txt"
+& ".\frontend_user\.venv\Scripts\python.exe" -m pip install -r ".\frontend_user\requirements-dev.txt"
+& ".\frontend_admin\.venv\Scripts\python.exe" -m pip install -r ".\frontend_admin\requirements.txt"
+```
+
+`.vscode\settings.json`과 `.vscode\project-venv.ps1`은 현재 폴더에 맞는
+PowerShell 가상환경 자동 전환을 제공합니다. 원본 Python 설치가 바뀐 경우에는
+각 컴포넌트의 `.venv`를 재생성하기 전에 먼저 Python 3.12 설치 경로를 확인합니다.
+
+현재 일반 사용자 Frontend는 WU-F1 UUID-only bootstrap을 사용합니다. 브라우저
+저장 key는 `ai_mafia_user_id_v1`이며, Backend에는 UUID를 `X-User-Id` header로만
+전달합니다. 게임 화면과 Backend 공개 API 연결은 후속 WU-F2부터 진행합니다.
 
 `frontend_user`와 `frontend_admin`은 Backend만 HTTP로 호출합니다. Frontend가 DB,
 Redis, MCP 서버에 직접 연결하거나 MCP 서버끼리 서로의 내부 모듈을 import하지
@@ -347,6 +374,13 @@ uv run uvicorn backend.app.main:app --reload --port 8000
 uv run streamlit run frontend_user/app.py --server.port 8501
 ```
 
+Windows에서 `uv`를 사용하지 않는 경우 프로젝트 가상환경의 Python으로 실행할 수
+있습니다.
+
+```powershell
+& ".\frontend_user\.venv\Scripts\python.exe" -m streamlit run ".\frontend_user\app.py" --server.port 8501
+```
+
 브라우저에서 [http://localhost:8501](http://localhost:8501)을 엽니다. OIDC 또는
 Backend 설정이 없거나 안전성 검사를 통과하지 못하면 접근을 허용하지 않고 고정된
 구성·재시도 안내만 표시합니다.
@@ -356,6 +390,9 @@ Backend 설정이 없거나 안전성 검사를 통과하지 못하면 접근을
 ```bash
 uv run streamlit run frontend_admin/app.py --server.port 8502
 ```
+
+관리자 entrypoint는 실행 위치와 무관하게 저장소 루트를 import 경로에 등록해
+`frontend_admin` 패키지를 불러옵니다.
 
 ## 현재 legacy 구현: Google 로그인
 
@@ -399,6 +436,11 @@ uv run pytest backend/tests/test_identity_api.py
 uv run pytest backend/tests/test_users_repository.py
 uv run pytest frontend_user/tests
 ```
+
+사용자 게임 목록은 API 명세서의 `status`, opaque `cursor`, `limit(1~100)` query를
+지원하며, 역할 공개 화면은 명세서의 `BEGIN_GAME` command를 성공한 뒤 진행 화면으로
+이동합니다. 관리자 게임 목록도 `status`, `phase`, `cursor`, `limit(1~100)` query
+계약을 사용합니다.
 
 완료 전 전체 회귀·컴파일·lint는 다음 명령으로 확인합니다.
 
