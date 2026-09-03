@@ -21,7 +21,7 @@ HMAC identity API와 scaffold game은 아직 코드에 남아 있지만 새 정�
 
 ## 현재 구현 범위
 
-- UUID-only 사용자 Frontend의 홈·새 게임 설정·역할 공개·낮 토론·밤 행동·투표·관전·서버 확정 결과 화면과 Backend 공개 API client
+- UUID-only 사용자 Frontend의 홈·게임 진행·관전·서버 확정 결과·게임별 피드백 화면과 Backend 공개 API client
 - Streamlit `st.login("google")`, `st.user`, `st.logout()` 기반 Google OIDC 로그인
 - OIDC 설정 누락, placeholder, 취약한 cookie secret, 안전하지 않은 URL 사전 검사
 - Google `sub` 기반 provider-neutral 사용자 식별과 외부 프로필 정규화

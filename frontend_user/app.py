@@ -52,7 +52,12 @@ def main() -> None:
     if page == "feedback":
         render_feedback(client=client, feedback_type="GENERAL")
     elif page == "game_feedback":
-        render_feedback(client=client, feedback_type="GAME", game_id=st.session_state.get("game.game_id"))
+        render_feedback(
+            client=client,
+            feedback_type="GAME",
+            game_id=st.session_state.get("game.game_id"),
+            snapshot=st.session_state.get("game.latest_snapshot"),
+        )
     elif page == "create":
         render_create(client)
     elif page == "game":

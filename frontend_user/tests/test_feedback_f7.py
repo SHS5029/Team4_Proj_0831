@@ -4,8 +4,15 @@ from frontend_user.core.feedback import build_feedback
 
 
 def test_general_feedback_body_is_normalized() -> None:
-    body = build_feedback(feedback_type="GENERAL", rating=5, comment="  재미   있어요 ", tags=["UX"])
-    assert body == {"feedback_type": "GENERAL", "rating": 5, "comment": "재미 있어요", "tags": ["UX"]}
+    body = build_feedback(
+        feedback_type="GENERAL", rating=5, comment="  재미   있어요 ", tags=["UX"]
+    )
+    assert body == {
+        "feedback_type": "GENERAL",
+        "rating": 5,
+        "comment": "재미 있어요",
+        "tags": ["UX"],
+    }
 
 
 @pytest.mark.parametrize("rating", [0, 6])
