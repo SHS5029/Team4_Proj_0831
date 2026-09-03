@@ -62,6 +62,8 @@ agent 한 세션을 마스터플랜의 WU 한 개 이하로 제한합니다.
 | [AI_MAFIA_API_SPEC.md](docs/개발상세플랜/AI_MAFIA_API_SPEC.md) | 일반·관리자·내부 Engine HTTP API와 MCP Resource·Tool 계약 |
 | [AI_MAFIA_MCP_SERVER_DESIGN.md](docs/개발상세플랜/AI_MAFIA_MCP_SERVER_DESIGN.md) | MCP runtime 구조, 보안 경계와 WU-M1A~WU-M8 실행·검증 계획 |
 | [AI_MAFIA_SCREEN_FLOW.md](docs/개발상세플랜/AI_MAFIA_SCREEN_FLOW.md) | UUID 초기화, 사용자 게임·관전·피드백과 관리자 화면 흐름 |
+| [AI_MAFIA_FRONTEND_TECHNICAL_DESIGN.md](docs/개발상세플랜/AI_MAFIA_FRONTEND_TECHNICAL_DESIGN.md) | Streamlit Front 전용 WU-F1~F8 기술 설계, 상태·동기화·협업 계약·보안·테스트·완료 기준 |
+| [AI_MAFIA_FRONTEND_BACKEND_HANDOFF.md](docs/개발상세플랜/AI_MAFIA_FRONTEND_BACKEND_HANDOFF.md) | Frontend–Backend 공개 API, SSE·CORS, 오류·private 경계와 공동 완료 조건 요약 |
 | [AI_MAFIA_INDEPENDENT_CONTRACT.md](docs/개발상세플랜/AI_MAFIA_INDEPENDENT_CONTRACT.md) | 세 섹터가 독립 구현할 때 공통으로 고정할 최소 연결 형식과 경계 |
 
 다섯 MCP Resource의 상세 `data` schema는 API 명세 8.2절과 그 절이 명시적으로
@@ -158,6 +160,8 @@ Front·MCP 계약을 차례로 완료한 뒤 사용할 수 있습니다. 규칙 
 │       ├── AI_MAFIA_API_SPEC.md       # 공개·내부·MCP API 정본
 │       ├── AI_MAFIA_MCP_SERVER_DESIGN.md # MCP runtime·Data WU 구현 설계
 │       ├── AI_MAFIA_SCREEN_FLOW.md    # 사용자·관리자 화면 정본
+│       ├── AI_MAFIA_FRONTEND_TECHNICAL_DESIGN.md # Front WU-F1~F8 파생 기술 설계안
+│       ├── AI_MAFIA_FRONTEND_BACKEND_HANDOFF.md # Frontend–Backend 연동 인계 요약
 │       └── AI_MAFIA_INDEPENDENT_CONTRACT.md # 섹터 간 최소 연결 형식·독립 개발 규칙
 ├── tests/{integration,e2e}/          # 서버 간·브라우저 검증 확장 위치
 └── scripts/configure_google_oidc.py  # Google client JSON → Streamlit secrets 생성
