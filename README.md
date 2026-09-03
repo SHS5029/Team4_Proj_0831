@@ -38,6 +38,8 @@ DB schema·migration SQL·repository와 Redis client·lock 코드를 작성하�
 계정·권한 준비,
 migration 실행과 health 확인을 담당합니다. 실제 Backend 프로세스는 DB·Redis에
 직접 연결하며 MCP 서버를 데이터 프록시로 사용하지 않습니다.
+Backend의 영속 `event_outbox`와 Redis fan-out은 Backend 소유이며, MCP의
+`WU-M5`는 별도 영속 outbox 없이 구조화 감사 로그와 redaction만 검증합니다.
 
 LLM Agent loop, MCP Tool·Resource, 관리자 업무 기능과 canonical game의 Redis 연결은
 아직 구현하지 않았습니다. 기존 LLM Provider adapter는 연결돼 있지만 앱 수준의 LLM
@@ -54,10 +56,15 @@ agent 한 세션을 마스터플랜의 WU 한 개 이하로 제한합니다.
 | [AI_MAFIA_MASTER_PLAN.md](docs/개발상세플랜/AI_MAFIA_MASTER_PLAN.md) | 제품 규칙, 시나리오, 아키텍처, 보안 경계, 섹터 소유권, WU와 CP |
 | [AI_MAFIA_DB_DESIGN.md](docs/개발상세플랜/AI_MAFIA_DB_DESIGN.md) | PostgreSQL·Redis schema, transaction, lock, migration과 보존 계약 |
 | [AI_MAFIA_API_SPEC.md](docs/개발상세플랜/AI_MAFIA_API_SPEC.md) | 일반·관리자·내부 Engine HTTP API와 MCP Resource·Tool 계약 |
+| [AI_MAFIA_MCP_SERVER_DESIGN.md](docs/개발상세플랜/AI_MAFIA_MCP_SERVER_DESIGN.md) | MCP runtime 구조, 보안 경계와 WU-M1A~WU-M8 실행·검증 계획 |
 | [AI_MAFIA_SCREEN_FLOW.md](docs/개발상세플랜/AI_MAFIA_SCREEN_FLOW.md) | UUID 초기화, 사용자 게임·관전·피드백과 관리자 화면 흐름 |
 | [AI_MAFIA_FRONTEND_TECHNICAL_DESIGN.md](docs/개발상세플랜/AI_MAFIA_FRONTEND_TECHNICAL_DESIGN.md) | Streamlit Front 전용 WU-F1~F8 기술 설계, 상태·동기화·협업 계약·보안·테스트·완료 기준 |
 | [AI_MAFIA_FRONTEND_BACKEND_HANDOFF.md](docs/개발상세플랜/AI_MAFIA_FRONTEND_BACKEND_HANDOFF.md) | Frontend–Backend 공개 API, SSE·CORS, 오류·private 경계와 공동 완료 조건 요약 |
 | [AI_MAFIA_INDEPENDENT_CONTRACT.md](docs/개발상세플랜/AI_MAFIA_INDEPENDENT_CONTRACT.md) | 세 섹터가 독립 구현할 때 공통으로 고정할 최소 연결 형식과 경계 |
+
+다섯 MCP Resource의 상세 `data` schema는 API 명세 8.2절과 그 절이 명시적으로
+참조하는 API 공통 모델만 정본이며 MCP 서버 설계서에는 URI·Engine scope 매핑과
+비규범 예시만 둡니다.
 
 문서 통합은 구현 완료 범위를 바꾸지 않습니다. 계약 변경은 영향받는 정본을 먼저
 갱신하고 세 섹터가 합의한 뒤 구현합니다.
@@ -112,7 +119,7 @@ Front·MCP 계약을 차례로 완료한 뒤 사용할 수 있습니다. 규칙 
 ├── AGENTS.MD                         # 개발·기여 작업 규칙
 ├── README.md                         # 전체 설정·실행·검증 안내
 ├── .env.example                      # Backend 환경 변수 예시
-├── pyproject.toml                    # 통합 런타임·개발 의존성 및 도구 설정
+├── pyproject.toml                    # ai-mafia 통합 런타임·개발 의존성 및 도구 설정
 ├── backend/
 │   ├── app/main.py                   # FastAPI 생성과 router·오류 처리 등록
 │   ├── app/routers/                  # health·legacy identity·scaffold endpoint
@@ -137,13 +144,14 @@ Front·MCP 계약을 차례로 완료한 뒤 사용할 수 있습니다. 규칙 
 │   └── tests/
 ├── frontend_admin/                   # 관리자 독립 앱의 최소 실행 골격
 ├── mcp_server/
-│   ├── mafia_game/                   # 게임 컨텍스트 MCP 예약 패키지(MVP 대상)
+│   ├── mafia_game/                   # 독립 프로젝트의 게임 MCP package(MVP 대상)
 │   └── mcp_2/                        # 후속 MCP 독립 예약 패키지
 ├── docs/
 │   └── 개발상세플랜/
 │       ├── AI_MAFIA_MASTER_PLAN.md    # 제품 규칙·시나리오·아키텍처·WU/CP 정본
 │       ├── AI_MAFIA_DB_DESIGN.md      # PostgreSQL·Redis 정본
 │       ├── AI_MAFIA_API_SPEC.md       # 공개·내부·MCP API 정본
+│       ├── AI_MAFIA_MCP_SERVER_DESIGN.md # MCP runtime·Data WU 구현 설계
 │       ├── AI_MAFIA_SCREEN_FLOW.md    # 사용자·관리자 화면 정본
 │       ├── AI_MAFIA_FRONTEND_TECHNICAL_DESIGN.md # Front WU-F1~F8 파생 기술 설계안
 │       ├── AI_MAFIA_FRONTEND_BACKEND_HANDOFF.md # Frontend–Backend 연동 인계 요약
@@ -156,6 +164,13 @@ Front·MCP 계약을 차례로 완료한 뒤 사용할 수 있습니다. 규칙 
 Redis, MCP 서버에 직접 연결하거나 MCP 서버끼리 서로의 내부 모듈을 import하지
 않습니다. MCP 섹터가 DB·Redis 실행 환경을 운영해도 `mcp_server/mafia_game`
 runtime은 DB·Redis에 직접 접근하지 않습니다.
+
+MCP 구현부터 `mcp_server/`를 독립 프로젝트 루트, `mafia_game`을 공식 Python import
+package로 사용합니다. composition root는 `mafia_game/main.py`, module 진입점은
+`mafia_game/__main__.py`, package test 위치는 `mcp_server/tests/`로 고정했습니다.
+이 파일과 독립 `pyproject.toml`·`uv.lock`은 `WU-M2`에서 만들며, 구현 전인 현재는
+예약 디렉터리만 존재합니다. stateful MCP session은 initialize 전에 bootstrap을
+consume하고 명시적 DELETE·terminal 처리·30초 idle TTL에 메모리를 폐기합니다.
 
 ## 사전 준비
 
@@ -212,6 +227,10 @@ INTERNAL_API_MAX_AGE_SECONDS=300
   `ENGINE_INTERNAL_API_SECRET`, `ADMIN_USER_IDS`와 `ENGINE_API_URL`은 canonical WU에서
   연결할 목표 설정입니다. 실제 키 값은 승인된 비밀 저장소나 로컬의 권한 제한
   파일에만 보관합니다.
+- 현재 Backend MCP client의 코드 기본값은 아직 `8010/mcp`이고 `game_ping`,
+  `game_get_context`, `game_submit_proposal` placeholder Tool을 호출합니다. 목표값
+  `8100/mcp`, 다섯 Resource·네 Tool과 bootstrap/capability 연결은 `WU-B6`·`WU-B7`·
+  `WU-M6` 범위이며 현재 구현 완료로 간주하지 않습니다.
   `GAME_STATE_KEYRING_FILE`은 저장소 밖의 권한 제한 JSON을 가리키고
   `GAME_STATE_ACTIVE_KEY_ID`는 신규 seed·snapshot 암호화 key를 선택합니다.
   `MCP_SERVER_AUTH_SECRET`은 Backend→MCP session bootstrap,
@@ -267,9 +286,13 @@ history나 완료 로그에 쓰지 않습니다.
 uv run python -m backend.app.infrastructure.migrations
 ```
 
-현재 migration은 legacy `users`·`oauth_identities`와 `scaffold_*` 게임 테이블을
-생성합니다. canonical UUID-only·`mystery-v1` schema는 아직 후속 WU 범위입니다.
-적용된 migration 파일은 수정하지 않고 새 번호의 순방향 migration으로 전환합니다.
+`001`·`002` migration은 legacy `users`·`oauth_identities`와 `scaffold_*` 게임
+테이블을 생성합니다. `003_create_mystery_v1_schema.sql`은 기존 객체와 데이터를
+삭제하지 않고 `users.last_seen_at`을 보강한 뒤
+[DB 설계 정본](docs/개발상세플랜/AI_MAFIA_DB_DESIGN.md)의 canonical `mystery-v1`
+테이블, 복합 FK, 상태 제약과 조회 index를 순방향으로 추가합니다. scenario·persona
+seed 데이터와 legacy cleanup은 아직 포함하지 않으며, 적용된 migration 파일은
+수정하지 않고 이후 번호의 순방향 migration으로 확장합니다.
 
 ## Legacy Google OAuth와 Streamlit secrets
 
@@ -412,8 +435,16 @@ uv run ruff check .
   유지합니다. 서명을 통과한 payload도 schema와 도메인 규칙으로 다시 검증합니다.
 - Backend만 전체 역할·야간 행동·seed를 보유하고, AI GM과 각 플레이어 Agent에는
   공개 상태 및 자기에게 허용된 개인 정보만 전달합니다.
-- MCP capability는 game·agent·phase·state version·deadline에 묶어 agent turn마다
-  갱신하며, 이전 session과 capability는 재사용하지 않습니다.
+- MCP capability는 game·agent job·phase·state version·deadline에 묶습니다. 각
+  `agent_jobs` reservation은 새 capability·bootstrap·MCP session을 사용하고 terminal
+  처리와 reconnect에서 기존 값을 재사용하지 않습니다.
+- AI GM은 MCP의 `public`, `gm-guide`만 읽고 Tool을 사용하지 않습니다. narration은
+  LLM adapter가 Backend Agent Manager에 직접 반환하며 Backend가 검증·fallback·
+  `PUBLIC` event 저장을 담당합니다.
+- MCP runtime은 Backend `event_outbox`를 사용하거나 영속 audit outbox를 소유하지
+  않습니다. MCP 로그는 request·correlation ID, operation, status, duration과
+  비밀이 없는 분류 오류만 남기고 payload·capability·token·signature·prompt는
+  남기지 않습니다.
 - seed와 engine snapshot keyring은 저장소 밖에 두고 과거 record가 참조하는 key를
   보존합니다.
 - LLM prompt, raw response, private context, token과 비용을 로그에 넣지 않습니다.

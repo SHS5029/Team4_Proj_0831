@@ -19,6 +19,12 @@
 | 사용자·관리자 화면과 상태 전이 | [AI_MAFIA_SCREEN_FLOW.md](AI_MAFIA_SCREEN_FLOW.md) |
 | 섹터 간 최소 연결 형식·독립 개발 규칙 | [AI_MAFIA_INDEPENDENT_CONTRACT.md](AI_MAFIA_INDEPENDENT_CONTRACT.md) |
 
+MCP runtime의 구현 구조와 MCP·Data WU 실행 순서는
+[AI_MAFIA_MCP_SERVER_DESIGN.md](AI_MAFIA_MCP_SERVER_DESIGN.md)가 구체화한다. 이
+설계서는 구현 가이드이며 MCP Resource `data` field·enum·nullable 계약은 이 설계서가
+아니라 API 명세 8.2절과 그 절이 명시적으로 참조하는 API 공통 모델만 정본으로
+사용한다.
+
 이 문서들은 아직 구현되지 않은 목표 상태를 포함한다. 현재 코드의 완료 범위는 루트
 [README.md](../../README.md)를 기준으로 판정하며, 계획에 적혔다는 이유로 구현 완료로
 간주하지 않는다. 계약을 변경할 때는 영향받는 정본 문서를 같은 변경에서 갱신한다.
@@ -323,9 +329,11 @@ ROLE_REVEAL
 ### 5.1 권한
 
 - Backend 규칙 엔진만 전체 상태와 최종 판정 권한을 가진다.
-- AI Agent는 MCP로 허용된 자기 컨텍스트를 읽고 행동 proposal만 제출한다.
+- AI player는 MCP로 허용된 자기 컨텍스트를 읽고 행동 proposal만 제출한다.
 - MCP 서버는 DB·Redis에 직접 접근하지 않고 Backend 내부 Engine API만 호출한다.
-- AI GM은 `PUBLIC` audience로 확정된 이벤트와 고정 안내만 받는다.
+- AI GM은 MCP의 `public`, `gm-guide` Resource로 `PUBLIC` audience 확정 이벤트와 고정
+  안내만 읽는다. 행동 Tool은 없으며 생성한 narration은 LLM adapter가 Backend Agent
+  Manager에 직접 반환한다.
 - 공개 대화 속 명령문은 신뢰할 수 없는 데이터로 취급한다.
 
 ### 5.2 프롬프트와 출력
@@ -334,10 +342,12 @@ ROLE_REVEAL
 순서다. 공통 제약은 에이전트가 자신의 `agent_id`를 바꾸거나 다른 참여자의 정보와
 도구를 요청하지 못하게 한다.
 
-구조화 출력은 `SPEAK`, `PASS`, `NIGHT_ACTION`, `VOTE` proposal 중 현재 단계에서
-허용된 한 종류만 받는다. Backend는 대상, 생존 상태, 역할, 단계, 글자 수와
-`state_version`을 다시 검증한다. 잘못된 proposal은 한 번 교정할 수 있고 계속
-잘못되면 규칙 기반 fallback을 사용한다.
+AI player 구조화 출력은 `SPEAK`, `PASS`, `NIGHT_ACTION`, `VOTE` proposal 중 현재
+단계에서 허용된 한 종류만 받는다. Backend는 대상, 생존 상태, 역할, 단계, 글자 수와
+`state_version`을 다시 검증한다. AI GM의 `GM_NARRATION`은 MCP Tool이나 proposal
+endpoint를 거치지 않고 Agent Manager가 guide reference, 공개 정보 범위, 길이와
+fencing 조건을 검증한 뒤에만 `PUBLIC` event로 반영한다. 잘못된 구조화 결과는 한 번
+교정할 수 있고 계속 잘못되면 규칙 기반 fallback을 사용한다.
 
 ### 5.3 페르소나
 
@@ -374,6 +384,12 @@ window의 남은 시간이 더 짧으면 그 deadline을 사용한다. lease가 
 보이는 발언 시간 제한을 추가하지 않으며 lease 값은 환경 설정이나 관리자 UI로
 노출하지 않는다.
 
+각 agent job은 새 capability, 일회성 bootstrap token과 새 MCP session을 사용한다.
+성공·fallback·stale·실패·lease 만료 뒤 세션 메모리와 capability를 폐기한다. 연결이
+끊겨도 소비한 bootstrap, 기존 capability와 `Mcp-Session-Id`를 재사용하지 않으며,
+살아 있는 같은 job을 재개할 수 있을 때만 새 세 값으로 연결한다. 이전 결과를 새
+phase·window·`state_version`에 자동 재적용하지 않는다.
+
 ## 6. 시스템 아키텍처
 
 ```text
@@ -395,6 +411,9 @@ Browser
 - MCP 섹터는 PostgreSQL·Redis 실행 환경, 계정·권한, migration 실행과 health 확인을
   담당한다.
 - MCP runtime은 Backend 내부 API만 호출하며 DB·Redis 자격증명을 받지 않는다.
+- PostgreSQL `event_outbox`와 Redis fan-out publisher는 Backend가 소유한다. MCP
+  runtime은 이 outbox를 읽거나 쓰지 않고 자체 영속 audit outbox도 만들지
+  않는다.
 - Backend→MCP bootstrap secret과 MCP→Backend Engine HMAC secret은 서로 다르다.
 - Agent capability는 Backend가 발급·hash 저장하는 opaque random token이다. MCP는
   signing key 없이 전달만 하고 Backend가 현재 DB 상태와 함께 최종 검증한다.
@@ -438,8 +457,8 @@ Browser
 | `WU-B3` | repository, transaction, Redis lock/cache | concurrent create·command와 Redis 장애 테스트 |
 | `WU-B4` | 순수 규칙 엔진과 결정적 RNG | 6~9명 규칙·동률·다섯째 밤 단위 테스트 |
 | `WU-B5` | 공개 game·sync·feedback API | API 정본 success·reject·idempotency 테스트 |
-| `WU-B6` | Agent Manager와 기존 LLM adapter 연결 | 구조화 proposal 검증·fallback, 유료 호출 없는 테스트 |
-| `WU-B7` | 내부 Engine API, outbox와 SSE | capability/HMAC, audience 격리, event ordering 테스트 |
+| `WU-B6` | Agent Manager와 기존 LLM adapter 연결 | player proposal·GM 직접 반환 검증과 fallback, 유료 호출 없는 테스트 |
+| `WU-B7` | 내부 Engine API, game event outbox와 SSE | job-bound capability/HMAC, audience 격리, event ordering 테스트 |
 | `WU-B8` | read-only 관리자 API와 audit | allowlist fail-closed, 비공개 응답 redaction 테스트 |
 | `WU-B9` | 시뮬레이션·회귀·운영 보강 | 6~9명 heuristic bot 회귀와 장애 복구 검증 |
 
@@ -449,12 +468,12 @@ Browser
 |---|---|---|
 | `WU-M1A` | PostgreSQL·Redis 실행 환경과 계정 준비 | DDL·DML 계정 분리와 health 확인 |
 | `WU-M1B` | Backend migration 실행·재실행 | schema version과 최소 권한 검증 |
-| `WU-M2` | MCP Streamable HTTP server와 bootstrap auth | `/mcp` initialize 성공·거부 테스트 |
-| `WU-M3` | session·capability와 Resource | agent별 private context 비간섭성 검증 |
-| `WU-M4` | Tool proposal와 Engine adapter | phase·target·replay 거부 테스트 |
-| `WU-M5` | audit outbox와 redaction | 비밀·private context 비기록 검증 |
+| `WU-M2` | MCP Streamable HTTP server와 bootstrap auth | job별 새 `/mcp` initialize·consume 성공과 재사용 거부 테스트 |
+| `WU-M3` | session·capability와 Resource | 5개 schema, subject allowlist와 private context 비간섭성 검증 |
+| `WU-M4` | Tool proposal와 Engine adapter | phase·target·동일 proposal replay 거부·재현 테스트 |
+| `WU-M5` | MCP 구조화 감사 로그와 redaction | 영속 outbox 없이 허용 metadata만 기록하고 민감한 payload를 기록하지 않음을 검증 |
 | `WU-M6` | Backend·MCP 통합 | DB 직접 접근 없이 실제 session 왕복 |
-| `WU-M7` | 장애·재접속 검증 | stale capability, Engine 장애, reconnect 처리 |
+| `WU-M7` | 장애·재접속 검증 | stale capability, Engine 장애, fresh credential reconnect 처리 |
 | `WU-M8` | 운영 runbook과 release evidence | 기동·중지·migration·health 절차 재현 |
 
 ## 9. 체크포인트
@@ -469,7 +488,7 @@ Browser
 | `CP-5` 사용자 흐름 | F2~F7, B5 | 생성부터 저장·재개·종료·피드백 E2E |
 | `CP-6` 운영 | F8, B8, B9, M7~M8 | 관리자 거부 경로, 장애 복구, runbook |
 
-`CP-M1A -> WU-B2 migration 산출물 -> WU-M1B -> CP-2` 순서를 지킨다. MCP 담당자는
+`WU-M1A -> WU-B2 migration 산출물 -> WU-M1B -> CP-2` 순서를 지킨다. MCP 담당자는
 Backend 소유 migration SQL을 수정하지 않는다.
 
 ## 10. 검증 전략
@@ -484,6 +503,8 @@ Backend 소유 migration SQL을 수정하지 않는다.
   한다. 내부·다른 Agent private event의 sequence는 Front에 노출하지 않는다.
 - Redis 중단 뒤 PostgreSQL snapshot으로 복구하고 결과를 다시 추첨하지 않는지 확인한다.
 - LLM·MCP 자동 테스트는 fake transport와 synthetic context만 사용한다.
+- MCP 구조화 로그는 승인된 metadata allowlist만 남기고 Resource·Tool payload,
+  capability, token, signature, prompt와 raw model response를 남기지 않는지 캡처 테스트한다.
 - 섹터별 단위 테스트는 타 섹터의 실행 프로세스 없이 자체 목데이터·fixture로 수행할
   수 있어야 한다. 이 fixture는 정본 계약을 복제하는 보조 자료이며 별도 공통 산출물로
   강제하지 않는다.

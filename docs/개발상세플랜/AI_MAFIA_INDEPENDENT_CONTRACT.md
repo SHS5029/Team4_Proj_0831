@@ -6,6 +6,10 @@
 [AI_MAFIA_DB_DESIGN.md](AI_MAFIA_DB_DESIGN.md), HTTP·MCP의 상세 계약은
 [AI_MAFIA_API_SPEC.md](AI_MAFIA_API_SPEC.md), 화면 동작은
 [AI_MAFIA_SCREEN_FLOW.md](AI_MAFIA_SCREEN_FLOW.md)를 따른다.
+MCP 구현 구조와 WU 실행 절차는
+[AI_MAFIA_MCP_SERVER_DESIGN.md](AI_MAFIA_MCP_SERVER_DESIGN.md)를 참고하되, 다섯
+Resource의 상세 `data` schema는 API 명세 8.2절과 그 절이 명시적으로 참조하는 API
+공통 모델만 정본으로 사용한다.
 
 이 문서는 게임 규칙, DB schema, 화면 설계, 테스트 시나리오 또는 구현 순서를
 중복해서 정의하지 않는다. 아래 형식에 없는 사항은 해당 정본을 기준으로 한다.
@@ -169,8 +173,17 @@ proposal request의 공통 field는 `proposal_id`, `game_id`, `agent_id`,
 
 - endpoint는 `${MAFIA_MCP_URL}` 전체 값을 사용하며 `/mcp`를 중복하지 않는다.
 - Streamable HTTP initialize 뒤 `Mcp-Session-Id`를 사용한다.
-- session은 하나의 `game_id`, `subject_type`, `subject_id`에 고정한다.
+- 최초 initialize에 bearer bootstrap과 `X-Agent-Capability`를 함께 보내고, 같은 활성
+  session의 후속 요청에는 동일 bearer만 계속 보낸다. capability header는 최초 요청
+  뒤 재전송하지 않는다.
+- session은 하나의 `agent_job_id`, `game_id`, `subject_type`, `subject_id`에 고정한다.
 - bootstrap 성공 전에는 session을 활성화하지 않는다.
+- 정상 종료는 `DELETE /mcp`와 `Mcp-Session-Id`를 사용하고, idle 30초 또는 terminal
+  처리 시 MCP가 session memory를 폐기한다. consume 응답이 유실되면 같은 bootstrap을
+  재사용하지 않는다.
+- Agent Manager는 job마다 새 capability·bootstrap·session을 만들고 terminal 상태에서
+  폐기한다. reconnect도 소비한 bootstrap, 기존 capability와 session ID를 재사용하지
+  않는다.
 - Resource URI는 다음 값만 사용한다.
 
 ```text
@@ -187,6 +200,12 @@ mafia://session/gm-guide
 - MCP는 Tool input을 검증한 뒤 Backend proposal API로 전달한다.
 - GM session은 `public`, `gm-guide` Resource만 사용하고 행동 Tool은 사용하지
   않는다.
+- GM narration은 LLM adapter에서 Backend Agent Manager로 직접 반환하며 MCP Tool과
+  `/internal/v1/agent-proposals`를 호출하지 않는다. Backend가 fencing과 공개 범위를
+  재검증해 `PUBLIC` event 또는 고정 fallback을 확정한다.
+- MCP runtime은 Backend의 `event_outbox`를 읽거나 쓰지 않고 자체 영속 audit
+  outbox도 만들지 않는다. MCP 감사 범위는 API 정본 9.4절의 metadata
+  allowlist를 적용한 구조화 운영 로그와 redaction 검증으로 한정한다.
 
 ## 5. 변경 규칙
 
