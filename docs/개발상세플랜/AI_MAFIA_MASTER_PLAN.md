@@ -72,7 +72,8 @@ MCP runtime의 구현 구조와 MCP·Data WU 실행 순서는
 - 모든 게임 변경은 하나의 discriminated-union command endpoint를 사용한다.
 - Front가 호출하는 모든 공개 변경 `POST`는 UUID `Idempotency-Key`를 사용하고, 현재
   게임을 바꾸는 command는 추가로 `expected_state_version`을 사용한다. 내부 Agent
-  proposal은 body의 `proposal_id`, MCP bootstrap은 일회성 nonce 원장을 사용한다.
+  proposal은 body의 `proposal_id`, MCP 세션 개설 토큰(bootstrap token)은 일회성 nonce
+  원장을 사용한다.
 - 동기화는 `operations` envelope 하나를 polling과 SSE가 함께 사용한다.
 - 사용자 개인 메모, 수동 작성 note, 공개 채팅 자유 입력은 MVP에 포함하지 않는다.
 - OpenAPI 별도 수기 파일을 관리하지 않는다. FastAPI가 생성하는 `/openapi.json`을
@@ -89,7 +90,7 @@ MCP runtime의 구현 구조와 MCP·Data WU 실행 순서는
 - Backend는 Front와 MCP가 없어도 규칙 엔진, repository, 공개 API와 내부 API를
   synthetic 요청으로 검증한다. 외부 Provider와 MCP는 fake transport 또는 고정 응답으로
   대체하며 실제 비밀값·유료 API를 테스트에 사용하지 않는다.
-- MCP는 Backend가 없어도 정본의 bootstrap, session, Resource, Tool과 Engine API
+- MCP는 Backend가 없어도 정본의 세션 개설 토큰, session, Resource, Tool과 Engine API
   request/response 예시를 사용해 자체 fake Engine transport로 검증한다. MCP runtime은
   DB·Redis용 목 연결을 추가하더라도 실제 runtime 경계를 우회하지 않는다.
 - 자체 fixture의 작성 위치와 구현 방법은 섹터 담당자가 정하되, 정본에 없는 필드·enum·
@@ -384,9 +385,9 @@ window의 남은 시간이 더 짧으면 그 deadline을 사용한다. lease가 
 보이는 발언 시간 제한을 추가하지 않으며 lease 값은 환경 설정이나 관리자 UI로
 노출하지 않는다.
 
-각 agent job은 새 capability, 일회성 bootstrap token과 새 MCP session을 사용한다.
+각 agent job은 새 capability, 일회성 세션 개설 토큰과 새 MCP session을 사용한다.
 성공·fallback·stale·실패·lease 만료 뒤 세션 메모리와 capability를 폐기한다. 연결이
-끊겨도 소비한 bootstrap, 기존 capability와 `Mcp-Session-Id`를 재사용하지 않으며,
+끊겨도 소비한 세션 개설 토큰, 기존 capability와 `Mcp-Session-Id`를 재사용하지 않으며,
 살아 있는 같은 job을 재개할 수 있을 때만 새 세 값으로 연결한다. 이전 결과를 새
 phase·window·`state_version`에 자동 재적용하지 않는다.
 
@@ -414,7 +415,8 @@ Browser
 - PostgreSQL `event_outbox`와 Redis fan-out publisher는 Backend가 소유한다. MCP
   runtime은 이 outbox를 읽거나 쓰지 않고 자체 영속 audit outbox도 만들지
   않는다.
-- Backend→MCP bootstrap secret과 MCP→Backend Engine HMAC secret은 서로 다르다.
+- Backend→MCP 세션 개설 토큰 서명 secret과 MCP→Backend Engine HMAC secret은 서로
+  다르다.
 - Agent capability는 Backend가 발급·hash 저장하는 opaque random token이다. MCP는
   signing key 없이 전달만 하고 Backend가 현재 DB 상태와 함께 최종 검증한다.
 - 외부 호출 중 PostgreSQL transaction이나 Redis game lock을 잡지 않는다.
@@ -468,7 +470,7 @@ Browser
 |---|---|---|
 | `WU-M1A` | PostgreSQL·Redis 실행 환경과 계정 준비 | DDL·DML 계정 분리와 health 확인 |
 | `WU-M1B` | Backend migration 실행·재실행 | schema version과 최소 권한 검증 |
-| `WU-M2` | MCP Streamable HTTP server와 bootstrap auth | job별 새 `/mcp` initialize·consume 성공과 재사용 거부 테스트 |
+| `WU-M2` | MCP Streamable HTTP server와 세션 개설 인증 | job별 새 `/mcp` initialize·consume 성공과 재사용 거부 테스트 |
 | `WU-M3` | session·capability와 Resource | 5개 schema, subject allowlist와 private context 비간섭성 검증 |
 | `WU-M4` | Tool proposal와 Engine adapter | phase·target·동일 proposal replay 거부·재현 테스트 |
 | `WU-M5` | MCP 구조화 감사 로그와 redaction | 영속 outbox 없이 허용 metadata만 기록하고 민감한 payload를 기록하지 않음을 검증 |

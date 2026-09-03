@@ -1192,8 +1192,8 @@ fail-closed한다.
 
 ### 8.3 `POST /internal/v1/mcp-bootstrap/consume`
 
-MCP runtime이 bootstrap token과 opaque capability를 받은 직후 Engine HMAC으로
-호출한다.
+MCP runtime이 MCP 세션 개설 토큰(bootstrap token)과 opaque capability를 받은 직후
+Engine HMAC으로 호출한다.
 
 ```json
 {
@@ -1201,10 +1201,10 @@ MCP runtime이 bootstrap token과 opaque capability를 받은 직후 Engine HMAC
 }
 ```
 
-Backend는 bootstrap signature, claim의 `agent_job_id`·subject·capability hash와
+Backend는 세션 개설 토큰 서명, claim의 `agent_job_id`·subject·capability hash와
 저장된 capability 및 현재 job reservation을 다시 검증한다. 이 요청의
 `X-Agent-Capability` header가 유일한 capability 원문이며 body에 중복하지 않는다.
-header hash가 bootstrap claim·DB hash와 모두 같아야 한다. token nonce를 PostgreSQL
+header hash가 세션 개설 토큰 claim·DB hash와 모두 같아야 한다. token nonce를 PostgreSQL
 `internal_request_nonces`에
 `scope=MCP_BOOTSTRAP`으로 INSERT한다. 성공 응답은 `{"status":"CONSUMED"}`이며
 재사용·만료·capability 불일치는 fail-closed한다. MCP는 이 성공 뒤에만 session을
@@ -1257,9 +1257,9 @@ MCP Tool 성공은 게임 행동의 무조건 성공이 아니라 Backend가 pro
 - endpoint는 `${MAFIA_MCP_URL}` 전체 값이며 기본 개발 예시는
   `http://127.0.0.1:8100/mcp`다.
 - MCP Streamable HTTP initialize로 session을 만들고 `Mcp-Session-Id`를 사용한다.
-- Backend Agent Manager가 `MCP_SERVER_AUTH_SECRET`으로 서명한 일회성 bootstrap token을
+- Backend Agent Manager가 `MCP_SERVER_AUTH_SECRET`으로 서명한 일회성 세션 개설 토큰을
   `Authorization: Bearer <token>`으로 보낸다. raw shared secret 자체를 보내지 않는다.
-- bootstrap token은 먼저 key 정렬·공백 없는 UTF-8 canonical JSON을 padding 없는
+- 세션 개설 토큰은 먼저 key 정렬·공백 없는 UTF-8 canonical JSON을 padding 없는
   base64url `encoded_payload`로 만든 뒤
   `encoded_payload.base64url(HMAC-SHA256(MCP_SERVER_AUTH_SECRET, ASCII(encoded_payload)))`
   로 직렬화한다. claim은
@@ -1270,35 +1270,36 @@ MCP Tool 성공은 게임 행동의 무조건 성공이 아니라 Backend가 pro
   `iat <= current_time < exp`이고 `1 <= exp - iat <= 120`인 경우만 허용하며 clock
   leeway를 적용하지 않는다. 운영 host는 동기화된 시스템 시계를 사용한다.
 - initialize HTTP 요청의 `X-Agent-Capability` header에 raw opaque capability를 정확히
-  한 번 전달한다. MCP는 해당 header를 session memory에만 보관하고 bootstrap
+  한 번 전달한다. MCP는 해당 header를 session memory에만 보관하고 세션 개설 토큰
   signature를 확인한 뒤 8.3절 consume까지 성공해야 session을 연다.
-- 최초 initialize 이후 같은 활성 session의 HTTP 요청은 동일 bearer bootstrap을
+- 최초 initialize 이후 같은 활성 session의 HTTP 요청은 동일 bearer 세션 개설 토큰을
   계속 보내 session owner를 증명하되 `X-Agent-Capability`는 다시 보내지 않는다.
   MCP는 후속 bearer에 대해 서명·claim·만료와 session owner 일치를 검사하지만 이미
-  성공한 bootstrap consume을 반복하지 않는다. 다른 bearer, 만료 bearer 또는
+  성공한 세션 개설 토큰 consume을 반복하지 않는다. 다른 bearer, 만료 bearer 또는
   capability header 재전송은 session을 닫고 고정 오류로 거부한다.
 - session은 정확히 한 `agent_job_id`, `game_id`, `subject_type`과 `subject_id`에
   묶인다. AI player는 `subject_type=AI_PLAYER`, GM은 `subject_type=GM`이다.
 - AI player의 `subject_id`는 해당 `player_id`다. GM은 별도 player row를 만들지 않고
   `subject_id`에 현재 `game_id` UUID를 그대로 사용한다.
-- Backend Agent Manager는 `agent_jobs` reservation 한 건마다 새 capability, 새
-  bootstrap nonce·token과 새 MCP initialize session을 만든다. 같은 subject·phase·
+- Backend Agent Manager는 `agent_jobs` reservation 한 건마다 새 capability, 새 세션
+  개설 토큰과 그 nonce, 새 MCP initialize session을 만든다. 같은 subject·phase·
   window·state라도 다른 job에 이 셋을 재사용하지 않는다.
 - job이 성공, fallback, stale, 실패(호출 취소 포함) 또는 lease 만료로 끝나면 Backend는
   capability를 폐기하고 session 종료를 시도한다. MCP는 session memory의 capability와
   subject binding을 제거한다. phase·window·state version 변화도 기존 capability를
   즉시 폐기하며 늦은 결과를 새 상태에 자동 rebase하지 않는다.
-- transport가 끊기면 소비한 bootstrap token이나 기존 `Mcp-Session-Id`를 다시 쓰지
+- transport가 끊기면 소비한 세션 개설 토큰이나 기존 `Mcp-Session-Id`를 다시 쓰지
   않는다. 같은 job lease 안에서 재접속할 수 있을 때도 기존 capability를 먼저
-  폐기하고 새 capability·bootstrap·session으로 시작한다. Backend가 job의 현재 상태를
+  폐기하고 새 capability·세션 개설 토큰·session으로 시작한다. Backend가 job의 현재
+  상태를
   확인할 수 없으면 재접속하지 않고 정의된 fallback을 수행한다.
 - 정상 session 종료는 `DELETE /mcp`와 `Mcp-Session-Id`를 사용한다. MCP는 Tool
-  terminal 결과, 명시적 DELETE, transport 종료, bootstrap·capability 만료와 process
+  terminal 결과, 명시적 DELETE, transport 종료, 세션 개설 토큰·capability 만료와 process
   shutdown에서 session memory를 멱등 폐기한다. idle 요청이 30초 동안 없으면 session을
   종료하며 event store나 외부 저장소로 session을 복원하지 않는다.
-- bootstrap consume 응답이 유실되면 해당 initialize와 session을 실패로 닫고 같은
+- 세션 개설 토큰 consume 응답이 유실되면 해당 initialize와 session을 실패로 닫고 같은
   token을 다시 consume하지 않는다. Backend만 job 상태를 확인한 뒤 살아 있는 job에
-  fresh capability·bootstrap·session을 발급할 수 있다.
+  fresh capability·세션 개설 토큰·session을 발급할 수 있다.
 - 운영은 검증된 TLS를 사용한다. loopback 개발만 평문 HTTP를 허용한다.
 
 ### 9.2 Resource
@@ -1352,7 +1353,7 @@ exception text와 stack trace를 포함하지 않는다.
 | 경계 | 조건 | HTTP/JSON-RPC | 공개 code |
 |---|---|---:|---|
 | initialize | bearer 또는 capability header 누락·형식 오류 | HTTP 401 | `AUTH_REQUIRED` |
-| initialize | bootstrap 서명·claim·만료·replay·mismatch 또는 consume 거부 | HTTP 403 | `BOOTSTRAP_DENIED` |
+| initialize | 세션 개설 토큰 서명·claim·만료·replay·mismatch 또는 consume 거부 | HTTP 403 | `BOOTSTRAP_DENIED` |
 | session | 알 수 없거나 닫힌 `Mcp-Session-Id` | HTTP 404 | `SESSION_NOT_FOUND` |
 | protocol | JSON-RPC 또는 Tool 폐쇄형 입력 오류 | `-32602` | `VALIDATION_ERROR` |
 | handler | 비활성 session 또는 terminal 뒤 호출 | `-32001` | `SESSION_NOT_ACTIVE` |
@@ -1367,7 +1368,7 @@ payload로 변환하지 않는다.
 
 ### 9.4 구조화 운영 로그와 redaction
 
-이 절은 initialize, bootstrap consume, Resource, Tool, Engine adapter와 session 종료의
+이 절은 initialize, 세션 개설 토큰 consume, Resource, Tool, Engine adapter와 session 종료의
 성공·거부·예외 경로 모두에 적용한다.
 
 - 구조화 record가 가질 수 있는 application field는 `request_id`, `correlation_id`,
@@ -1375,7 +1376,7 @@ payload로 변환하지 않는다.
   폐쇄형 분류이고 exception message를 그대로 사용하지 않는다. 두 ID는 검증된 UUID만
   기록하며 임의 header 문자열을 그대로 복사하지 않는다.
 - Resource·Tool request·response payload, target player, game·agent·player ID, private
-  context, capability, bootstrap token, signature, secret, HTTP header, prompt, raw model
+  context, capability, 세션 개설 토큰, signature, secret, HTTP header, prompt, raw model
   response, exception 전문·stack과 chain-of-thought를 로그에 남기지 않는다.
 - logger와 sink의 표준 process metadata는 허용하되 application payload를 자동
   직렬화하지 않는다. formatter·sink 장애도 금지값을 임시 파일이나 spool에 쓰는
@@ -1484,9 +1485,10 @@ window와 `state_version`을 다시 확인한 뒤에만 `PUBLIC` event로 저장
   `public`, `gm-guide`만 있는지 확인
 - GM 구조화 결과가 Agent Manager로 직접 반환되고 MCP Tool·proposal API 호출은 0회인지,
   잘못된 guide reference·private 사실·late fencing 결과가 fallback 또는 stale인지 확인
-- job마다 capability hash·bootstrap nonce·MCP session ID가 다르고 성공·fallback·stale·
-  실패(호출 취소 포함)·lease 만료 뒤 이전 값과 소비된 bootstrap이 거부되는지 확인
-- reconnect가 새 capability·bootstrap·session을 사용하고 이전 state/window 결과를
+- job마다 capability hash·세션 개설 토큰의 nonce·MCP session ID가 다르고
+  성공·fallback·stale·
+  실패(호출 취소 포함)·lease 만료 뒤 이전 값과 소비된 세션 개설 토큰이 거부되는지 확인
+- reconnect가 새 capability·세션 개설 토큰·session을 사용하고 이전 state/window 결과를
   자동 rebase하지 않는지 확인
 - MCP session 고정, Resource allowlist와 Tool proposal 재검증
 - 같은 `proposal_id`·같은 body의 불명확 응답 재시도는 mutation 한 번과 terminal

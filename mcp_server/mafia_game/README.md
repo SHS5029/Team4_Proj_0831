@@ -8,9 +8,10 @@ AI 마피아 게임의 에이전트에게 허용된 게임 컨텍스트(Resource
 다섯 Resource의 상세 `data` schema는 API 명세 8.2절과 그 절이 명시적으로 참조하는
 API 공통 모델만 정본입니다.
 
-현재 `WU-M2`는 stateful Streamable HTTP `/mcp`, bootstrap 인증, Backend Engine
-consume adapter와 session cleanup까지만 구현합니다. Resource·Tool은 아직 등록하지
-않았으며 MCP 섹터 담당자는 이 package와 별도로 PostgreSQL·Redis 실행 환경의
+현재 `WU-M2`는 stateful Streamable HTTP `/mcp`, MCP 세션 개설 토큰(bootstrap token)
+인증, Backend Engine consume adapter와 session cleanup까지만 구현합니다.
+Resource·Tool은 아직 등록하지 않았으며 MCP 섹터 담당자는 이 package와 별도로
+PostgreSQL·Redis 실행 환경의
 구축·기동·migration 실행·health 확인을 담당합니다.
 
 확정된 `WU-M2` 구조에서는 상위 `mcp_server/`가 독립 프로젝트 루트이고 공식 import
@@ -18,20 +19,20 @@ package는 `mafia_game`입니다. composition root는 `mafia_game/main.py`, modu
 진입점은 `mafia_game/__main__.py`, 검증 위치는 `mcp_server/tests/`입니다. Python
 3.12와 MCP SDK 1.29.1을 독립 `pyproject.toml`·`uv.lock`으로 재현합니다.
 
-Streamable HTTP session은 stateful로 운영합니다. 최초 initialize에서 bearer
-bootstrap과 capability header를 검증·consume하고 후속 요청은 같은 bearer로 session
-owner만 증명합니다. 정상 DELETE, bootstrap 만료 또는 30초 idle 시 session memory를
-폐기하며 bootstrap 만료가 idle보다 이르면 만료 시각을 우선합니다. consume 결과가
-불명확하면 신규 HTTP code를 만들지 않고 `403 BOOTSTRAP_DENIED`로 fail-closed하며 같은
-bootstrap과 기존 session ID를 재사용하지 않습니다. fresh credential 조정 절차는
-`WU-M7` 범위입니다.
+Streamable HTTP session은 stateful로 운영합니다. 최초 initialize에서 bearer 세션
+개설 토큰과 capability header를 검증·consume하고 후속 요청은 같은 bearer로 session
+owner만 증명합니다. 정상 DELETE, 세션 개설 토큰 만료 또는 30초 idle 시 session
+memory를 폐기하며 세션 개설 토큰 만료가 idle보다 이르면 만료 시각을 우선합니다.
+consume 결과가 불명확하면 신규 HTTP code를 만들지 않고 `403 BOOTSTRAP_DENIED`로
+fail-closed하며 같은 세션 개설 토큰과 기존 session ID를 재사용하지 않습니다. fresh
+credential 조정 절차는 `WU-M7` 범위입니다.
 공개 오류 code와 Engine HTTP 매핑은 API 명세 9.3.1절만 따릅니다.
 
 ## 설정과 실행
 
 MCP process는 공용 루트 `.env`를 읽지 않고 다음 allowlist 환경 변수만 조회합니다.
 
-- `MCP_SERVER_AUTH_SECRET`: Backend가 bootstrap token 서명에 사용하는 32자 이상 secret
+- `MCP_SERVER_AUTH_SECRET`: Backend가 세션 개설 토큰 서명에 사용하는 32자 이상 secret
 - `ENGINE_INTERNAL_API_SECRET`: MCP→Engine canonical HMAC 전용 32자 이상 secret
 - `ENGINE_API_URL`: path·query 없는 Backend Engine base URL
 - `MCP_LISTEN_HOST`: 선택값, 기본 `127.0.0.1`; WU-M2는 TLS가 없어 loopback만 허용
@@ -63,7 +64,8 @@ uv lock --check
 ```
 
 테스트는 MCP SDK-level initialize/DELETE, canonical HMAC consume, token 형식·서명·폐쇄형
-claim·무유예 만료·120초 상한·bootstrap nonce를 포함한 canonical UUID claim binding,
+claim·무유예 만료·120초 상한·세션 개설 토큰의 nonce를 포함한 canonical UUID claim
+binding,
 opaque capability hash, nonce replay, Engine HMAC nonce UUID v4, Engine 거부, 후속 bearer
 owner와 capability 재전송 거부를 확인합니다. 원본 bearer·capability·job·subject는 SDK
 scope와 transport tombstone에 전달하지 않고 session-local 난수 owner로 치환합니다.
@@ -75,7 +77,7 @@ scope와 transport tombstone에 전달하지 않고 session-local 난수 owner�
   sink·DB·queue·파일에 기록하지 않습니다.
 - DB·Redis client, health endpoint, legacy `game_ping`·`game_get_context`·
   `game_submit_proposal` alias를 제공하지 않습니다.
-- 실제 Backend의 job reservation·bootstrap 발급·consume 구현과 통합은 Backend
+- 실제 Backend의 job reservation·세션 개설 토큰 발급·consume 구현과 통합은 Backend
   `WU-B6`·`WU-B7` 및 MCP `WU-M6`의 선행 완료가 필요합니다.
 
 ## 책임 경계
@@ -86,9 +88,10 @@ scope와 transport tombstone에 전달하지 않고 session-local 난수 owner�
 - 세션은 `subject_type`과 `subject_id`를 고정합니다. AI player는 `public`, `me`,
   `turn`, `persona` 중 capability가 허용한 정보만 받고 다른 에이전트를 선택할 수
   없습니다. GM은 `public`과 `gm-guide`만 받으며 `me`와 행동 Tool을 사용할 수 없습니다.
-- 각 `agent_jobs` reservation은 새 capability·bootstrap·session을 사용합니다.
-  현재 구현된 reconnect 경계에서는 소비한 bootstrap, 기존 capability와 session ID를
-  재사용하지 않습니다. 이후 terminal 처리 연동은 `WU-M4`에서 같은 원칙을 적용합니다.
+- 각 `agent_jobs` reservation은 새 capability·세션 개설 토큰·session을 사용합니다.
+  현재 구현된 reconnect 경계에서는 소비한 세션 개설 토큰, 기존 capability와 session
+  ID를 재사용하지 않습니다. 이후 terminal 처리 연동은 `WU-M4`에서 같은 원칙을
+  적용합니다.
 - GM narration은 MCP Tool이 아니라 LLM adapter에서 Backend Agent Manager로 직접
   반환되고, Backend가 공개 범위와 fencing 조건을 검증해 저장하거나 fallback합니다.
 

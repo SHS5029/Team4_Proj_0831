@@ -141,7 +141,7 @@ Backend는 `:8501`, `:8502`의 승인된 origin, 위 GET header와 CORS prefligh
 
 | 오류 | Front 처리 | Backend 보장 |
 |---|---|---|
-| `MISSING_USER_ID` | UUID bootstrap | UUID 누락 400 |
+| `MISSING_USER_ID` | UUID 초기화 | UUID 누락 400 |
 | `GAME_NOT_FOUND` | 소유권 구분 없는 홈 안내 | 미소유·부재 모두 동일 404 |
 | `STALE_STATE_VERSION` | 입력 폐기·sync·재확인 | command 자동 재적용 없음 |
 | `IDEMPOTENCY_KEY_REUSED` | 자동 재전송 중단 | 다른 body 재사용 409 |
