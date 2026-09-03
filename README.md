@@ -263,9 +263,13 @@ history나 완료 로그에 쓰지 않습니다.
 uv run python -m backend.app.infrastructure.migrations
 ```
 
-현재 migration은 legacy `users`·`oauth_identities`와 `scaffold_*` 게임 테이블을
-생성합니다. canonical UUID-only·`mystery-v1` schema는 아직 후속 WU 범위입니다.
-적용된 migration 파일은 수정하지 않고 새 번호의 순방향 migration으로 전환합니다.
+`001`·`002` migration은 legacy `users`·`oauth_identities`와 `scaffold_*` 게임
+테이블을 생성합니다. `003_create_mystery_v1_schema.sql`은 기존 객체와 데이터를
+삭제하지 않고 `users.last_seen_at`을 보강한 뒤
+[DB 설계 정본](docs/개발상세플랜/AI_MAFIA_DB_DESIGN.md)의 canonical `mystery-v1`
+테이블, 복합 FK, 상태 제약과 조회 index를 순방향으로 추가합니다. scenario·persona
+seed 데이터와 legacy cleanup은 아직 포함하지 않으며, 적용된 migration 파일은
+수정하지 않고 이후 번호의 순방향 migration으로 확장합니다.
 
 ## Legacy Google OAuth와 Streamlit secrets
 
