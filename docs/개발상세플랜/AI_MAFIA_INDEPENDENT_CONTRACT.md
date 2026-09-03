@@ -55,6 +55,13 @@ MCP는 상태를 재판정하지 않는다.
 사용자 UUID는 URL이나 JSON body에 중복하지 않는다. canonical MVP에는 Front의
 `Authorization`, OIDC token, Front HMAC을 사용하지 않는다.
 
+Cross-origin Front 연결은 API 정본의 CORS 정책을 사용한다. 기본 개발 origin은
+`http://127.0.0.1:8501`, `http://127.0.0.1:8502`이고 허용 request header는
+`X-User-Id`, `X-Request-Id`, `Idempotency-Key`, `Last-Event-ID`, `Content-Type`이다.
+배포 시 origin은 명시적 allowlist로 관리하며 wildcard origin과 credentials 인증은
+사용하지 않는다. same-origin proxy를 선택하면 proxy가 이 header와 SSE stream을
+그대로 전달한다.
+
 ### 3.2 성공·오류 envelope
 
 모든 JSON 성공 응답은 다음 형식을 사용한다.
@@ -141,6 +148,10 @@ Polling과 SSE는 다음 공통 sync 형식을 사용한다.
 `front_sequence`는 `operation_index=0`부터 연속된 하나의 batch다. Front는
 `(game_id, front_sequence, operation_index)`로 중복을 제거하고 gap이나 알 수
 없는 operation을 발견하면 부분 적용하지 않고 snapshot을 다시 요청한다.
+
+Polling은 `after_state_version`과 `after_sequence`를 함께 전송하고, SSE는 같은
+`after_sequence`를 `Last-Event-ID`로 전송한다. 두 transport는 동일한
+Front-visible cursor와 operation batch를 공유한다.
 
 허용 operation 이름은 `SET_GAME_STATE`, `REPLACE_PLAYERS`, `SET_PRIVATE_STATE`,
 `SET_ACTION_WINDOW`, `CLEAR_ACTION_WINDOW`, `APPEND_PUBLIC_EVENT`,
