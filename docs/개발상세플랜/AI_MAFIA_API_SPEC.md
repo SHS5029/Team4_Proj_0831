@@ -42,6 +42,23 @@
 서명과 HMAC header는 정의하지 않는다. Front는 URL·body에 `user_id`를 중복 전달하지
 않는다.
 
+### 1.2.1 Front 연결 정책
+
+두 Streamlit Front origin은 기본적으로 `http://127.0.0.1:8501`과
+`http://127.0.0.1:8502`이며 배포 환경에서는 동일한 역할의 명시적 allowlist origin으로
+대체한다. Backend가 cross-origin으로 제공될 때는 다음 정책을 적용한다.
+
+- 허용 method: `GET`, `POST`, `OPTIONS`
+- 허용 request header: `X-User-Id`, `X-Request-Id`, `Idempotency-Key`,
+  `Last-Event-ID`, `Content-Type`
+- 허용 credentials: 사용하지 않음
+- 허용 origin: 위 allowlist와 정확히 일치하는 origin만 반환하며 `*`를 사용하지 않음
+- preflight: 허용되지 않은 origin·method·header는 성공 응답으로 허용하지 않음
+
+same-origin proxy를 사용하는 배포에서는 proxy가 위 header와 `text/event-stream` 응답을
+Backend까지 전달하고, Front에는 proxy origin만 Backend URL로 제공한다. CORS와 proxy 중
+하나의 방식을 CP-0에서 선택하며 두 방식을 동시에 전제하지 않는다.
+
 ### 1.3 사용자 UUID 수명주기
 
 1. Front가 브라우저 첫 실행에 UUID v4를 생성해 same-origin local storage에 저장한다.
@@ -781,6 +798,11 @@ delta가 보존 범위 밖이거나 client version이 서버보다 크면 author
 mode로 응답한다. 소유권과 audience filter는 snapshot endpoint와 동일하다. snapshot의
 `last_sequence`와 그 다음 SSE 구독 지점이 하나의 Front-visible sequence를 사용하므로
 최초 GET과 SSE 연결 사이의 event도 재요청할 수 있다.
+
+Front 구현에서 `after_state_version`과 `after_sequence`는 polling cursor로 사용하고,
+SSE의 `Last-Event-ID`는 같은 `after_sequence`에 해당하는 마지막 Front sequence로
+사용한다. Backend는 두 transport에 동일한 `front_sequence`와 완전한 operation batch를
+제공해야 하며, 어느 한 transport에서만 증가하는 별도 cursor를 만들지 않는다.
 
 ### 5.4 `GET /api/v1/games/{game_id}/events`
 
