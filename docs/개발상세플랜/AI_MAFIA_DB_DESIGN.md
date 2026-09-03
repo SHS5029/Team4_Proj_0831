@@ -52,14 +52,13 @@ Agent의 private event는 둘 다 NULL이므로 sequence gap이나 활동 timing
 users 1 --- N games 1 --- N game_players
                   |          |--- N player_scenario_facts
                   |          |--- N action_submissions
-                  |          |--- N agent_jobs
                   |
                   |--- N action_windows
                   |          |--- 0..1 action_window_resolutions
+                  |--- N agent_jobs --- N agent_capabilities
                   |--- N game_events --- 0..1 event_outbox
                   |--- N command_receipts
                   |--- N game_snapshots
-                  |--- N agent_capabilities
                   |--- 0..1 game_feedback per user
 
 scenario_catalog 1 --- N scenario_templates
@@ -431,7 +430,7 @@ normalized table과 event로 재구성하고 새 snapshot을 쓴다. 공개 API�
 | `status` | `varchar(16)` | `RESERVED`, `SUCCEEDED`, `FALLBACK`, `STALE`, `FAILED` |
 | `lease_token` | `uuid` | 현재 worker fencing token |
 | `lease_expires_at` | `timestamptz` | 고정 engine lease 만료 시각 |
-| `normalized_proposal` | `jsonb` | 검증 후 결과만, 없으면 NULL |
+| `normalized_result` | `jsonb` | 검증된 player proposal 또는 GM narration, 없으면 NULL |
 | `failure_code` | `varchar(64)` | 비밀 없는 분류 코드 |
 | `created_at` | `timestamptz` | NOT NULL |
 | `completed_at` | `timestamptz` | terminal 상태 시각 |
@@ -442,9 +441,21 @@ normalized table과 event로 재구성하고 새 snapshot을 쓴다. 공개 API�
 - `(game_id, player_id) -> game_players(game_id, id)`와
   `(game_id, window_id) -> action_windows(game_id, id)` 복합 FK를 사용한다.
 - Provider명·model 버전은 game의 `agent_config_version`으로 재현한다.
+- `normalized_result`는 API 명세 10.1절 player 결과 또는 10.2절 GM 결과의 폐쇄형
+  schema만 저장한다.
 - token, 비용, timeout, prompt, private context와 raw response 컬럼은 두지 않는다.
+- `RESERVED`는 `normalized_result`, `failure_code`, `completed_at`이 모두 NULL이다.
+  `SUCCEEDED`는 검증된 `normalized_result`와 `completed_at`이 있고
+  `failure_code=NULL`이다. `FALLBACK`은 결정적 fallback `normalized_result`, 원인
+  `failure_code`, `completed_at`이 모두 있다. `STALE`과 `FAILED`는
+  `normalized_result=NULL`이고 `failure_code`, `completed_at`이 non-null이다. migration
+  CHECK와 repository transition이 이 조합을 함께 강제한다.
+- `job_kind=GM_NARRATION`의 `normalized_result.type`은 `GM_NARRATION`, `SPEECH`는
+  `SPEAK|PASS`, `NIGHT_ACTION`은 `NIGHT_ACTION`, `VOTE`는 `VOTE`여야 한다.
 - 외부 호출 뒤 다시 game을 잠그고 lease token, window, version과 deadline이 그대로일
-  때만 proposal을 submission으로 반영한다. 아니면 `STALE`로 끝낸다.
+  때만 AI player proposal을 submission으로, GM narration을 `PUBLIC` event로 반영한다.
+  GM 결과는 action submission이나 MCP Tool proposal로 저장하지 않는다. 검증에
+  실패하거나 fencing 조건이 바뀌었으면 `STALE` 또는 정의된 fallback으로 끝낸다.
 - lease는 reservation 시각부터 15초 또는 action window deadline 중 이른 시각까지다.
   이 값은 코드의 고정 안전 상수이며 환경 변수나 관리자 설정이 아니다.
 - scheduler는 만료된 lease 하나를 조건부 UPDATE로 인수해 fallback을 확정한다. 늦게
@@ -460,6 +471,7 @@ Backend가 발급하고 Engine API가 검증하는 opaque capability 원장이�
 |---|---|---|
 | `id` | `uuid` | PK |
 | `token_hash` | `char(64)` | UNIQUE, raw 32-byte token의 SHA-256 |
+| `agent_job_id` | `uuid` | NOT NULL, FK `agent_jobs(id)`, job별 권한 경계 |
 | `game_id` | `uuid` | FK `games(id)`, CASCADE |
 | `subject_type` | `varchar(16)` | `AI_PLAYER` 또는 `GM` |
 | `subject_player_id` | `uuid` | AI player만 같은 game player, GM은 NULL |
@@ -476,11 +488,16 @@ Backend가 발급하고 Engine API가 검증하는 opaque capability 원장이�
   않는다.
 - AI player 행은 `(game_id, subject_player_id) -> game_players(game_id, id)` 복합 FK를
   사용하고 GM 행은 `subject_player_id=NULL`이어야 한다.
+- `agent_job_id`가 가리키는 job의 game, player/GM, window와 발급 당시 version은
+  capability의 같은 field와 일치해야 한다.
+  `UNIQUE(agent_job_id) WHERE revoked_at IS NULL`로 job마다 활성 capability를 하나만
+  허용한다. reconnect는 기존 행을 먼저 폐기한 뒤 같은 job에 새 행을 만든다.
 - wire claim의 GM `subject_id`는 별도 player가 아니라 해당 `game_id`와 같은 UUID다.
   Backend는 `subject_type=GM`, `subject_id=game_id`, DB player NULL 조합만 허용한다.
 - Engine API는 raw token hash, 미폐기, 만료, game·subject·phase·version·window와
   resource·Tool allowlist를 현재 상태와 모두 비교한다.
-- phase/window 교체와 game 종료 시 이전 capability를 revoke한다.
+- job 성공·fallback·stale·실패(호출 취소 포함)·lease 만료, phase/window 교체와 game
+  종료 시 이전 capability를 revoke한다.
 
 ### 4.16 `internal_request_nonces`
 
@@ -513,6 +530,11 @@ outbox에는 event payload 복사본을 두지 않는다. publisher는 같은
 `front_sequence`에서 commit된 event를 index 순으로 묶어 Redis stream에 batch pointer
 한 건을 발행한다. publish 중복은 Front sequence로 제거한다. Front field가 없는
 private event는 SSE stream에 발행하지 않는다.
+
+`event_outbox`와 publisher는 Backend game event 전달을 위한 영속 상태와 실행
+로직이며 MCP 감사 로그 저장소가 아니다.
+MCP runtime은 이 table·publisher·Redis stream을 직접 읽거나 쓰지 않으며,
+별도의 영속 audit outbox를 소유하지 않는다.
 
 ### 4.18 `feedback`
 
@@ -612,15 +634,20 @@ transaction 실패 시 window는 다시 `OPEN`이며 저장 결과가 없으므�
 ### 5.4 Agent 외부 호출
 
 ```text
-Tx A: window·version 검증 -> lease token을 가진 agent_jobs RESERVED -> COMMIT
-외부: MCP context 조회 -> 선택 LLM Provider 호출 -> proposal schema 검증
+Tx A: window·version 검증 -> lease token을 가진 agent_jobs RESERVED
+      -> job-bound capability와 bootstrap nonce 발급 -> COMMIT
+외부: job별 새 MCP session에서 context 조회 -> 선택 LLM Provider 호출
+      -> player proposal 또는 GM narration schema 검증
 Tx B: game FOR UPDATE -> lease token·reservation·window·version 재검증
-      -> submission 또는 fallback/stale 확정 -> event/outbox -> COMMIT
+      -> player submission 또는 GM PUBLIC event/fallback/stale 확정
+      -> capability revoke -> event/outbox -> COMMIT
 ```
 
 Tx A와 Tx B 사이에는 DB transaction과 Redis game lock을 잡지 않는다. 같은 job의
 동시 worker는 unique 제약으로 하나만 reservation에 성공한다. lease가 먼저 만료되면
 scheduler가 fencing token을 교체하고 `PASS`, 자동 행동 또는 고정 GM 문구를 확정한다.
+Agent Manager는 terminal 경로에서 session 종료를 시도하고, reconnect가 필요하면 이전
+capability를 폐기한 뒤 같은 살아 있는 job에 새 capability와 bootstrap을 발급한다.
 
 ### 5.5 내부 요청 인증
 
@@ -726,6 +753,8 @@ projection한다. AI private event와 ADMIN event는 이 stream에 넣지 않는
 - 저장 중 deadline은 없고 재개 후 새 deadline은 저장된 남은 시간을 사용한다.
 - 사용자별 직전 scenario 제외는 성공적으로 생성된 game만 기준으로 한다.
 - 모든 game/player/window 조합은 복합 FK로 같은 game 소속을 강제한다.
+- 활성 capability는 정확히 한 agent job에 묶이고 job마다 하나뿐이며, terminal job의
+  capability는 모두 폐기된다.
 
 ## 9. Migration 전략
 
@@ -788,6 +817,9 @@ MVP에는 사용자 삭제 API가 없다. 실제 개인정보를 수집하지 �
   생기지 않는지 확인
 - Engine HMAC·MCP bootstrap nonce의 PostgreSQL unique replay 거부, cleanup과 Redis
   cache 장애 시 원본 판정 유지
+- job별 capability 활성 uniqueness, reconnect 교체와 모든 terminal 경로의 revoke
+- GM narration이 action submission을 만들지 않고 fencing 재검증 뒤 `PUBLIC` event로만
+  반영되는지 확인
 - Agent worker crash, lease 인수와 늦은 fencing token 결과 거부
 - 다른 player·GM·admin projection의 비공개 정보 비간섭성
 - DB 오류, 암호화 key 없음과 Redis 장애의 rollback·fail-closed 경로

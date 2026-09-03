@@ -14,8 +14,14 @@ AI 마피아 MVP 구현은 3인이 Front / Backend / MCP Server·Data Infrastruc
   [AI_MAFIA_DB_DESIGN.md](docs/개발상세플랜/AI_MAFIA_DB_DESIGN.md)
 - 공개·내부·MCP API:
   [AI_MAFIA_API_SPEC.md](docs/개발상세플랜/AI_MAFIA_API_SPEC.md)
+- MCP runtime 구현 구조·WU 실행 설계:
+  [AI_MAFIA_MCP_SERVER_DESIGN.md](docs/개발상세플랜/AI_MAFIA_MCP_SERVER_DESIGN.md)
 - 사용자·관리자 화면:
   [AI_MAFIA_SCREEN_FLOW.md](docs/개발상세플랜/AI_MAFIA_SCREEN_FLOW.md)
+
+다섯 MCP Resource의 상세 `data` schema는 API 명세 8.2절과 그 절이 명시적으로
+참조하는 API 공통 모델만 정본이다. MCP 서버 설계서에는 URI·Engine scope 매핑과
+예시만 두며 별도 schema를 복제하지 않는다.
 
 **coding AI agent에게 한 번에 모든 구현을 지시하는 것을 금지**하며, 한 세션의
 범위는 마스터플랜에 정의된 작업 단위(WU) 1개 이하로 제한합니다. 작업 범위나 신규
