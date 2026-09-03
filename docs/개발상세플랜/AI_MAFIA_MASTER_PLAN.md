@@ -6,7 +6,7 @@
 
 **시나리오 팩:** `scenario-v1`
 
-**최종 갱신:** 2026-09-02
+**최종 갱신:** 2026-09-03
 
 이 문서는 AI 마피아 MVP의 제품 규칙, 시나리오, 아키텍처, 보안 경계, 섹터
 소유권과 작업 순서를 정의하는 공통 정본이다. 세부 계약은 다음 문서만 사용한다.
@@ -17,10 +17,11 @@
 | PostgreSQL·Redis·transaction·migration | [AI_MAFIA_DB_DESIGN.md](AI_MAFIA_DB_DESIGN.md) |
 | Front·Backend·MCP HTTP 계약 | [AI_MAFIA_API_SPEC.md](AI_MAFIA_API_SPEC.md) |
 | 사용자·관리자 화면과 상태 전이 | [AI_MAFIA_SCREEN_FLOW.md](AI_MAFIA_SCREEN_FLOW.md) |
+| 섹터 간 최소 연결 형식·독립 개발 규칙 | [AI_MAFIA_INDEPENDENT_CONTRACT.md](AI_MAFIA_INDEPENDENT_CONTRACT.md) |
 
-네 문서는 아직 구현되지 않은 목표 상태를 포함한다. 현재 코드의 완료 범위는 루트
+이 문서들은 아직 구현되지 않은 목표 상태를 포함한다. 현재 코드의 완료 범위는 루트
 [README.md](../../README.md)를 기준으로 판정하며, 계획에 적혔다는 이유로 구현 완료로
-간주하지 않는다. 계약을 변경할 때는 영향받는 네 문서를 같은 변경에서 갱신한다.
+간주하지 않는다. 계약을 변경할 때는 영향받는 정본 문서를 같은 변경에서 갱신한다.
 
 ## 1. 확정 결정
 
@@ -70,6 +71,30 @@
 - 사용자 개인 메모, 수동 작성 note, 공개 채팅 자유 입력은 MVP에 포함하지 않는다.
 - OpenAPI 별도 수기 파일을 관리하지 않는다. FastAPI가 생성하는 `/openapi.json`을
   구현 계약 검증에 사용한다.
+
+### 1.5 섹터별 독립 개발과 자체 목데이터
+
+- 세 섹터는 정본 문서의 예시와 필드·enum·오류코드를 기준으로 각자 필요한
+  목데이터와 테스트 픽스처를 작성할 수 있다. 공통 fixture 파일이나 mock server를
+  모든 섹터가 먼저 공동 작성해야만 개발을 시작할 수 있는 것은 아니다.
+- Front는 Backend가 아직 구현되지 않은 동안 snapshot, sync operation, 오류 응답과
+  SSE frame을 자체 fixture로 만들어 화면·상태 reducer를 검증한다. Backend의 DB·Redis,
+  MCP와 직접 연결하는 mock을 Front 저장소에 두지 않는다.
+- Backend는 Front와 MCP가 없어도 규칙 엔진, repository, 공개 API와 내부 API를
+  synthetic 요청으로 검증한다. 외부 Provider와 MCP는 fake transport 또는 고정 응답으로
+  대체하며 실제 비밀값·유료 API를 테스트에 사용하지 않는다.
+- MCP는 Backend가 없어도 정본의 bootstrap, session, Resource, Tool과 Engine API
+  request/response 예시를 사용해 자체 fake Engine transport로 검증한다. MCP runtime은
+  DB·Redis용 목 연결을 추가하더라도 실제 runtime 경계를 우회하지 않는다.
+- 자체 fixture의 작성 위치와 구현 방법은 섹터 담당자가 정하되, 정본에 없는 필드·enum·
+  오류코드·상태 전이를 임의로 계약에 추가하지 않는다. 예시만으로 결정할 수 없는
+  항목은 구현 전에 영향받는 정본과 WU를 갱신한다.
+- 섹터 간 통합 시에는 각자의 fixture가 아니라 Backend가 제공하는 `/openapi.json`,
+  API 정본, DB·Redis 정본과 MCP 계약을 최종 기준으로 삼는다. 통합 중 불일치가
+  발견되면 코드를 먼저 맞추지 않고 영향받는 정본과 계약 테스트를 함께 갱신한다.
+- 독립 개발은 계약을 임의로 분기하는 권한이 아니다. 공개 API, 내부 Engine API,
+  MCP wire, DB schema 또는 화면 상태 소유권을 바꾸는 경우에는 영향받는 정본을 먼저
+  갱신하고 세 섹터가 합의한 뒤 구현한다.
 
 ## 2. MVP 목표와 범위
 
@@ -383,7 +408,7 @@ Browser
 | Backend | `backend`, 공개·내부 API, engine, Agent Manager, schema·migration·repository, Redis application code | DB·Redis 프로세스 운영, 화면 렌더링 |
 | MCP·Data | `mcp_server/mafia_game`, PostgreSQL·Redis 실행 환경, 계정·권한, migration·health runbook | schema 의미 변경, 게임 판정, DB 직접 읽는 MCP Tool |
 
-공통 계약 변경은 구현보다 먼저 네 정본 문서를 갱신하고 세 섹터가 API 예시,
+공통 계약 변경은 구현보다 먼저 영향받는 정본 문서를 갱신하고 세 섹터가 API 예시,
 오류 코드, schema version과 테스트 fixture를 함께 승인한다.
 
 ## 8. 작업 단위
@@ -436,7 +461,7 @@ Browser
 
 | CP | 선행 조건 | 통과 증거 |
 |---|---|---|
-| `CP-0` 계약 고정 | 네 정본 승인 | 링크·용어·schema 예시 일치 |
+| `CP-0` 계약 고정 | 정본 문서 승인 | 링크·용어·schema 예시 일치, 섹터별 자체 fixture 작성 기준 합의 |
 | `CP-1` 기반 정리 | F1, B1, M1A | UUID-only 요청과 인프라 health |
 | `CP-2` 데이터 | B2, B3, M1B | migration 재실행, transaction·lock 테스트 |
 | `CP-3` 게임 엔진 | B4 | 규칙·결정성·불변식 회귀 |
@@ -459,6 +484,9 @@ Backend 소유 migration SQL을 수정하지 않는다.
   한다. 내부·다른 Agent private event의 sequence는 Front에 노출하지 않는다.
 - Redis 중단 뒤 PostgreSQL snapshot으로 복구하고 결과를 다시 추첨하지 않는지 확인한다.
 - LLM·MCP 자동 테스트는 fake transport와 synthetic context만 사용한다.
+- 섹터별 단위 테스트는 타 섹터의 실행 프로세스 없이 자체 목데이터·fixture로 수행할
+  수 있어야 한다. 이 fixture는 정본 계약을 복제하는 보조 자료이며 별도 공통 산출물로
+  강제하지 않는다.
 - 밸런스는 인원별 최소 100회, 가능하면 1,000회 heuristic bot simulation으로 먼저
   확인한다. 시민·마피아 목표 승률은 각각 45~55%, 40~60%는 관찰 범위, 60% 초과는
   조정 대상으로 본다.
@@ -489,11 +517,11 @@ LLM token·비용과 LLM timeout 지표는 MVP 수집 대상이 아니다.
 
 ## 12. 완료 정의
 
-- 네 정본과 FastAPI `/openapi.json`이 같은 용어·enum·필드를 사용한다.
+- 정본 문서와 FastAPI `/openapi.json`이 같은 용어·enum·필드를 사용한다.
 - 이전 identity/OIDC route와 Front 로그인 코드가 실행 경로에서 제거된다.
 - 6~9명 게임이 생성, 시작, 진행, 저장, 재개와 종료까지 결정적으로 동작한다.
 - 새로고침·중복 요청·동시 제출로 상태와 RNG 결과가 중복되지 않는다.
 - 다른 플레이어의 비공개 정보가 Front·Agent·GM·MCP·로그에 노출되지 않는다.
 - PostgreSQL·Redis·Provider·MCP 장애의 정의된 fallback 또는 fail-closed 경로가
   테스트된다.
-- README, 환경 예시와 package README가 실제 구현 상태와 네 정본을 가리킨다.
+- README, 환경 예시와 package README가 실제 구현 상태와 정본 문서를 가리킨다.

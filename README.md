@@ -43,9 +43,9 @@ LLM Agent loop, MCP Tool·Resource, 관리자 업무 기능과 canonical game의
 아직 구현하지 않았습니다. 기존 LLM Provider adapter는 연결돼 있지만 앱 수준의 LLM
 timeout 설정, token 상한·사용량, 비용·예산과 관련 KPI는 새 MVP 범위에서 제외합니다.
 
-## 개발상세플랜 정본 (2026-09-02)
+## 개발상세플랜 정본 (2026-09-03)
 
-중복·충돌하던 AI 마피아 계획과 계약을 `docs/개발상세플랜/`의 네 문서로 통합했습니다.
+중복·충돌하던 AI 마피아 계획과 계약을 `docs/개발상세플랜/`의 정본 문서로 통합했습니다.
 섹터별 담당자는 작업 전에 [AGENTS.MD](AGENTS.MD)와 해당 정본을 읽고, coding AI
 agent 한 세션을 마스터플랜의 WU 한 개 이하로 제한합니다.
 
@@ -55,9 +55,30 @@ agent 한 세션을 마스터플랜의 WU 한 개 이하로 제한합니다.
 | [AI_MAFIA_DB_DESIGN.md](docs/개발상세플랜/AI_MAFIA_DB_DESIGN.md) | PostgreSQL·Redis schema, transaction, lock, migration과 보존 계약 |
 | [AI_MAFIA_API_SPEC.md](docs/개발상세플랜/AI_MAFIA_API_SPEC.md) | 일반·관리자·내부 Engine HTTP API와 MCP Resource·Tool 계약 |
 | [AI_MAFIA_SCREEN_FLOW.md](docs/개발상세플랜/AI_MAFIA_SCREEN_FLOW.md) | UUID 초기화, 사용자 게임·관전·피드백과 관리자 화면 흐름 |
+| [AI_MAFIA_INDEPENDENT_CONTRACT.md](docs/개발상세플랜/AI_MAFIA_INDEPENDENT_CONTRACT.md) | 세 섹터가 독립 구현할 때 공통으로 고정할 최소 연결 형식과 경계 |
 
 문서 통합은 구현 완료 범위를 바꾸지 않습니다. 계약 변경은 영향받는 정본을 먼저
 갱신하고 세 섹터가 합의한 뒤 구현합니다.
+
+### 섹터별 독립 개발 기준
+
+Front, Backend, MCP·Data 담당자는 정본 문서의 예시와 필드·enum·오류코드를 기준으로
+각자 필요한 목데이터와 테스트 픽스처를 작성해 다른 섹터의 실행 프로세스 없이
+단위·계약 관련 테스트를 수행할 수 있습니다. 공통 fixture 파일이나 mock server를
+먼저 공동 작성하는 것은 필수 조건이 아닙니다.
+
+- Front는 snapshot·sync operation·오류·SSE fixture로 화면과 상태 처리를 검증합니다.
+- Backend는 synthetic 요청과 fake LLM/MCP transport로 엔진·공개 API·내부 API를
+  검증합니다.
+- MCP는 정본의 bootstrap·session·Resource·Tool 계약과 fake Engine transport로
+  runtime을 검증합니다.
+- 자체 fixture는 정본에 없는 필드·enum·상태 전이를 임의로 추가하지 않습니다.
+- 통합 기준은 각 섹터의 fixture가 아니라 Backend `/openapi.json`과 정본 문서입니다.
+- 공개 API, 내부 Engine API, MCP wire, DB schema 또는 화면 상태 소유권을 바꾸면
+  구현 전에 영향받는 정본을 갱신하고 세 섹터의 합의를 거칩니다.
+
+따라서 독립 개발을 위해 별도 mock·fixture 체계를 먼저 완성할 필요는 없지만, 각
+섹터는 자체 fixture의 계약 근거와 검증 명령을 완료 보고에 남겨야 합니다.
 
 ### 게임 규칙 계약 개정 (2026-09-02)
 
@@ -121,7 +142,8 @@ Front·MCP 계약을 차례로 완료한 뒤 사용할 수 있습니다. 규칙 
 │       ├── AI_MAFIA_MASTER_PLAN.md    # 제품 규칙·시나리오·아키텍처·WU/CP 정본
 │       ├── AI_MAFIA_DB_DESIGN.md      # PostgreSQL·Redis 정본
 │       ├── AI_MAFIA_API_SPEC.md       # 공개·내부·MCP API 정본
-│       └── AI_MAFIA_SCREEN_FLOW.md    # 사용자·관리자 화면 정본
+│       ├── AI_MAFIA_SCREEN_FLOW.md    # 사용자·관리자 화면 정본
+│       └── AI_MAFIA_INDEPENDENT_CONTRACT.md # 섹터 간 최소 연결 형식·독립 개발 규칙
 ├── tests/{integration,e2e}/          # 서버 간·브라우저 검증 확장 위치
 └── scripts/configure_google_oidc.py  # Google client JSON → Streamlit secrets 생성
 ```
