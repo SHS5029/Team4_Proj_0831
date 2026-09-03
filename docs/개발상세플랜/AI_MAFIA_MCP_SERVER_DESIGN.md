@@ -131,8 +131,23 @@ schemas와 core는 위 계층이 공유하는 검증·설정·오류·보안 정
 | `schemas` | 정본 wire 입력·응답의 폐쇄형 validation | 정본 밖 field·enum 추가 |
 | `core` | 설정 allowlist, 고정 오류, HMAC·redaction 공통 정책 | secret·payload log |
 
-구체 실행 module, composition root와 파일명은 `OPEN-01`이다. 구현 WU에서 기존 구조
-안의 최소 파일을 제안하고 구조 변경이면 사전 합의를 거친다.
+`OPEN-01`은 다음과 같이 확정한다.
+
+- `mcp_server/`를 독립 프로젝트 루트로 사용하고 Python import package는
+  `mafia_game`으로 고정한다. `mcp_2`는 후속 예약 package로 유지하며 Mafia Game
+  runtime이나 배포 산출물에 포함하지 않는다.
+- composition root는 `mcp_server/mafia_game/main.py`, module 실행 진입점은
+  `mcp_server/mafia_game/__main__.py`다. 표준 실행 명령은
+  `uv run python -m mafia_game.main`이다.
+- 독립 의존성과 개발 도구는 `mcp_server/pyproject.toml`과 `mcp_server/uv.lock`,
+  package 단위 검증은 `mcp_server/tests/`가 소유한다. 저장소 루트의 회귀 검증과
+  Backend MCP client 의존성은 루트 project가 계속 소유한다.
+- 기존 계층 디렉터리는 이동하거나 이름을 바꾸지 않는다. 최상위
+  `mcp_server/__init__.py`의 제거 여부는 별도 구조 변경 합의 전까지 현 상태를
+  유지하되 runtime code에서 `mcp_server.mafia_game`과 `mafia_game` 두 import 경로를
+  혼용하지 않는다.
+- Python 3.12와 MCP SDK 1.29.1 동작을 구현 기준으로 삼고 독립 lockfile로 재현한다.
+  SDK minor 변경은 session·auth·teardown 계약 테스트를 통과한 뒤 반영한다.
 
 ## 5. 주체와 capability 표면
 
@@ -190,8 +205,24 @@ URI, query와 Tool input으로 다른 agent를 선택할 수 없다. 공개 대�
 - 연결 단절 뒤 소비한 bootstrap, raw capability와 `Mcp-Session-Id`를 다시 사용하지
   않는다. 같은 lease의 job을 계속할 자격이 Backend에 남아 있을 때만 새 세 값을
   발급한다.
-- SDK별 명시적 session 종료 method와 idle cleanup 구현은 `OPEN-02`지만, 종료 실패가
-  기존 자격을 다시 유효하게 만들 수는 없다.
+- `OPEN-02`는 stateful `StreamableHTTPSessionManager`와 전용 Starlette bootstrap
+  middleware를 사용하는 것으로 확정한다. SDK private attribute를 수정하거나
+  stateless mode로 session binding을 우회하지 않는다.
+- 최초 initialize 요청은 bearer bootstrap과 `X-Agent-Capability`를 함께 검증하고
+  Engine consume 성공 뒤에만 session transport와 `ACTIVE` memory를 노출한다. 같은
+  활성 session의 후속 HTTP 요청은 최초와 같은 bearer를 보내되 capability header를
+  다시 보내지 않는다. 후속 bearer는 같은 session owner인지 확인하는 용도이며
+  bootstrap consume을 다시 실행하지 않는다.
+- 정상 종료는 Streamable HTTP `DELETE /mcp`와 `Mcp-Session-Id`를 사용한다. Tool의
+  terminal 결과, Backend의 종료 요청, capability/bootstrap 만료, transport 종료,
+  process shutdown에서도 같은 멱등 cleanup을 호출한다.
+- stateful session idle TTL은 30초로 고정한다. bootstrap `exp` 또는 Backend
+  capability 거부가 더 먼저 도달하면 TTL과 관계없이 즉시 닫는다. session memory는
+  파일·DB·Redis·event store에 저장하지 않는다.
+- consume 응답을 받지 못하면 성공을 추측하거나 같은 bootstrap을 다시 consume하지
+  않고 해당 transport와 memory를 폐기한다. fresh credential 조정은 `OPEN-07`의
+  Backend 절차를 따른다.
+- 종료 실패가 기존 자격을 다시 유효하게 만들 수는 없다.
 
 ## 7. Resource 설계
 
@@ -326,8 +357,25 @@ allowlist·expiry·revoke와 현재 DB 상태의 최종 판정자다. `MCP_SERVE
 | GM 출력 오류·late result | 관여하지 않음 | 교정 1회, fencing 검사, 고정 문구 또는 stale |
 | logger/sink 장애 | 게임 payload spool 금지 | 게임 상태와 무관하게 운영 경보 |
 
-MCP protocol 오류와 Engine HTTP 오류의 정확한 고정 code 매핑은 `OPEN-03`이다. 결정 전
-exception text, Backend 상세 거부 이유와 내부 response body를 agent에게 전달하지 않는다.
+`OPEN-03`은 다음 고정 매핑으로 확정한다. HTTP 인증 오류 body는 표의 `공개 code`만
+가진 `{"error":"<code>"}`이고, JSON-RPC 오류는 표의 숫자 code와 고정 한국어
+message만 가지며 `data`를 넣지 않는다.
+
+| 경계 | 조건 | HTTP/JSON-RPC | 공개 code |
+|---|---|---:|---|
+| initialize | bearer 또는 capability header 누락·형식 오류 | HTTP 401 | `AUTH_REQUIRED` |
+| initialize | bootstrap 서명·claim·만료·replay·mismatch 또는 consume 거부 | HTTP 403 | `BOOTSTRAP_DENIED` |
+| session | 알 수 없거나 이미 닫힌 `Mcp-Session-Id` | HTTP 404 | `SESSION_NOT_FOUND` |
+| protocol | JSON-RPC 또는 Tool 폐쇄형 입력 오류 | `-32602` | `VALIDATION_ERROR` |
+| handler | 비활성 session 또는 terminal 뒤 추가 호출 | `-32001` | `SESSION_NOT_ACTIVE` |
+| Engine | capability·subject·scope·phase·window·version 거부와 존재 은닉 대상 404 | `-32002` | `CAPABILITY_DENIED` |
+| Engine | timeout·연결 단절·429·5xx | `-32003` | `DEPENDENCY_UNAVAILABLE` |
+| Engine | 성공 응답의 envelope·폐쇄형 schema 위반 또는 예상하지 않은 4xx | `-32004` | `UPSTREAM_CONTRACT_VIOLATION` |
+| proposal | 같은 `proposal_id`의 body conflict | `-32005` | `PROPOSAL_CONFLICT` |
+| handler | 위 분류에 포함되지 않은 내부 실패 | `-32603` | `INTERNAL_ERROR` |
+
+Engine response body, exception text와 stack은 어떤 매핑에서도 agent에게 전달하지 않는다.
+취소는 상위 task로 전파한 뒤 session cleanup을 수행하며 임의 오류 payload로 바꾸지 않는다.
 
 ## 12. 구조화 로그와 redaction
 
@@ -455,23 +503,28 @@ WU-B6 + WU-B7 -------------------------------/      |
 WU-M2~WU-M5는 fake Engine 독립 증거, WU-M6은 실제 Backend 계약, WU-M7은 장애 주입,
 WU-M8은 제3자 runbook 재현을 각각 완료 근거로 삼는다.
 
-## 16. OPEN 결정 등록부
+## 16. 구현 결정 등록부
 
 아래 항목은 확정 정본 밖 구현 세부다. 해당 WU 전에 owner가 결정하고 wire·환경 변수·
 파일 구조에 영향이 있으면 정본과 README를 먼저 갱신한다.
 
+| ID | 상태 | 결정 항목 | owner | 적용 WU |
+|---|---|---|---|---|
+| `OPEN-01` | RESOLVED | `mcp_server` 독립 project, `mafia_game.main` composition root와 package-local lock/test | MCP | WU-M2 |
+| `OPEN-02` | RESOLVED | stateful manager, initialize 전 consume, DELETE·terminal cleanup, idle TTL 30초 | MCP·Backend | WU-M2, WU-M7 |
+| `OPEN-03` | RESOLVED | 11절과 API 9.3.1절의 고정 HTTP·JSON-RPC 오류 매핑 | 공통 | WU-M2~WU-M4 |
+
+남은 OPEN 항목은 다음과 같다.
+
 | ID | 결정 항목 | owner | 차단 WU | 결정 전 금지 |
 |---|---|---|---|---|
-| `OPEN-01` | composition root, 실행 module과 세부 파일명 | MCP | WU-M2 | 임의 디렉터리 이동·삭제 |
-| `OPEN-02` | SDK별 session 종료 method, idle TTL·cleanup | MCP·Backend | WU-M2, WU-M7 | 기존 session 재활성화 |
-| `OPEN-03` | MCP protocol 오류와 Engine HTTP 오류의 고정 code 매핑 | 공통 | WU-M2~WU-M4 | exception·상세 body 노출 |
 | `OPEN-04` | 구조화 log sink와 운영 보존 기간 | 운영·MCP | WU-M5, WU-M8 | payload spool·영속 outbox |
 | `OPEN-05` | MCP→Engine TLS 종료·CA·mTLS와 설정 이름 | 운영·공통 | WU-M6, WU-M8 | TLS 검증 우회 |
 | `OPEN-06` | MCP liveness/readiness endpoint와 판정 기준 | MCP·운영 | WU-M8 | 임의 공개 health API 추가 |
 | `OPEN-07` | bootstrap consume 응답 유실의 Backend 조정 절차 | Backend·MCP | WU-M7 | 소비 token 재사용 |
 | `OPEN-08` | session-local context cache 허용 범위 | 공통 | WU-M3, WU-M7 | cross-job·authoritative cache |
 
-`OPEN`은 확정 계약을 약화하지 않는다. 결정 전 기본값은 fail-closed, no cache,
+남은 `OPEN`은 확정 계약을 약화하지 않는다. 결정 전 기본값은 fail-closed, no cache,
 no persistent spool과 fresh credential이다.
 
 ## 17. 구현 착수·완료 체크리스트

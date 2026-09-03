@@ -1243,9 +1243,18 @@ MCP Tool 성공은 게임 행동의 무조건 성공이 아니라 Backend가 pro
   로 직렬화한다. claim은
   `token_type=MCP_BOOTSTRAP`, `agent_job_id`, `game_id`, `subject_type`, `subject_id`,
   `capability_hash`, `iat`, 최대 120초 `exp`와 UUID nonce다.
+- claim object는 폐쇄형이다. `capability_hash`는 raw capability byte string의
+  SHA-256 lowercase hex 64자이며, `iat`와 `exp`는 UTC Unix seconds 정수다.
+  `iat <= current_time < exp`이고 `1 <= exp - iat <= 120`인 경우만 허용하며 clock
+  leeway를 적용하지 않는다. 운영 host는 동기화된 시스템 시계를 사용한다.
 - initialize HTTP 요청의 `X-Agent-Capability` header에 raw opaque capability를 정확히
   한 번 전달한다. MCP는 해당 header를 session memory에만 보관하고 bootstrap
   signature를 확인한 뒤 8.3절 consume까지 성공해야 session을 연다.
+- 최초 initialize 이후 같은 활성 session의 HTTP 요청은 동일 bearer bootstrap을
+  계속 보내 session owner를 증명하되 `X-Agent-Capability`는 다시 보내지 않는다.
+  MCP는 후속 bearer에 대해 서명·claim·만료와 session owner 일치를 검사하지만 이미
+  성공한 bootstrap consume을 반복하지 않는다. 다른 bearer, 만료 bearer 또는
+  capability header 재전송은 session을 닫고 고정 오류로 거부한다.
 - session은 정확히 한 `agent_job_id`, `game_id`, `subject_type`과 `subject_id`에
   묶인다. AI player는 `subject_type=AI_PLAYER`, GM은 `subject_type=GM`이다.
 - AI player의 `subject_id`는 해당 `player_id`다. GM은 별도 player row를 만들지 않고
@@ -1261,6 +1270,13 @@ MCP Tool 성공은 게임 행동의 무조건 성공이 아니라 Backend가 pro
   않는다. 같은 job lease 안에서 재접속할 수 있을 때도 기존 capability를 먼저
   폐기하고 새 capability·bootstrap·session으로 시작한다. Backend가 job의 현재 상태를
   확인할 수 없으면 재접속하지 않고 정의된 fallback을 수행한다.
+- 정상 session 종료는 `DELETE /mcp`와 `Mcp-Session-Id`를 사용한다. MCP는 Tool
+  terminal 결과, 명시적 DELETE, transport 종료, bootstrap·capability 만료와 process
+  shutdown에서 session memory를 멱등 폐기한다. idle 요청이 30초 동안 없으면 session을
+  종료하며 event store나 외부 저장소로 session을 복원하지 않는다.
+- bootstrap consume 응답이 유실되면 해당 initialize와 session을 실패로 닫고 같은
+  token을 다시 consume하지 않는다. Backend만 job 상태를 확인한 뒤 살아 있는 job에
+  fresh capability·bootstrap·session을 발급할 수 있다.
 - 운영은 검증된 TLS를 사용한다. loopback 개발만 평문 HTTP를 허용한다.
 
 ### 9.2 Resource
@@ -1304,6 +1320,28 @@ MCP는 Engine 응답의 subject·scope·version과 폐쇄형 schema를 확인한
   Engine 응답이 유실되어 같은 살아 있는 job에서 재시도한다면 동일
   `proposal_id`와 byte-equivalent proposal body를 사용하고 Engine HMAC nonce만 새로
   만든다. 다른 body로 ID를 재사용하거나 stale version·window를 자동 갱신하지 않는다.
+
+#### 9.3.1 고정 오류 매핑
+
+initialize 단계의 HTTP 오류 body는 `{"error":"<code>"}` 하나만 사용한다.
+JSON-RPC 오류는 숫자 `code`와 고정 한국어 `message`만 가지며 `data`, upstream body,
+exception text와 stack trace를 포함하지 않는다.
+
+| 경계 | 조건 | HTTP/JSON-RPC | 공개 code |
+|---|---|---:|---|
+| initialize | bearer 또는 capability header 누락·형식 오류 | HTTP 401 | `AUTH_REQUIRED` |
+| initialize | bootstrap 서명·claim·만료·replay·mismatch 또는 consume 거부 | HTTP 403 | `BOOTSTRAP_DENIED` |
+| session | 알 수 없거나 닫힌 `Mcp-Session-Id` | HTTP 404 | `SESSION_NOT_FOUND` |
+| protocol | JSON-RPC 또는 Tool 폐쇄형 입력 오류 | `-32602` | `VALIDATION_ERROR` |
+| handler | 비활성 session 또는 terminal 뒤 호출 | `-32001` | `SESSION_NOT_ACTIVE` |
+| Engine | capability·subject·scope·phase·window·version 거부와 존재 은닉 대상 404 | `-32002` | `CAPABILITY_DENIED` |
+| Engine | timeout·연결 단절·429·5xx | `-32003` | `DEPENDENCY_UNAVAILABLE` |
+| Engine | 성공 응답 schema 위반 또는 예상하지 않은 4xx | `-32004` | `UPSTREAM_CONTRACT_VIOLATION` |
+| proposal | 같은 `proposal_id`의 body conflict | `-32005` | `PROPOSAL_CONFLICT` |
+| handler | 분류되지 않은 내부 실패 | `-32603` | `INTERNAL_ERROR` |
+
+취소는 상위 task로 전파하고 session cleanup을 수행한다. 취소 원문을 별도 protocol
+payload로 변환하지 않는다.
 
 ### 9.4 구조화 운영 로그와 redaction
 

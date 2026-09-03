@@ -173,8 +173,14 @@ proposal request의 공통 field는 `proposal_id`, `game_id`, `agent_id`,
 
 - endpoint는 `${MAFIA_MCP_URL}` 전체 값을 사용하며 `/mcp`를 중복하지 않는다.
 - Streamable HTTP initialize 뒤 `Mcp-Session-Id`를 사용한다.
+- 최초 initialize에 bearer bootstrap과 `X-Agent-Capability`를 함께 보내고, 같은 활성
+  session의 후속 요청에는 동일 bearer만 계속 보낸다. capability header는 최초 요청
+  뒤 재전송하지 않는다.
 - session은 하나의 `agent_job_id`, `game_id`, `subject_type`, `subject_id`에 고정한다.
 - bootstrap 성공 전에는 session을 활성화하지 않는다.
+- 정상 종료는 `DELETE /mcp`와 `Mcp-Session-Id`를 사용하고, idle 30초 또는 terminal
+  처리 시 MCP가 session memory를 폐기한다. consume 응답이 유실되면 같은 bootstrap을
+  재사용하지 않는다.
 - Agent Manager는 job마다 새 capability·bootstrap·session을 만들고 terminal 상태에서
   폐기한다. reconnect도 소비한 bootstrap, 기존 capability와 session ID를 재사용하지
   않는다.

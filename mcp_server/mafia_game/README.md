@@ -12,6 +12,17 @@ API 공통 모델만 정본입니다.
 구조입니다. MCP 섹터 담당자는 이 패키지 구현과 별도로 PostgreSQL·Redis 실행
 환경의 구축·기동·migration 실행·health 확인을 담당합니다.
 
+확정된 `WU-M2` 구조에서는 상위 `mcp_server/`가 독립 프로젝트 루트이고 공식 import
+package는 `mafia_game`입니다. composition root는 `mafia_game/main.py`, module
+진입점은 `mafia_game/__main__.py`, 검증 위치는 `mcp_server/tests/`입니다. Python
+3.12와 MCP SDK 1.29.1을 독립 lockfile로 재현하며 이 파일들은 `WU-M2`에서 생성합니다.
+
+Streamable HTTP session은 stateful로 운영합니다. 최초 initialize에서 bearer
+bootstrap과 capability header를 검증·consume하고 후속 요청은 같은 bearer로 session
+owner만 증명합니다. 정상 DELETE, terminal 처리 또는 30초 idle 시 session memory를
+폐기하며 consume 결과가 불명확한 bootstrap과 기존 session ID를 재사용하지 않습니다.
+공개 오류 code와 Engine HTTP 매핑은 API 명세 9.3.1절만 따릅니다.
+
 ## 책임 경계
 
 - 이 서버는 게임 상태의 최종 판정자가 아닙니다. 모든 행동 제안은 Backend

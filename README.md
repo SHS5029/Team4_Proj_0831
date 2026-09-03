@@ -117,7 +117,7 @@ Front·MCP 계약을 차례로 완료한 뒤 사용할 수 있습니다. 규칙 
 ├── AGENTS.MD                         # 개발·기여 작업 규칙
 ├── README.md                         # 전체 설정·실행·검증 안내
 ├── .env.example                      # Backend 환경 변수 예시
-├── pyproject.toml                    # 통합 런타임·개발 의존성 및 도구 설정
+├── pyproject.toml                    # ai-mafia 통합 런타임·개발 의존성 및 도구 설정
 ├── backend/
 │   ├── app/main.py                   # FastAPI 생성과 router·오류 처리 등록
 │   ├── app/routers/                  # health·legacy identity·scaffold endpoint
@@ -142,7 +142,7 @@ Front·MCP 계약을 차례로 완료한 뒤 사용할 수 있습니다. 규칙 
 │   └── tests/
 ├── frontend_admin/                   # 관리자 독립 앱의 최소 실행 골격
 ├── mcp_server/
-│   ├── mafia_game/                   # 게임 컨텍스트 MCP 예약 패키지(MVP 대상)
+│   ├── mafia_game/                   # 독립 프로젝트의 게임 MCP package(MVP 대상)
 │   └── mcp_2/                        # 후속 MCP 독립 예약 패키지
 ├── docs/
 │   └── 개발상세플랜/
@@ -160,6 +160,13 @@ Front·MCP 계약을 차례로 완료한 뒤 사용할 수 있습니다. 규칙 
 Redis, MCP 서버에 직접 연결하거나 MCP 서버끼리 서로의 내부 모듈을 import하지
 않습니다. MCP 섹터가 DB·Redis 실행 환경을 운영해도 `mcp_server/mafia_game`
 runtime은 DB·Redis에 직접 접근하지 않습니다.
+
+MCP 구현부터 `mcp_server/`를 독립 프로젝트 루트, `mafia_game`을 공식 Python import
+package로 사용합니다. composition root는 `mafia_game/main.py`, module 진입점은
+`mafia_game/__main__.py`, package test 위치는 `mcp_server/tests/`로 고정했습니다.
+이 파일과 독립 `pyproject.toml`·`uv.lock`은 `WU-M2`에서 만들며, 구현 전인 현재는
+예약 디렉터리만 존재합니다. stateful MCP session은 initialize 전에 bootstrap을
+consume하고 명시적 DELETE·terminal 처리·30초 idle TTL에 메모리를 폐기합니다.
 
 ## 사전 준비
 
