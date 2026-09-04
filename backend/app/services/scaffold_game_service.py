@@ -48,9 +48,8 @@ class ScaffoldGameService:
             self.user_service.ensure_user(owner_user_id)
         game = ScaffoldGame(uuid4(), owner_user_id, payload.player_count)
         game.players = [uuid4() for _ in range(payload.player_count)]
-        game.display_names = ["민수", "철수", "영희", "태경", "지효", "성주", "환석", "유빈", "태웅", "지혜", "지토"][:payload.player_count]
         self.repository.create_game(game)
-        player = ScaffoldPlayerResponse(player_id=game.players[0], display_name=game.display_names[0], kind="HUMAN")
+        player = ScaffoldPlayerResponse(player_id=game.players[0], kind="HUMAN")
         return CreateScaffoldGameResponse(
             game_id=game.game_id,
             status="IN_PROGRESS",
@@ -65,51 +64,18 @@ class ScaffoldGameService:
 
         game = self._owned_game(owner_user_id, game_id)
         allowed = ["PING", "BEGIN_GAME", "PAUSE"] if game.phase == "ROLE_REVEAL" else ["RESUME"]
-        players = [
-            ScaffoldPlayerResponse(
-                player_id=player_id,
-                display_name=game.display_names[index] if index < len(game.display_names) else f"플레이어 {index + 1}",
-                kind="HUMAN" if index == 0 else "AI",
-            )
-            for index, player_id in enumerate(game.players)
-        ]
         return ScaffoldGameStateResponse(
             game_id=game.game_id,
             status=game.status,
             phase=game.phase,
             state_version=game.state_version,
-            players=players,
+            players=[],
             public_events=[],
             private_events=[],
             allowed_commands=allowed,
             active_operation=None,
             updated_at=game.updated_at,
         )
-
-    def list_games(self, owner_user_id: UUID, *, status: str | None = None,
-                   limit: int = 20) -> dict:
-        """현재 UUID가 소유한 mock 게임 목록을 API 응답 envelope로 만든다."""
-
-        items = []
-        for game in self.repository.list_games(owner_user_id, status=status, limit=limit):
-            items.append(
-                {
-                    "game_id": str(game.game_id),
-                    "status": game.status,
-                    "phase": game.phase,
-                    "round": 0,
-                    "day_number": 1,
-                    "state_version": game.state_version,
-                    "scenario_title": "정전된 방송국",
-                    "scenario_id": "BLACKOUT_STUDIO",
-                    "player_count": game.player_count,
-                    "human_alive": True,
-                    "winner": None,
-                    "can_resume": game.status == "PAUSED",
-                    "updated_at": game.updated_at.isoformat(),
-                }
-            )
-        return {"data": {"items": items, "next_cursor": None}}
 
     def command(self, owner_user_id: UUID, game_id: UUID, payload: ScaffoldCommandRequest) -> ScaffoldCommandAcceptedResponse:
         """version을 확인하고 뼈대 command를 즉시 완료한다."""

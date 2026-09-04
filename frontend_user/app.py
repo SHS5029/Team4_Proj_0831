@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from frontend_user.app_pages.feedback_page import render as render_feedback  # noqa: E402
 from frontend_user.app_pages.game_create_page import render as render_create  # noqa: E402
+from frontend_user.app_pages.creation_complete_page import render as render_creation_complete  # noqa: E402
 from frontend_user.app_pages.game_page import render as render_game  # noqa: E402
 from frontend_user.app_pages.home_page import load_games, should_load_games  # noqa: E402
 from frontend_user.app_pages.home_page import render as render_home  # noqa: E402
@@ -63,6 +64,13 @@ def main() -> None:
         )
     elif page == "create":
         render_create(client)
+    elif page == "creation_complete":
+        pending = st.session_state.get("game.create_pending")
+        if isinstance(pending, dict) and pending.get("status") == "SUCCEEDED":
+            render_creation_complete(pending)
+        else:
+            st.session_state["navigation.page"] = "home"
+            st.rerun()
     elif page == "game":
         game_id = st.session_state.get("game.game_id")
         if not isinstance(game_id, str):

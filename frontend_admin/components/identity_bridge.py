@@ -1,3 +1,4 @@
+
 """관리자 origin의 UUID local storage bridge."""
 
 from __future__ import annotations
