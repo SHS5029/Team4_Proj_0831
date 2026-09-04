@@ -10,17 +10,29 @@ class DummyProvider(LLMProvider):
         self.state_version = state_version
 
     async def generate(self, request: LLMRequest) -> LLMResponse:
-        """요청 메시지에서 상태 버전을 읽고 결정적인 proposal을 만든다."""
+        """B6에서는 PASS를 반환하고, 기존 scaffold 요청은 그대로 호환한다."""
 
         version = self.state_version
+        is_legacy = False
         for message in request.messages:
             content = message.get("content", "")
             if content.startswith("source_state_version="):
                 version = int(content.split("=", 1)[1])
+                is_legacy = True
+        output = (
+            {"action": "PING", "target_player_id": None, "source_state_version": version}
+            if is_legacy
+            else {
+                "type": "PASS",
+                "target_player_id": None,
+                "message": None,
+                "public_rationale": None,
+            }
+        )
         return LLMResponse(
             provider="dummy",
             model="dummy",
-            output={"action": "PING", "target_player_id": None, "source_state_version": version},
+            output=output,
             input_tokens=0,
             output_tokens=0,
             finish_reason="stop",

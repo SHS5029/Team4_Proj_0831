@@ -12,6 +12,8 @@ openai>=1.50,<3.0
 google-genai>=1.0,<2.0
 mcp>=1.2,<2.0
 httpx>=0.27,<1.0
+# 최신 Starlette TestClient가 사용하는 차세대 HTTPX 호환 패키지다.
+httpx2>=2.0,<3.0
 sse-starlette>=2.1,<4.0
 
 # Backend Provider·API 회귀 테스트와 정적 검사

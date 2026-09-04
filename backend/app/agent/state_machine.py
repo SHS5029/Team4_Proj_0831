@@ -1,0 +1,67 @@
+"""게임 phase 전이와 승패 판정만 담당하는 작은 상태 머신."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from backend.app.models.enums import Faction, GamePhase, GameStatus, PlayerRole, WinReason
+from backend.app.models.game_state import GameState
+
+
+def check_standard_winner(state: GameState) -> tuple[Faction, WinReason] | None:
+    """현재 생존자 수로 표준 승패를 계산한다."""
+
+    mafia_count = sum(
+        player.alive and player.role is PlayerRole.MAFIA for player in state.players
+    )
+    citizen_count = sum(
+        player.alive and player.role is not PlayerRole.MAFIA for player in state.players
+    )
+    if mafia_count == 0:
+        return Faction.CITIZEN, WinReason.ALL_MAFIA_ELIMINATED
+    if mafia_count >= citizen_count:
+        return Faction.MAFIA, WinReason.MAFIA_PARITY
+    return None
+
+
+def finish_game(state: GameState, winner: Faction, reason: WinReason) -> None:
+    """승패와 종료 상태를 한 번에 기록한다."""
+
+    state.winner = winner
+    state.win_reason = reason
+    state.status = GameStatus.COMPLETED
+    state.phase = GamePhase.ENDED
+
+
+def after_night(state: GameState) -> None:
+    """밤 결과 이후 표준 승패 또는 다음 낮을 선택한다."""
+
+    winner = check_standard_winner(state)
+    if winner:
+        finish_game(state, *winner)
+        return
+    if state.round >= 5:
+        state.phase = GamePhase.FINAL_DISCUSSION
+        state.speech_actors.clear()
+        return
+    state.day_number += 1
+    state.phase = GamePhase.DAY_DISCUSSION
+    state.speech_actors.clear()
+
+
+def after_vote(state: GameState) -> None:
+    """처형 뒤 승패가 없으면 밤 행동 단계로 넘긴다."""
+
+    winner = check_standard_winner(state)
+    if winner:
+        finish_game(state, *winner)
+        return
+    state.phase = GamePhase.NIGHT_ACTION
+    state.night_actions.clear()
+
+
+def touch(state: GameState) -> None:
+    """Client-visible 변경에만 state_version을 1 증가시킨다."""
+
+    state.state_version += 1
+    state.updated_at = datetime.now(timezone.utc)

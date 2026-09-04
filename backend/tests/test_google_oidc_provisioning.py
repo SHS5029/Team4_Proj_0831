@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 import tomllib
 from pathlib import Path
@@ -115,7 +116,11 @@ def test_writer_creates_private_file_and_refuses_accidental_overwrite(
 
     parsed = tomllib.loads(output.read_text(encoding="utf-8"))
     assert parsed["auth"]["google"]["client_secret"] == SYNTHETIC_CREDENTIAL
-    assert stat.S_IMODE(output.stat().st_mode) == 0o600
+    # Linux/macOS는 POSIX mode로 소유자 전용 권한을 정확히 확인할 수 있다.
+    # Windows는 os.chmod(0o600)를 호출해도 stat 결과가 0o666으로 보일 수 있어
+    # 같은 숫자를 비교하지 않는다. Windows의 실제 접근 제한은 NTFS ACL 영역이다.
+    if os.name != "nt":
+        assert stat.S_IMODE(output.stat().st_mode) == 0o600
 
     with pytest.raises(FileExistsError):
         write_streamlit_secrets(

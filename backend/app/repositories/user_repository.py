@@ -1,60 +1,50 @@
-"""내부 사용자와 외부 OIDC 신원을 저장하는 PostgreSQL 저장소.
-
-계정 연결의 유일한 기준은 정규화한 제공자 코드와 제공자가 발급한 불변
-subject의 조합이다. 이메일은 변경·중복될 수 있는 프로필 속성이므로 조회나
-자동 병합 키로 사용하지 않는다. 첫 로그인 생성과 재로그인 갱신은 한
-트랜잭션에서 수행하며, advisory lock과 행 잠금으로 동시 요청을 직렬화한다.
-"""
+"""정본 ``users`` 테이블만 다루는 PostgreSQL 사용자 저장소."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from typing import Any, Protocol, cast
 from uuid import UUID
 
 import psycopg
 from psycopg.rows import dict_row
 
-from backend.app.models.identity import ExternalIdentity, InactiveUserError, UserRecord
+from backend.app.models.identity import UserRecord
 
 
 class CursorLike(Protocol):
-    """저장소가 사용하는 psycopg 커서의 최소 인터페이스.
+    """실제 psycopg 커서와 테스트용 가짜 커서가 함께 지켜야 할 계약."""
 
-    실제 커서와 테스트용 대역이 같은 계약을 따르게 해 SQL 로직을 외부
-    데이터베이스 없이 검증할 수 있게 한다.
-    """
-
-    def __enter__(self) -> CursorLike: ...
+    def __enter__(self) -> "CursorLike": ...
 
     def __exit__(self, *args: object) -> bool | None: ...
 
-    def execute(self, query: str, params: object = None) -> CursorLike: ...
+    def execute(self, query: str, params: object = None) -> "CursorLike": ...
 
     def fetchone(self) -> Mapping[str, Any] | None: ...
 
 
 class ConnectionLike(Protocol):
-    """컨텍스트 관리와 커서 생성만 요구하는 연결 최소 인터페이스."""
+    """사용자 저장소가 필요한 최소 DB 연결 기능."""
 
-    def __enter__(self) -> ConnectionLike: ...
+    def __enter__(self) -> "ConnectionLike": ...
 
     def __exit__(self, *args: object) -> bool | None: ...
 
     def cursor(self, *args: object, **kwargs: object) -> CursorLike: ...
 
 
-# 기본값은 psycopg.connect지만 테스트에서는 동일한 호출 형태의 가짜 연결
-# 팩터리를 주입할 수 있다.
 ConnectionFactory = Callable[..., ConnectionLike]
 
 
 class PostgresUserRepository:
-    """변경 가능한 이메일과 계정 식별을 분리해 사용자를 저장하는 저장소.
+    """UUID 사용자 생성·조회만 담당한다.
 
-    ``users``는 애플리케이션 프로필과 활성 상태를, ``oauth_identities``는
-    ``(provider, provider_subject)``와 내부 사용자 UUID의 연결을 담당한다.
-    두 테이블을 같은 트랜잭션에서 변경해 중간 상태가 커밋되지 않게 한다.
+    최초 쓰기 요청은 ``ensure_user``를 사용한다. 같은 UUID로 여러 번
+    요청해도 한 행만 남도록 DB의 PK와 ``ON CONFLICT``를 함께 사용한다.
+    조회 요청은 ``get_user``를 사용하며, 알 수 없는 UUID를 자동 생성하지
+    않는다. 이 구분이 있어 단순 조회만으로 사용자 데이터가 생기지 않는다.
     """
 
     def __init__(
@@ -63,218 +53,126 @@ class PostgresUserRepository:
         *,
         connection_factory: ConnectionFactory | None = None,
     ) -> None:
-        """대상 DB URL과 선택적인 연결 팩터리를 저장한다.
-
-        URL은 이미 ``Settings.effective_database_url``로 안전하게 재작성된 값을
-        받아야 한다. 운영에서는 psycopg 연결을 사용하고, 테스트만 팩터리를
-        주입해 트랜잭션과 SQL 호출을 관찰한다.
-        """
+        """운영에서는 psycopg를 사용하고 테스트에서는 연결 대역을 받는다."""
 
         self._database_url = database_url
-        self._connection_factory = connection_factory or cast(ConnectionFactory, psycopg.connect)
+        self._connection_factory = connection_factory or cast(
+            ConnectionFactory, psycopg.connect
+        )
 
     @property
     def database_url(self) -> str:
-        """인프라 배선 확인용 DB URL을 반환한다.
-
-        비밀번호를 포함할 수 있으므로 호출자는 이 값을 사용자 응답, 예외,
-        애플리케이션 로그에 기록해서는 안 된다.
-        """
+        """배선 확인용 URL을 반환한다. 로그나 API 응답에 기록하면 안 된다."""
 
         return self._database_url
 
-    def upsert_identity(self, profile: ExternalIdentity) -> UserRecord:
-        """제공자 subject만으로 사용자를 선택해 생성하거나 프로필을 갱신한다.
+    def ensure_user(
+        self,
+        user_id: UUID,
+        *,
+        now: datetime | None = None,
+    ) -> UserRecord:
+        """사용자를 멱등 생성하고 최근 확인 시각을 갱신한다.
 
-        1. 외부 신원의 필수 값과 이메일 검증 상태를 검사한다.
-        2. ``provider:subject`` 기반 트랜잭션 advisory lock을 얻는다.
-        3. 기존 연결이 있으면 관련 identity와 user 행을 잠근다.
-        4. 최초 로그인은 두 행을 함께 만들고, 재로그인은 mutable 프로필과
-           마지막 로그인 시각만 갱신한다.
-        5. 기존 사용자가 비활성이면 어떤 로그인 정보도 갱신하지 않고 전용
-           예외를 발생시킨다.
-
-        연결 컨텍스트는 정상 종료 시 커밋하고 예외 시 롤백하므로 사용자 행과
-        외부 신원 행이 서로 다른 상태로 남지 않는다.
+        ``now``는 테스트에서만 주입해 결과를 고정할 수 있다. 운영에서는
+        PostgreSQL의 ``NOW()``를 사용해 DB 시간을 기준으로 기록한다.
+        ``users.id``에 DB default를 두지 않고 API가 받은 UUID를 그대로 넣는다.
         """
 
-        # 저장소 진입점에서 한 번 더 검증해, UI 이외의 호출자가 검증되지 않은
-        # claim을 전달하더라도 DB 쓰기 전에 거부한다.
-        profile.validate_for_login()
-        provider = profile.normalized_provider
-        subject = profile.provider_subject.strip()
-        identity_lock_key = f"{provider}:{subject}"
+        if now is None:
+            query = """
+                INSERT INTO users (id, created_at, last_seen_at)
+                VALUES (%s, NOW(), NOW())
+                ON CONFLICT (id) DO UPDATE
+                    SET last_seen_at = EXCLUDED.last_seen_at
+                RETURNING id, created_at, last_seen_at
+            """
+            params: tuple[object, ...] = (user_id,)
+        else:
+            # 고정 시각은 테스트용 경로다. timezone 없는 값을 DB에 넣지 않도록
+            # UTC로 정규화해 운영 데이터와 같은 timestamptz 의미를 유지한다.
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=UTC)
+            now = now.astimezone(UTC)
+            query = """
+                INSERT INTO users (id, created_at, last_seen_at)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (id) DO UPDATE
+                    SET last_seen_at = EXCLUDED.last_seen_at
+                RETURNING id, created_at, last_seen_at
+            """
+            params = (user_id, now, now)
 
-        # psycopg 연결 컨텍스트 하나가 아래 조회와 쓰기 전체의 트랜잭션 경계다.
         with self._connection_factory(self._database_url) as connection:
             with connection.cursor(row_factory=dict_row) as cursor:
-                # 동일 외부 계정의 첫 로그인 요청이 동시에 들어오면 둘 다
-                # "존재하지 않음"을 보고 사용자 행을 중복 생성할 수 있다.
-                # 트랜잭션 범위 advisory lock은 provider와 subject가 같은 요청을
-                # 직렬화하고 커밋/롤백 시 자동 해제된다.
-                cursor.execute(
-                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                    (identity_lock_key,),
-                )
-                # 연결이 이미 존재하면 identity와 user 행을 함께 잠가, 활성 상태
-                # 확인과 프로필 갱신 사이에 다른 트랜잭션이 값을 바꾸지 못하게 한다.
-                cursor.execute(
-                    """
-                    SELECT
-                        users.id,
-                        users.email,
-                        users.display_name,
-                        users.avatar_url,
-                        users.is_active
-                    FROM oauth_identities
-                    JOIN users ON users.id = oauth_identities.user_id
-                    WHERE oauth_identities.provider = %s
-                      AND oauth_identities.provider_subject = %s
-                    FOR UPDATE OF oauth_identities, users
-                    """,
-                    (provider, subject),
-                )
-                existing_user = cursor.fetchone()
+                cursor.execute(query, params)
+                row = _required_row(cursor.fetchone(), "ensured user")
 
-                if existing_user is None:
-                    # 최초 로그인은 내부 사용자부터 만들고, 반환된 UUID로 외부
-                    # 신원 연결을 생성한다. 둘 중 하나라도 실패하면 전체가 롤백된다.
-                    cursor.execute(
-                        """
-                        INSERT INTO users (email, display_name, avatar_url, last_login_at)
-                        VALUES (%s, %s, %s, NOW())
-                        RETURNING id, email, display_name, avatar_url, is_active
-                        """,
-                        (profile.email, profile.display_name, profile.avatar_url),
-                    )
-                    stored_user = _required_row(cursor.fetchone(), "created user")
-                    # DB의 UNIQUE(provider, provider_subject) 제약은 advisory lock과
-                    # 별개로 데이터 무결성을 최종 보장한다. 토큰은 저장하지 않는다.
-                    cursor.execute(
-                        """
-                        INSERT INTO oauth_identities (
-                            user_id,
-                            provider,
-                            provider_subject,
-                            provider_email,
-                            email_verified,
-                            last_login_at
-                        )
-                        VALUES (%s, %s, %s, %s, %s, NOW())
-                        """,
-                        (
-                            stored_user["id"],
-                            provider,
-                            subject,
-                            profile.email,
-                            profile.email_verified,
-                        ),
-                    )
-                else:
-                    # 비활성 사용자는 로그인 시각이나 프로필조차 갱신하지 않는다.
-                    # 전용 예외가 연결 컨텍스트를 빠져나가며 트랜잭션을 롤백한다.
-                    if not bool(existing_user["is_active"]):
-                        raise InactiveUserError("Local user account is inactive")
-                    # 제공자 테이블에는 이번 로그인에서 받은 이메일과 검증 상태를
-                    # 스냅샷으로 남기되, 이것을 계정 식별키로 사용하지 않는다.
-                    cursor.execute(
-                        """
-                        UPDATE oauth_identities
-                        SET provider_email = %s,
-                            email_verified = %s,
-                            last_login_at = NOW(),
-                            updated_at = NOW()
-                        WHERE provider = %s
-                          AND provider_subject = %s
-                        """,
-                        (profile.email, profile.email_verified, provider, subject),
-                    )
-                    # 사용자 화면용 mutable 프로필과 최근 로그인 시각을 같은
-                    # 트랜잭션에서 갱신한다. 내부 UUID와 활성 상태는 유지된다.
-                    cursor.execute(
-                        """
-                        UPDATE users
-                        SET email = %s,
-                            display_name = %s,
-                            avatar_url = %s,
-                            last_login_at = NOW(),
-                            updated_at = NOW()
-                        WHERE id = %s
-                        RETURNING id, email, display_name, avatar_url, is_active
-                        """,
-                        (
-                            profile.email,
-                            profile.display_name,
-                            profile.avatar_url,
-                            existing_user["id"],
-                        ),
-                    )
-                    stored_user = _required_row(cursor.fetchone(), "updated user")
+        return _row_to_user(row)
 
-        # 프로필 필드는 바로 위에서 기록한 입력값과 동일하다. 이를 명시적으로
-        # 넘기면 드라이버/테스트 커서의 행 매핑 방식과 무관하게 반환 모델이
-        # 실제로 저장한 최신 프로필을 나타낸다.
-        return _row_to_user(stored_user, profile=profile)
+    def ensure_user_in_transaction(self, cursor: CursorLike, user_id: UUID) -> UserRecord:
+        """이미 열린 게임 생성 transaction 안에서 사용자를 멱등 준비한다.
+
+        게임 생성은 users, games, players, facts, event, receipt가 모두 성공해야만
+        commit되어야 한다. 별도 연결을 여는 ``ensure_user``와 달리 이 메서드는
+        호출자가 가진 cursor만 사용해 중간 실패 시 users 행까지 함께 rollback한다.
+        """
+
+        cursor.execute(
+            """
+            INSERT INTO users (id, created_at, last_seen_at)
+            VALUES (%s, NOW(), NOW())
+            ON CONFLICT (id) DO UPDATE
+                SET last_seen_at = EXCLUDED.last_seen_at
+            RETURNING id, created_at, last_seen_at
+            """,
+            (user_id,),
+        )
+        return _row_to_user(_required_row(cursor.fetchone(), "ensured user"))
 
     def get_user(self, user_id: UUID) -> UserRecord | None:
-        """내부 UUID로 현재 사용자 프로필을 조회한다.
-
-        외부 subject나 이메일로 암묵적인 계정 연결을 수행하지 않는다. 행이
-        없으면 예외 대신 ``None``을 반환하며, 조회 트랜잭션은 연결 컨텍스트가
-        정리한다.
-        """
+        """사용자 행을 조회한다. 행이 없으면 생성하지 않고 ``None``을 반환한다."""
 
         with self._connection_factory(self._database_url) as connection:
             with connection.cursor(row_factory=dict_row) as cursor:
                 cursor.execute(
                     """
-                    SELECT id, email, display_name, avatar_url, is_active
+                    SELECT id, created_at, last_seen_at
                     FROM users
                     WHERE id = %s
                     """,
                     (user_id,),
                 )
-                stored_user = cursor.fetchone()
+                row = cursor.fetchone()
 
-        return _row_to_user(stored_user) if stored_user is not None else None
+        return _row_to_user(row) if row is not None else None
 
 
 def _required_row(
     row: Mapping[str, Any] | None,
     operation: str,
 ) -> Mapping[str, Any]:
-    """RETURNING 결과가 반드시 있어야 하는 쓰기 연산을 방어한다.
-
-    예상과 달리 행이 없으면 불완전한 ``UserRecord``를 만들지 않고 예외를
-    올린다. 호출 중인 연결 컨텍스트가 이 예외를 받아 트랜잭션을 롤백한다.
-    """
+    """쓰기 결과가 없으면 불완전한 사용자 객체를 만들지 않는다."""
 
     if row is None:
-        raise RuntimeError(f"Database did not return the {operation}")
+        raise RuntimeError(f"사용자 저장 결과가 반환되지 않았습니다: {operation}")
     return row
 
 
-def _row_to_user(
-    row: Mapping[str, Any],
-    *,
-    profile: ExternalIdentity | None = None,
-) -> UserRecord:
-    """DB 행을 UI에 노출할 불변 ``UserRecord``로 변환한다.
-
-    psycopg 또는 테스트 대역이 UUID를 문자열로 반환해도 UUID 타입으로
-    정규화한다. upsert 직후에는 ``profile``에 든 값이 방금 DB에 쓴 값이므로
-    이를 사용하고, 일반 조회에서는 행의 프로필 열을 그대로 사용한다.
-    """
+def _row_to_user(row: Mapping[str, Any]) -> UserRecord:
+    """DB 행을 타입이 명확한 내부 모델로 변환한다."""
 
     user_id = row["id"]
     if not isinstance(user_id, UUID):
         user_id = UUID(str(user_id))
+
+    created_at = row["created_at"]
+    last_seen_at = row["last_seen_at"]
+    if not isinstance(created_at, datetime) or not isinstance(last_seen_at, datetime):
+        raise TypeError("users의 created_at과 last_seen_at은 datetime이어야 합니다.")
+
     return UserRecord(
         id=user_id,
-        email=profile.email if profile is not None else row.get("email"),
-        display_name=(
-            profile.display_name if profile is not None else row.get("display_name")
-        ),
-        avatar_url=profile.avatar_url if profile is not None else row.get("avatar_url"),
-        is_active=bool(row["is_active"]),
+        created_at=created_at,
+        last_seen_at=last_seen_at,
     )

@@ -62,17 +62,21 @@ def test_project_env_database_url_keeps_connection_and_targets_team4_proj() -> N
     assert urlsplit(effective_url).path == "/Team4_Proj"
 
 
-def test_settings_can_load_the_project_database_url_from_env(
+def test_settings_can_load_the_configured_database_name_from_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """실제 .env가 지정한 DB 이름을 임의의 과거 기본값으로 바꾸지 않는지 확인한다."""
+
     source_url = _read_env_value(PROJECT_ROOT / ".env", "DATABASE_URL")
+    configured_database_name = _read_env_value(PROJECT_ROOT / ".env", "DATABASE_NAME")
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("DATABASE_NAME", raising=False)
 
     settings = Settings.from_env(PROJECT_ROOT / ".env")
 
     _assert_connection_details_preserved(source_url, settings.effective_database_url)
-    assert urlsplit(settings.effective_database_url).path == "/Team4_Proj"
+    assert settings.database_name == configured_database_name
+    assert urlsplit(settings.effective_database_url).path == f"/{configured_database_name}"
 
 
 @pytest.mark.parametrize(

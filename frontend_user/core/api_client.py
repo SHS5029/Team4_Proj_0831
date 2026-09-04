@@ -1,248 +1,196 @@
-"""서명된 identity 요청을 Backend로 보내는 단일 Frontend API 경계."""
+"""UUID 기반 공개 Backend API client."""
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
-import time
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+import os
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 from uuid import UUID, uuid4
-
-from backend.app.models.identity import ExternalIdentity
 
 HttpTransport = Callable[[Request, float], tuple[int, bytes]]
 
 
 class ApiClientConfigurationError(RuntimeError):
-    """Backend 주소나 내부 서명 비밀값을 안전하게 사용할 수 없을 때 발생한다."""
+    """Backend 주소가 안전하지 않거나 설정되지 않은 경우의 오류."""
 
 
-class IdentityApiUnavailable(RuntimeError):
-    """Backend에 연결할 수 없거나 안전한 응답 계약을 읽을 수 없을 때 발생한다."""
+class ApiResponseError(RuntimeError):
+    """Backend의 고정 오류 code와 HTTP status만 전달하는 오류."""
 
-
-class IdentityApiResponseError(RuntimeError):
-    """Backend가 고정된 오류 code와 함께 요청을 거부했음을 나타낸다."""
-
-    def __init__(self, *, status_code: int, code: str) -> None:
-        super().__init__(f"Identity API request failed with {code}")
+    def __init__(self, *, status_code: int, code: str, request_id: str | None = None) -> None:
+        super().__init__(code)
         self.status_code = status_code
         self.code = code
+        self.request_id = request_id
 
 
-class InactiveIdentityError(IdentityApiResponseError):
-    """재시도로 해제되지 않는 비활성 사용자 접근 거부."""
+class ApiUnavailableError(ApiResponseError):
+    """Backend 연결 실패 또는 잘못된 응답 오류."""
 
 
 @dataclass(frozen=True, slots=True)
 class BackendApiConfig:
-    """Frontend 서버에서만 보관하는 Backend 주소와 내부 서명 설정."""
+    """Front 서버가 사용할 Backend 주소와 요청 timeout."""
 
     api_url: str
-    internal_api_secret: str = field(repr=False)
     timeout_seconds: float = 5.0
 
     def __post_init__(self) -> None:
-        """운영 HTTPS와 로컬 loopback HTTP만 허용하고 secret 강도를 검사한다."""
+        """운영 HTTPS와 loopback 개발 HTTP만 허용해 임의 endpoint 호출을 막는다."""
 
         candidate = self.api_url.strip().rstrip("/")
         try:
             parsed = urlsplit(candidate)
             port = parsed.port
         except ValueError as exc:
-            raise ApiClientConfigurationError("Backend API URL is invalid") from exc
-        local_http = parsed.scheme == "http" and parsed.hostname in {
-            "localhost",
-            "127.0.0.1",
-            "::1",
-        }
-        if (
-            not parsed.hostname
-            or parsed.username
-            or parsed.password
-            or parsed.query
-            or parsed.fragment
-            or parsed.path not in {"", "/"}
-            or (parsed.scheme != "https" and not local_http)
-            or (port is not None and not 1 <= port <= 65_535)
-        ):
-            raise ApiClientConfigurationError("Backend API URL is unsafe")
-        secret = self.internal_api_secret.strip()
-        if len(secret) < 32 or secret.upper().startswith("REPLACE_"):
-            raise ApiClientConfigurationError("Internal API signing is not configured")
+            raise ApiClientConfigurationError("Backend API URL이 올바르지 않습니다.") from exc
+        local_http = parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        if (not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment
+                or parsed.path not in {"", "/"} or (parsed.scheme != "https" and not local_http)
+                or (port is not None and not 1 <= port <= 65_535)):
+            raise ApiClientConfigurationError("Backend API URL이 안전하지 않습니다.")
         if not 0 < self.timeout_seconds <= 30:
-            raise ApiClientConfigurationError("Backend API timeout is invalid")
+            raise ApiClientConfigurationError("Backend API timeout이 올바르지 않습니다.")
         object.__setattr__(self, "api_url", candidate)
-        object.__setattr__(self, "internal_api_secret", secret)
-
-    @classmethod
-    def from_secrets(cls, secrets: object) -> BackendApiConfig:
-        """Streamlit secrets에서 실제 값을 복사해 출력하지 않고 설정을 만든다."""
-
-        backend = _mapping_value(secrets, "backend")
-        api_url = _mapping_value(backend, "api_url")
-        internal_secret = _mapping_value(backend, "internal_api_secret")
-        if not isinstance(api_url, str) or not isinstance(internal_secret, str):
-            raise ApiClientConfigurationError("Backend API settings are missing")
-        return cls(api_url=api_url, internal_api_secret=internal_secret)
 
 
-@dataclass(frozen=True, slots=True)
-class ProvisionedUser:
-    """Backend 성공 응답에서 검증해 보존하는 최소 내부 사용자 정보."""
+class ApiClient:
+    """공개 사용자 API를 호출하는 UUID-only client."""
 
-    user_id: UUID
-    email: str | None
-    display_name: str | None
-    avatar_url: str | None
-    is_active: bool
+    # 팀 전달 사항: Backend는 일반 사용자 요청에서 X-User-Id와 X-Request-Id만
+    # 읽고, Authorization·OIDC token·Front HMAC은 요구하지 않아야 한다. UUID는
+    # 인증 자격증명이 아니므로 Backend가 최초 쓰기 요청에서 사용자 행을 멱등
+    # 생성하고 게임 소유권은 owner_user_id와 비교해야 한다.
 
-
-class IdentityApiClient:
-    """body와 서명에 같은 bytes를 사용해 identity provision API를 호출한다."""
-
-    def __init__(
-        self,
-        config: BackendApiConfig,
-        *,
-        transport: HttpTransport | None = None,
-        clock: Callable[[], float] = time.time,
-        request_id_factory: Callable[[], UUID] = uuid4,
-    ) -> None:
-        self._config = config
+    def __init__(self, *, user_id: UUID | str, api_url: str | None = None,
+                 transport: HttpTransport | None = None,
+                 request_id_factory: Callable[[], UUID] = uuid4) -> None:
+        self.user_id = UUID(str(user_id))
+        self.config = BackendApiConfig(api_url=api_url or os.getenv("BACKEND_API_URL", "http://127.0.0.1:8000"))
         self._transport = transport or _send
-        self._clock = clock
         self._request_id_factory = request_id_factory
 
-    def provision_identity(self, identity: ExternalIdentity) -> ProvisionedUser:
-        """정규화한 identity를 JSON으로 직렬화하고 HMAC 헤더와 함께 전송한다."""
+    def get_games(self, *, status: str | None = None, cursor: str | None = None,
+                  limit: int = 20) -> dict[str, Any]:
+        """명세서의 status·opaque cursor·limit 조건으로 현재 사용자의 게임을 조회한다."""
 
-        identity.validate_for_login()
-        body = json.dumps(
+        if not 1 <= limit <= 100:
+            raise ValueError("게임 목록 limit은 1부터 100까지여야 합니다.")
+        allowed_statuses = {"IN_PROGRESS", "SAVED", "COMPLETED", "FAILED"}
+        if status is not None and status not in allowed_statuses:
+            raise ValueError("게임 목록 status가 명세서의 허용 값이 아닙니다.")
+        query = [f"limit={limit}"]
+        if status is not None:
+            query.append(f"status={status}")
+        if cursor is not None:
+            normalized_cursor = cursor.strip()
+            if not normalized_cursor:
+                raise ValueError("게임 목록 cursor는 비어 있을 수 없습니다.")
+            query.append(f"cursor={quote(normalized_cursor, safe='')}")
+        return self._request("GET", "/api/v1/games?" + "&".join(query))
+
+    def create_game(self, *, player_count: int, idempotency_key: UUID | str) -> dict[str, Any]:
+        """고정된 idempotency key로 새 게임 생성을 한 번 요청한다."""
+
+        # 팀 전달 사항: 이 body의 version 값은 mystery-v1/scenario-v1로 고정한다.
+        # 성공 응답은 data.snapshot이 아니라 data.snapshot_url을 반환해야 하며,
+        # Front는 그 URL을 GET해 authoritative snapshot을 조회한다.
+
+        if player_count not in {6, 7, 8, 9}:
+            raise ValueError("게임 인원은 6명부터 9명까지 선택할 수 있습니다.")
+        key = UUID(str(idempotency_key))
+        return self._request(
+            "POST",
+            "/api/v1/games",
             {
-                "provider": identity.normalized_provider,
-                "provider_subject": identity.provider_subject.strip(),
-                "email": identity.email,
-                "email_verified": identity.email_verified,
-                "display_name": identity.display_name,
-                "avatar_url": identity.avatar_url,
+                "player_count": player_count,
+                "ruleset_version": "mystery-v1",
+                "scenario_version": "scenario-v1",
             },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        timestamp = str(int(self._clock()))
+            extra_headers={"Idempotency-Key": str(key)},
+        )
+
+    def get_game(self, game_id: UUID | str) -> dict[str, Any]:
+        """생성 성공 뒤 snapshot URL을 통해 authoritative 상태를 조회한다."""
+
+        return self._request("GET", f"/api/v1/games/{UUID(str(game_id))}")
+
+    def submit_command(self, *, game_id: UUID | str, command: dict[str, Any],
+                       idempotency_key: UUID | str) -> dict[str, Any]:
+        """고정된 command body와 idempotency key로 게임 변경을 요청한다."""
+
+        key = UUID(str(idempotency_key))
+        return self._request(
+            "POST",
+            f"/api/v1/games/{UUID(str(game_id))}/commands",
+            command,
+            extra_headers={"Idempotency-Key": str(key)},
+        )
+
+    def get_sync(self, *, game_id: UUID | str, after_state_version: int,
+                 after_sequence: int) -> dict[str, Any]:
+        """SSE 재연결과 동일한 cursor로 polling sync를 조회한다."""
+
+        # 팀 전달 사항: /sync와 /events는 같은 Front sequence를 사용해야 한다.
+        # delta 보존 범위를 벗어나면 operations 일부가 아니라 mode=SNAPSHOT의
+        # 완전한 snapshot을 반환해야 Front가 안전하게 복구할 수 있다.
+
+        if after_state_version < 0 or after_sequence < 0:
+            raise ValueError("sync cursor는 0 이상이어야 합니다.")
+        return self._request(
+            "GET",
+            f"/api/v1/games/{UUID(str(game_id))}/sync?after_state_version={after_state_version}&after_sequence={after_sequence}",
+        )
+
+    def submit_feedback(self, *, body: dict[str, Any], idempotency_key: UUID | str) -> dict[str, Any]:
+        """고정된 feedback body와 UUID v4 key로 feedback을 제출한다."""
+
+        # 팀 전달 사항: Backend는 X-User-Id와 Idempotency-Key를 필수로 확인하고,
+        # 동일 game의 중복 GAME feedback에는 409를 반환해야 한다. feedback 성공은
+        # 201과 data.feedback_id를 사용하며 게임 상태를 변경하지 않는다.
+
+        key = UUID(str(idempotency_key))
+        return self._request("POST", "/api/v1/feedback", body, extra_headers={"Idempotency-Key": str(key)})
+
+    def _request(self, method: str, path: str, body: dict[str, Any] | None = None,
+                 *, extra_headers: dict[str, str] | None = None) -> dict[str, Any]:
+        """UUID를 header에만 넣고 JSON object 응답을 검증한다."""
+
         request_id = str(self._request_id_factory())
-        signature = _calculate_signature(
-            secret=self._config.internal_api_secret.encode(),
-            timestamp=timestamp,
-            request_id=request_id,
-            body=body,
-        )
-        request = Request(  # noqa: S310 - 설정 검증이 HTTPS 또는 loopback HTTP만 허용한다.
-            f"{self._config.api_url}/api/v1/identity/provision",
-            data=body,
-            method="POST",
-            headers={
-                "Content-Type": "application/json",
-                "X-Internal-Timestamp": timestamp,
-                "X-Internal-Request-Id": request_id,
-                "X-Internal-Signature": signature,
-            },
-        )
-        status_code, response_body = self._transport(
-            request,
-            self._config.timeout_seconds,
-        )
-        payload = _decode_response(response_body)
-        if status_code != 200:
-            code = payload.get("code")
-            safe_code = code if isinstance(code, str) else "UNKNOWN_BACKEND_ERROR"
-            error_type = (
-                InactiveIdentityError if safe_code == "INACTIVE_USER" else IdentityApiResponseError
-            )
-            raise error_type(status_code=status_code, code=safe_code)
-        return _parse_user(payload)
-
-
-def _mapping_value(source: object, key: str) -> Any:
-    """일반 매핑과 Streamlit secrets 매핑 유사 객체에서 값을 안전하게 읽는다."""
-
-    if isinstance(source, Mapping):
-        return source.get(key)
-    getter = getattr(source, "get", None)
-    if callable(getter):
+        raw = None if body is None else json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
+        headers = {"Accept": "application/json", "X-User-Id": str(self.user_id), "X-Request-Id": request_id}
+        if raw is not None:
+            headers["Content-Type"] = "application/json"
+        if extra_headers:
+            headers.update(extra_headers)
+        request = Request(f"{self.config.api_url}{path}", data=raw, method=method, headers=headers)
         try:
-            return getter(key)
-        except (KeyError, TypeError, ValueError):
-            return None
-    return None
-
-
-def _calculate_signature(
-    *,
-    secret: bytes,
-    timestamp: str,
-    request_id: str,
-    body: bytes,
-) -> str:
-    """Backend와 같은 canonical byte sequence의 HMAC-SHA256 값을 만든다."""
-
-    canonical = timestamp.encode() + b"." + request_id.encode() + b"." + body
-    return hmac.new(secret, canonical, hashlib.sha256).hexdigest()
+            status_code, response_body = self._transport(request, self.config.timeout_seconds)
+        except (OSError, URLError, TimeoutError) as exc:
+            raise ApiUnavailableError(status_code=503, code="DEPENDENCY_UNAVAILABLE", request_id=request_id) from exc
+        try:
+            payload = json.loads(response_body.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise ApiUnavailableError(status_code=503, code="INVALID_RESPONSE", request_id=request_id) from exc
+        if not isinstance(payload, dict):
+            raise ApiUnavailableError(status_code=503, code="INVALID_RESPONSE", request_id=request_id)
+        if status_code >= 400:
+            error = payload.get("error")
+            code = error.get("code") if isinstance(error, dict) else payload.get("code")
+            raise ApiResponseError(status_code=status_code, code=code if isinstance(code, str) else "BACKEND_ERROR", request_id=request_id)
+        return payload
 
 
 def _send(request: Request, timeout: float) -> tuple[int, bytes]:
-    """urllib의 네트워크 오류를 자격 정보 없는 고정 예외로 변환한다."""
+    """검증된 Backend에만 네트워크 요청을 보내고 HTTP 오류 body를 반환한다."""
 
     try:
-        with urlopen(request, timeout=timeout) as response:  # noqa: S310
-            return int(response.status), response.read()
+        with urlopen(request, timeout=timeout) as response:  # noqa: S310 - endpoint를 먼저 검증한다.
+            return int(response.status), response.read(256 * 1024)
     except HTTPError as exc:
-        return exc.code, exc.read()
-    except (OSError, TimeoutError, URLError) as exc:
-        raise IdentityApiUnavailable("Backend API is unavailable") from exc
-
-
-def _decode_response(body: bytes) -> dict[str, Any]:
-    """응답 크기를 제한하고 JSON 객체만 허용해 예기치 않은 payload를 거부한다."""
-
-    if len(body) > 64 * 1024:
-        raise IdentityApiUnavailable("Backend API response is too large")
-    try:
-        payload = json.loads(body.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as exc:
-        raise IdentityApiUnavailable("Backend API returned an invalid response") from exc
-    if not isinstance(payload, dict):
-        raise IdentityApiUnavailable("Backend API returned an invalid response")
-    return payload
-
-
-def _parse_user(payload: dict[str, Any]) -> ProvisionedUser:
-    """성공 응답의 타입과 활성 상태를 다시 검증해 기본 거부를 유지한다."""
-
-    try:
-        user_id = UUID(str(payload["user_id"]))
-    except (KeyError, TypeError, ValueError) as exc:
-        raise IdentityApiUnavailable("Backend API returned an invalid user") from exc
-    is_active = payload.get("is_active")
-    if is_active is not True:
-        raise IdentityApiUnavailable("Backend API returned an inactive user")
-    optional_fields: dict[str, str | None] = {}
-    for field_name in ("email", "display_name", "avatar_url"):
-        value = payload.get(field_name)
-        if value is not None and not isinstance(value, str):
-            raise IdentityApiUnavailable("Backend API returned an invalid user")
-        optional_fields[field_name] = value
-    return ProvisionedUser(
-        user_id=user_id,
-        email=optional_fields["email"],
-        display_name=optional_fields["display_name"],
-        avatar_url=optional_fields["avatar_url"],
-        is_active=True,
-    )
+        return exc.code, exc.read(256 * 1024)

@@ -21,6 +21,7 @@ HMAC identity API와 scaffold game은 아직 코드에 남아 있지만 새 정�
 
 ## 현재 구현 범위
 
+- UUID-only 사용자 Frontend의 홈·게임 진행·관전·서버 확정 결과·게임별 피드백 화면과 Backend 공개 API client
 - Streamlit `st.login("google")`, `st.user`, `st.logout()` 기반 Google OIDC 로그인
 - OIDC 설정 누락, placeholder, 취약한 cookie secret, 안전하지 않은 URL 사전 검사
 - Google `sub` 기반 provider-neutral 사용자 식별과 외부 프로필 정규화
@@ -142,11 +143,19 @@ Front·MCP 계약을 차례로 완료한 뒤 사용할 수 있습니다. 규칙 
 │   ├── tests/
 │   └── README.md
 ├── frontend_user/
-│   ├── app.py                        # 얇은 Streamlit 실행 진입점
-│   ├── app_pages/login_page.py       # OIDC 로그인·프로필 화면 흐름
+│   ├── app.py                        # UUID bootstrap·화면 dispatcher
+│   ├── app_pages/home_page.py         # 게임 목록·이어하기 홈
+│   ├── app_pages/game_create_page.py  # 새 게임·인원 선택·생성 UI
+│   ├── app_pages/settings_page.py    # UUID 확인·복구·교체 화면
+│   ├── components/identity_bridge.py # 브라우저 local storage UUID bridge
+│   ├── components/theme.py           # 사용자 화면 공통 시각 토큰·접근성 스타일
+│   ├── components/browser_components/identity/ # 정적 UUID bridge
+│   ├── core/identity.py              # UUID v4 검증·생성
+│   ├── core/session.py               # identity scope·session mirror
+│   ├── core/api_client.py            # UUID 공개 Backend API client
+│   ├── app_pages/login_page.py       # legacy OIDC 코드(실행 경로 제외)
 │   ├── auth/                         # OIDC 설정·claim·접근·저장 결과 정책
 │   ├── components/ui.py              # 안전한 HTML·CSS 표현
-│   ├── core/api_client.py            # HMAC Backend API client
 │   ├── .streamlit/secrets.toml.example
 │   └── tests/
 ├── frontend_admin/                   # 관리자 독립 앱의 최소 실행 골격
@@ -167,6 +176,58 @@ Front·MCP 계약을 차례로 완료한 뒤 사용할 수 있습니다. 규칙 
 │       └── AI_MAFIA_INDEPENDENT_CONTRACT.md # 섹터 간 최소 연결 형식·독립 개발 규칙
 ├── tests/{integration,e2e}/          # 서버 간·브라우저 검증 확장 위치
 └── scripts/configure_google_oidc.py  # Google client JSON → Streamlit secrets 생성
+```
+
+### Frontend 컴포넌트별 가상환경
+
+Windows에서는 컴포넌트별 환경을 분리합니다. 기존 `.venv`가 있으면 삭제하지
+않고 재사용하며, 반드시 환경 내부 Python으로 설치합니다.
+
+```powershell
+& ".\backend\.venv\Scripts\python.exe" -m pip install -r ".\backend\requirements.txt"
+& ".\frontend_user\.venv\Scripts\python.exe" -m pip install -r ".\frontend_user\requirements-dev.txt"
+& ".\frontend_admin\.venv\Scripts\python.exe" -m pip install -r ".\frontend_admin\requirements.txt"
+```
+
+`.vscode\settings.json`과 `.vscode\project-venv.ps1`은 현재 폴더에 맞는
+PowerShell 가상환경 자동 전환을 제공합니다. PowerShell 7에서 발생할 수 있는
+`Split-Path -LiteralPath ... -Parent` 매개변수 집합 오류를 피하기 위해 스크립트는
+상위 폴더를 .NET API로 계산합니다. 원본 Python 설치가 바뀐 경우에는
+각 컴포넌트의 `.venv`를 재생성하기 전에 먼저 Python 3.12 설치 경로를 확인합니다.
+
+현재 일반 사용자 Frontend는 WU-F1 UUID-only bootstrap과 공통 화면 테마를 사용합니다. 브라우저
+저장 key는 `ai_mafia_user_id_v1`이며, Backend에는 UUID를 `X-User-Id` header로만
+전달합니다. 홈·게임·피드백 화면은 화면 정본의 상태 표현과 반응형·접근성 스타일을
+공유하며, 게임 상태와 결과의 원본은 계속 Backend snapshot입니다.
+
+Backend의 현재 게임 API는 canonical `mystery-v1` 계약을 사용하고, 기존 `scaffold-v1`
+요청은 호환 경로로 처리합니다. in-memory mock repository를 주입한 실행에서는
+`GET /api/v1/games`가 같은 Backend 프로세스에서 생성한 게임만 UUID 소유자별 목록으로 반환하며,
+게임이 없으면 오류가 아닌 `200`과 빈 `items`를 반환합니다.
+mock 게임의 좌석은 화면 표시용으로 민수·철수·영희·태경·지효·성주·환석·유빈·태웅·지혜·지토
+preset 이름을 사용하지만,
+API 식별자와 소유권 검사는 계속 UUID를 사용합니다.
+
+PostgreSQL 없이 화면을 확인할 때는 Backend를 mock 모드로 실행합니다. 기존 개발용
+Backend 포트 `8000`을 그대로 사용하므로 Frontend의 주소를 바꿀 필요가 없습니다.
+
+```powershell
+$env:BACKEND_DATA_MODE = "mock"
+& ".\.venv\Scripts\python.exe" -m uvicorn backend.app.main:app --port 8000
+```
+
+mock 데이터는 Backend 프로세스를 재시작하면 초기화됩니다.
+관리자 통계 화면은 종료된 게임만 분석하며, 종료 게임이 없을 때는 빈 통계를 오류로
+표시하지 않고 안내 문구를 보여줍니다.
+
+관리자 mock 화면을 확인하려면 관리자 Frontend의 local storage에 생성된 UUID를
+`ADMIN_USER_IDS`에 등록한 뒤 Backend를 재시작합니다. UUID는 관리자 화면의 브라우저
+개발자 도구에서 `ai_mafia_admin_user_id_v1` 값을 확인할 수 있습니다.
+
+```powershell
+$env:BACKEND_DATA_MODE = "mock"
+$env:ADMIN_USER_IDS = "브라우저에서_확인한_UUID"
+& ".\.venv\Scripts\python.exe" -m uvicorn backend.app.main:app --port 8000
 ```
 
 `frontend_user`와 `frontend_admin`은 Backend만 HTTP로 호출합니다. Frontend가 DB,
@@ -301,7 +362,8 @@ history나 완료 로그에 쓰지 않습니다.
 uv run python -m backend.app.infrastructure.migrations
 ```
 
-`001`·`002` migration은 legacy `users`·`oauth_identities`와 `scaffold_*` 게임
+현재 seed 정본은 `004_seed_scenarios_and_personas.sql` 하나이며, 중복된 `004` 번호의
+seed 파일을 함께 두지 않습니다. `001`·`002` migration은 legacy `users`·`oauth_identities`와 `scaffold_*` 게임
 테이블을 생성합니다. `003_create_mystery_v1_schema.sql`은 기존 객체와 데이터를
 삭제하지 않고 `users.last_seen_at`을 보강한 뒤
 [DB 설계 정본](docs/개발상세플랜/AI_MAFIA_DB_DESIGN.md)의 canonical `mystery-v1`
@@ -392,6 +454,13 @@ Engine으로
 uv run streamlit run frontend_user/app.py --server.port 8501
 ```
 
+Windows에서 `uv`를 사용하지 않는 경우 프로젝트 가상환경의 Python으로 실행할 수
+있습니다.
+
+```powershell
+& ".\frontend_user\.venv\Scripts\python.exe" -m streamlit run ".\frontend_user\app.py" --server.port 8501
+```
+
 브라우저에서 [http://localhost:8501](http://localhost:8501)을 엽니다. OIDC 또는
 Backend 설정이 없거나 안전성 검사를 통과하지 못하면 접근을 허용하지 않고 고정된
 구성·재시도 안내만 표시합니다.
@@ -401,6 +470,9 @@ Backend 설정이 없거나 안전성 검사를 통과하지 못하면 접근을
 ```bash
 uv run streamlit run frontend_admin/app.py --server.port 8502
 ```
+
+관리자 entrypoint는 실행 위치와 무관하게 저장소 루트를 import 경로에 등록해
+`frontend_admin` 패키지를 불러옵니다.
 
 ## 현재 legacy 구현: Google 로그인
 
@@ -446,6 +518,11 @@ uv run pytest frontend_user/tests
 uv run --project mcp_server pytest mcp_server/tests
 uv run --project mcp_server ruff check --config mcp_server/pyproject.toml mcp_server
 ```
+
+사용자 게임 목록은 API 명세서의 `status`, opaque `cursor`, `limit(1~100)` query를
+지원하며, 역할 공개 화면은 명세서의 `BEGIN_GAME` command를 성공한 뒤 진행 화면으로
+이동합니다. 관리자 게임 목록도 `status`, `phase`, `cursor`, `limit(1~100)` query
+계약을 사용합니다.
 
 완료 전 전체 회귀·컴파일·lint는 다음 명령으로 확인합니다.
 
