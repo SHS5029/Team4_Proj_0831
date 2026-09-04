@@ -70,9 +70,21 @@ class ApiClient:
                  transport: HttpTransport | None = None,
                  request_id_factory: Callable[[], UUID] = uuid4) -> None:
         self.user_id = UUID(str(user_id))
+        if self.user_id.version != 4:
+            raise ValueError("사용자 ID는 UUID v4여야 합니다.")
         self.config = BackendApiConfig(api_url=api_url or os.getenv("BACKEND_API_URL", "http://127.0.0.1:8000"))
         self._transport = transport or _send
         self._request_id_factory = request_id_factory
+
+    def get_health(self) -> dict[str, Any]:
+        """Backend 프로세스의 HTTP 처리 가능 여부를 조회한다."""
+
+        return self._request("GET", "/health")
+
+    def get_ready(self) -> dict[str, Any]:
+        """Backend가 필수 저장소와 함께 요청을 받을 준비가 되었는지 조회한다."""
+
+        return self._request("GET", "/ready")
 
     def get_games(self, *, status: str | None = None, cursor: str | None = None,
                   limit: int = 20) -> dict[str, Any]:

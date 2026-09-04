@@ -23,6 +23,7 @@
 - UUID-only 사용자 Frontend의 홈·게임 진행·관전·서버 확정 결과·게임별 피드백 화면과 Backend 공개 API client
 - 브라우저 UUID v4 생성·보관과 `X-User-Id` 기반 사용자 구분
 - FastAPI 공개 게임 API와 UUID별 게임 소유권 확인
+- Frontend API client의 `/health`·`/ready` 상태 확인과 공개 API header·오류 계약 테스트
 - Backend 소유 PostgreSQL migration 실행 코드(MCP 섹터가 실제 실행)
 - 독립 관리자 Streamlit 앱과 후속 MCP 서버 예약 구조(`mcp_server/mcp_2`)
 - `WU-M2` Mafia Game MCP의 stateful `/mcp` initialize, 일회성 MCP 세션 개설
@@ -62,6 +63,7 @@ agent 한 세션을 마스터플랜의 WU 한 개 이하로 제한합니다.
 | [AI_MAFIA_FRONTEND_BACKEND_HANDOFF.md](docs/개발상세플랜/AI_MAFIA_FRONTEND_BACKEND_HANDOFF.md) | Frontend–Backend 공개 API, SSE·CORS, 오류·private 경계와 공동 완료 조건 요약 |
 | [AI_MAFIA_INDEPENDENT_CONTRACT.md](docs/개발상세플랜/AI_MAFIA_INDEPENDENT_CONTRACT.md) | 세 섹터가 독립 구현할 때 공통으로 고정할 최소 연결 형식과 경계 |
 | [AI_MAFIA_GAME_ENGINE_STRATEGY_DRAFT.md](docs/개발상세플랜/AI_MAFIA_GAME_ENGINE_STRATEGY_DRAFT.md) | 게임 엔진·Agent Manager 모듈화 전략 임시 초안 |
+| [AI_MAFIA_BACKEND_DB_REDIS_CONNECTION_PLAN.md](docs/temp/AI_MAFIA_BACKEND_DB_REDIS_CONNECTION_PLAN.md) | Backend–PostgreSQL·Redis 실제 연결과 transaction·outbox 검증 계획 |
 | [AI_MAFIA_INTEGRATION_MVP_PLAN.md](docs/temp/AI_MAFIA_INTEGRATION_MVP_PLAN.md) | 로그인 제거와 Frontend–Backend–DB–Redis–MCP–LLM 연결 중심의 축소 MVP 계획 |
 | [AI_MAFIA_FRONTEND_BACKEND_CONNECTION_PLAN.md](docs/temp/AI_MAFIA_FRONTEND_BACKEND_CONNECTION_PLAN.md) | Frontend–Backend 공개 API 연결만 수행하는 소단위 구현 계획 |
 
