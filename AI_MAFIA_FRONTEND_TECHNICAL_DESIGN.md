@@ -37,9 +37,8 @@
 
 - [ ] 두 Streamlit 앱의 독립 process·origin 유지
 - [ ] UUID와 SSE에 한정한 최소 custom component 사용
-- [ ] Backend가 `:8501`, `:8502` origin과 `X-User-Id`, `X-Request-Id`,
-      `Idempotency-Key`, `Last-Event-ID` header를 허용하는 CORS 정책 또는 동등한
-      same-origin proxy 계약 제공
+- [ ] Backend가 `:8501`, `:8502` origin과 `X-User-Id`, `Last-Event-ID` header를 허용하는
+      CORS 정책 또는 동등한 same-origin proxy 계약 제공
 - [ ] Front fixture와 Backend `/openapi.json` 통합 gate
 - [ ] F1 착수 전 기존 OIDC·HMAC 삭제·유지 파일 목록
 - [ ] WU별 branch·review와 README 동시 갱신
@@ -130,7 +129,7 @@ LLM 출력은 component source에 삽입하지 않는다.
 
 ```text
 frontend_user/
-├─ app.py                         # 초기화·route만 담당
+├─ app.py                         # bootstrap·route만 담당
 ├─ app_pages/
 │  ├─ home_page.py                # F2 추가
 │  ├─ game_create_page.py         # F2 추가
@@ -167,7 +166,7 @@ frontend_user/
    └─ test_app_smoke.py
 
 frontend_admin/
-├─ app.py                         # 초기화·guard·route
+├─ app.py                         # bootstrap·guard·route
 ├─ app_pages/
 │  ├─ dashboard_page.py
 │  ├─ game_list_page.py
@@ -225,7 +224,7 @@ UUID·game·route 변경 시 `core/session.py`의 범위별 reset 함수를 사�
 - 화면 이동은 `navigation.page`과 query를 갱신한 뒤 `st.rerun()` 한 번으로 완료한다.
 
 ```text
-앱 실행/rerun → UUID 초기화 → route·scope 검증 → GET/sync
+앱 실행/rerun → UUID bootstrap → route·scope 검증 → GET/sync
 → payload 검증 → ViewModel → Presenter render
 
 form submit callback → local/action/target guard → key·body 고정
@@ -267,17 +266,13 @@ Python과 browser component는 아래 JSON-compatible payload만 주고받는다
 | Python→UUID | `IDENTITY_WRITE` | 위 공통 field + `user_id` |
 | UUID→Python | `IDENTITY_READY` | 공통 field + `user_id,persistence`(`LOCAL`/`SESSION_ONLY`) |
 | UUID→Python | `IDENTITY_ERROR` | 공통 field + `code`(`STORAGE_BLOCKED`/`INVALID_STORED_UUID`) |
-| Python→Sync | `SYNC_CONNECT` | 공통 field + `backend_url,game_id,user_id,last_sequence,after_state_version,after_sequence` |
+| Python→Sync | `SYNC_CONNECT` | 공통 field + `backend_url,game_id,user_id,last_sequence` |
 | Python→Sync | `SYNC_DISCONNECT` | 공통 field + `reason` |
 | Sync→Python | `SYNC_ENVELOPE` | 공통 field + `event_id,envelope` |
 | Sync→Python | `SYNC_STATUS` | 공통 field + `status`(`CONNECTING`/`LIVE`/`POLLING`/`STALE`) |
 | Sync→Python | `SYNC_ERROR` | 공통 field + `code,retryable,attempt` |
 
 - `backend_url`은 allowlist된 구성값만 전달하며 component는 다른 origin으로 연결하지 않는다.
-- `last_sequence`는 SSE 연결의 `Last-Event-ID` 값으로 사용하고, `after_state_version`과
-  `after_sequence`는 polling `/sync` 요청에 그대로 매핑한다. 두 transport는 같은
-  Front-visible cursor를 공유하며 component와 Python wrapper가 서로 다른 cursor를
-  독자적으로 전진시키지 않는다.
 - `user_id`는 transport header 구성에만 쓰고 browser storage에는 기존 identity key 외로
   복제하지 않는다.
 - component unmount, UUID·game·scope 변경 때 `AbortController.abort()`와 timer 정리를
@@ -455,10 +450,8 @@ server offset으로 표시만 갱신하며 0초에 submit을 잠근다. Front �
   복구한다. 유효 batch만 한 번에 session에 반영한다.
 - game·UUID·route 변경 시 `AbortController`로 streaming fetch를 중단하고 poll timer를
   정리한다.
-- Backend CORS가 두 Streamlit origin과 `X-User-Id`, `X-Request-Id`, `Idempotency-Key`,
-  `Last-Event-ID`를 허용하지 않으면 F5를 시작하지 않는다. 이 항목은 CP-0에서 Backend
-  담당자와 합의하고 API 정본에 반영한다. same-origin proxy를 선택하면 proxy가 동일
-  header와 SSE stream을 Backend까지 전달하고, `backend_url`은 proxy origin으로 고정한다.
+- Backend CORS가 두 Streamlit origin과 필요한 GET header를 허용하지 않으면 F5를 시작하지
+  않는다. 이 항목은 CP-0에서 Backend 담당자와 합의하고 API 정본에 반영한다.
 
 상태는 `CONNECTING → LIVE`, 실패 시 `POLLING`, 반복 실패 시 `STALE`로 전환한다. SSE 복구
 때 cursor를 확인한 뒤 `LIVE`로 돌아간다.
@@ -509,7 +502,7 @@ header·CORS preflight·stream 취소·polling 전환은 Playwright E2E를 필�
 ### WU-F8 — read-only 관리자
 
 - `frontend_admin`을 `:8502`에서 별도 실행하고 관리자 storage key를 사용한다.
-- 초기화 뒤 `GET /api/v1/admin/metrics`의 200만 접근 허용으로 본다.
+- bootstrap 뒤 `GET /api/v1/admin/metrics`의 200만 접근 허용으로 본다.
 - 403·연결 오류에서는 dashboard 함수와 partial data를 렌더링하지 않는다.
 - API client는 admin GET만 노출하며 수정·삭제·강제 종료 UI를 만들지 않는다.
 - 진행 game private field는 `***`로 보관하지 않고 model에서 거부한다.
@@ -521,7 +514,7 @@ browser network 결과는 Playwright E2E로 검사한다.
 
 | code·상황 | 처리 |
 |---|---|
-| `MISSING_USER_ID` | UUID 초기화 전환 |
+| `MISSING_USER_ID` | UUID bootstrap 전환 |
 | `ADMIN_ACCESS_DENIED` | cache 제거, 거부 화면만 표시 |
 | `GAME_NOT_FOUND` | 소유권 여부를 구분하지 않는 홈 안내 |
 | `STALE_STATE_VERSION` | 입력 폐기, sync, action 재확인 |
@@ -648,7 +641,7 @@ Front alias를 만들지 않고 정본과 계약 테스트를 먼저 갱신한�
 
 - [ ] WU와 화면·API 계약이 모든 정본과 일치한다.
 - [ ] 닉네임·OAuth·Front HMAC이 다시 포함되지 않았다.
-- [ ] `app.py`는 초기화·route만 담당한다.
+- [ ] `app.py`는 bootstrap·route만 담당한다.
 - [ ] widget state와 Backend authoritative state가 분리된다.
 - [ ] rerun·refresh·multi-tab 복구 방안이 명확하다.
 - [ ] custom component 책임이 UUID·SSE로 제한된다.

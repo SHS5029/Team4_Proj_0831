@@ -499,7 +499,7 @@ authoritative game state를 분리한다. callback 안에서 domain phase를 직
 
 | 영역 | 책임 |
 |---|---|
-| `frontend_user/app.py` | route·session bootstrap만 담당하는 얇은 entrypoint |
+| `frontend_user/app.py` | route·session 초기화만 담당하는 얇은 entrypoint |
 | `frontend_user/app_pages/` | 홈, 생성, 역할, 게임, 결과, 피드백 화면 조율 |
 | `frontend_user/components/` | 공통 card, timeline, countdown, local storage bridge |
 | `frontend_user/core/api_client.py` | `X-User-Id`, request ID, idempotency와 HTTP 오류 변환 |

@@ -520,7 +520,8 @@ created_at timestamptz NOT NULL
 
 UNIQUE(principal_type, principal_id, idempotency_key)을 둔다. 같은 key와 다른 request
 hash는 IDEMPOTENCY_KEY_REUSED다. 공개 API key는 Idempotency-Key, 내부 proposal key는
-body의 proposal_id이며 MCP bootstrap은 nonce ledger를 사용한다.
+body의 proposal_id이며 MCP 세션 개설 토큰(bootstrap token)은 nonce ledger를
+사용한다.
 
 #### game_snapshots
 
@@ -887,7 +888,7 @@ Agent proposal은 body의 proposal_id를 idempotency key로 사용하고 허용 
 PASS, NIGHT_ACTION, VOTE다. MCP Tool input에는 game_id, agent_id, role, phase,
 version을 넣지 않는다.
 
-Backend는 MCP bootstrap token을 MCP_SERVER_AUTH_SECRET으로 만들고, MCP가 Backend를
+Backend는 MCP 세션 개설 토큰을 MCP_SERVER_AUTH_SECRET으로 만들고, MCP가 Backend를
 호출할 때는 별도의 ENGINE_INTERNAL_API_SECRET을 사용한다. MCP runtime은 token을
 opaque 값으로만 전달하고 DB·Redis에 직접 접근하지 않는다.
 
@@ -945,7 +946,7 @@ AI 발언 실패는 PASS, 행동·투표 실패는 규칙 기반 자동 처리, 
 
 ### WU-B7 — Internal Engine API·Outbox·SSE
 
-- 범위: HMAC, nonce, MCP bootstrap, agent proposal, publisher, SSE reconnect
+- 범위: HMAC, nonce, MCP 세션 개설 토큰, agent proposal, publisher, SSE reconnect
 - DB: nonce ledger와 append-only event 사용
 - 실패: signature·nonce·capability 거부, sequence gap, outbox 중복
 - 테스트: HMAC replay, stale capability, complete batch, polling/SSE dedup
@@ -1012,7 +1013,7 @@ AI 발언 실패는 PASS, 행동·투표 실패는 규칙 기반 자동 처리, 
 - Redis 장애에서 새 Agent turn 중단과 DB 원본 복구
 - Provider·MCP 오류 fallback
 - 15초 lease 만료와 fencing token
-- Engine HMAC·MCP bootstrap nonce replay 거부
+- Engine HMAC nonce·MCP 세션 개설 토큰의 nonce replay 거부
 - capability 만료·폐기·allowlist 검사
 - secret, prompt, raw response, private context, Chain of Thought 로그·DB 비저장
 - 관리자 allowlist fail-closed

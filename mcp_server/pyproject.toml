@@ -1,0 +1,37 @@
+[project]
+name = "ai-mafia-mcp"
+version = "0.1.0"
+description = "AI 마피아 게임의 job-bound MCP runtime"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "httpx>=0.28.0,<1",
+  "mcp==1.29.1",
+  "uvicorn>=0.35.0,<1",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.4.0,<9",
+  "pytest-asyncio>=1.0.0,<2",
+  "ruff>=0.16.0,<1",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "S"]
+ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"mcp_server/tests/**/*.py" = ["S105", "S106"]
+"tests/**/*.py" = ["S105", "S106"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["mafia_game"]

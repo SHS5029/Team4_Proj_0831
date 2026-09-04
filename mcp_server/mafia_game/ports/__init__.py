@@ -1,1 +1,1 @@
-"""Tour 서비스가 요구할 저장소·provider·embedding 추상 계약 위치."""
+"""Mafia Game 서비스가 외부 Engine 구현에 요구하는 추상 계약 위치."""

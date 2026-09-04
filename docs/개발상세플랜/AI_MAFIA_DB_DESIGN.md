@@ -394,7 +394,8 @@ FAST_FORWARD_ENABLED, GAME_SAVED, GAME_RESUMED, GAME_ENDED, GAME_FAILED
 - 성공 여부가 불명확한 중간 상태를 저장하지 않는다. DB 오류로 transaction이
   rollback되면 receipt도 없어 재시도할 수 있다.
 - 공개 API의 `USER` key는 `Idempotency-Key` header, 내부 proposal의 `AGENT` key는
-  body `proposal_id`다. MCP bootstrap은 game command가 아니며 nonce ledger를 사용한다.
+  body `proposal_id`다. MCP 세션 개설 토큰(bootstrap token)은 game command가 아니며
+  nonce ledger를 사용한다.
 
 ### 4.13 `game_snapshots`
 
@@ -501,13 +502,13 @@ Backend가 발급하고 Engine API가 검증하는 opaque capability 원장이�
 
 ### 4.16 `internal_request_nonces`
 
-내부 HMAC과 MCP bootstrap replay 차단의 영구 원장이다.
+내부 HMAC과 MCP 세션 개설 토큰 replay 차단의 영구 원장이다.
 
 | 컬럼 | 타입 | 제약·의미 |
 |---|---|---|
 | `scope` | `varchar(24)` | `ENGINE_HMAC` 또는 `MCP_BOOTSTRAP` |
 | `nonce` | `uuid` | 요청·token nonce |
-| `request_hash` | `char(64)` | canonical request 또는 bootstrap claim hash |
+| `request_hash` | `char(64)` | canonical request 또는 세션 개설 토큰 claim hash |
 | `expires_at` | `timestamptz` | replay 거부 종료 시각 |
 | `created_at` | `timestamptz` | NOT NULL |
 
@@ -635,7 +636,7 @@ transaction 실패 시 window는 다시 `OPEN`이며 저장 결과가 없으므�
 
 ```text
 Tx A: window·version 검증 -> lease token을 가진 agent_jobs RESERVED
-      -> job-bound capability와 bootstrap nonce 발급 -> COMMIT
+      -> job-bound capability와 세션 개설 토큰의 nonce 발급 -> COMMIT
 외부: job별 새 MCP session에서 context 조회 -> 선택 LLM Provider 호출
       -> player proposal 또는 GM narration schema 검증
 Tx B: game FOR UPDATE -> lease token·reservation·window·version 재검증
@@ -647,7 +648,7 @@ Tx A와 Tx B 사이에는 DB transaction과 Redis game lock을 잡지 않는다.
 동시 worker는 unique 제약으로 하나만 reservation에 성공한다. lease가 먼저 만료되면
 scheduler가 fencing token을 교체하고 `PASS`, 자동 행동 또는 고정 GM 문구를 확정한다.
 Agent Manager는 terminal 경로에서 session 종료를 시도하고, reconnect가 필요하면 이전
-capability를 폐기한 뒤 같은 살아 있는 job에 새 capability와 bootstrap을 발급한다.
+capability를 폐기한 뒤 같은 살아 있는 job에 새 capability와 세션 개설 토큰을 발급한다.
 
 ### 5.5 내부 요청 인증
 
@@ -657,8 +658,9 @@ Engine HMAC signature와 timestamp를 먼저 검증한 뒤 짧은 transaction에
 mutation transaction을 연다. nonce INSERT가 성공한 뒤 domain 검증이 실패해도 같은
 wire 요청을 재사용할 수 없으며 caller는 새 nonce로 교정 요청을 만든다.
 
-MCP bootstrap consume도 `scope=MCP_BOOTSTRAP`으로 같은 원장을 사용한다. Redis nonce
-key는 이미 본 요청을 빠르게 거르는 cache일 뿐 DB INSERT를 생략하는 근거가 아니다.
+MCP 세션 개설 토큰 consume도 `scope=MCP_BOOTSTRAP`으로 같은 원장을 사용한다. Redis
+nonce key는 이미 본 요청을 빠르게 거르는 cache일 뿐 DB INSERT를 생략하는 근거가
+아니다.
 
 ### 5.6 저장·재개
 
@@ -686,7 +688,7 @@ DB와 prefix를 공유하지 않는다.
 | `mafia:v1:events:{game_id}` | stream | Front-visible batch sequence와 event ID 배열 | bounded trim, PostgreSQL event로 backfill |
 | `mafia:v1:outbox:wakeup` | pub/sub | 새 outbox 존재 알림 | 유실 허용, DB polling 병행 |
 | `mafia:v1:nonce:engine:{nonce}` | string | 이미 소비된 Engine nonce cache | 최대 120초, PostgreSQL ledger가 원본 |
-| `mafia:v1:nonce:mcp-bootstrap:{nonce}` | string | 이미 소비된 bootstrap nonce cache | 최대 120초, PostgreSQL ledger가 원본 |
+| `mafia:v1:nonce:mcp-bootstrap:{nonce}` | string | 이미 소비된 세션 개설 토큰의 nonce cache | 최대 120초, PostgreSQL ledger가 원본 |
 | `mafia:v1:health` | string | synthetic health marker | health check에서만 사용 |
 
 ### 6.1 금지 데이터
@@ -815,7 +817,8 @@ MVP에는 사용자 삭제 API가 없다. 실제 개인정보를 수집하지 �
 - outbox 중복 publish와 SSE event deduplication
 - 다른 Agent private event 사이에도 Front sequence가 연속이며 timing side channel이
   생기지 않는지 확인
-- Engine HMAC·MCP bootstrap nonce의 PostgreSQL unique replay 거부, cleanup과 Redis
+- Engine HMAC nonce와 MCP 세션 개설 토큰의 nonce에 대한 PostgreSQL unique replay
+  거부, cleanup과 Redis
   cache 장애 시 원본 판정 유지
 - job별 capability 활성 uniqueness, reconnect 교체와 모든 terminal 경로의 revoke
 - GM narration이 action submission을 만들지 않고 fencing 재검증 뒤 `PUBLIC` event로만

@@ -1,1 +1,1 @@
-"""향후 LLM이 호출할 Tour MCP Tool 등록 위치."""
+"""WU-M4에서 AI player 행동 제안용 Mafia Game Tool을 등록할 위치."""

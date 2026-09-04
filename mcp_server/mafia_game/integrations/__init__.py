@@ -1,1 +1,1 @@
-"""Tour port를 외부 기술에 연결할 구체 구현 위치."""
+"""Mafia Game port를 Backend 내부 HTTP API 같은 외부 기술에 연결하는 위치."""
