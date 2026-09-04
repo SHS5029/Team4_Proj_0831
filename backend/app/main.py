@@ -14,6 +14,7 @@ from backend.app.routers.identity_router import router as identity_router
 from backend.app.routers import scaffold_game_router as scaffold_game_module
 from backend.app.routers.scaffold_mcp_router import router as scaffold_mcp_router
 from backend.app.routers.admin_router import router as admin_router
+from backend.app.routers.mock_api_router import router as mock_api_router
 from backend.app.repositories.scaffold_repository import ScaffoldRepository
 
 
@@ -75,10 +76,14 @@ def create_app(scaffold_repository=None) -> FastAPI:
     application.include_router(health_router)
     application.include_router(identity_router)
     application.include_router(scaffold_mcp_router)
+    # MOCK ONLY: 실제 DB·규칙 엔진 연결 시 이 분기와 mock_api_router import를 제거한다.
+    if os.getenv("BACKEND_DATA_MODE") == "mock":
+        application.include_router(mock_api_router)
+    else:
+        application.include_router(scaffold_game_module.router)
     application.include_router(admin_router)
-    if scaffold_repository is not None:
+    if scaffold_repository is not None and os.getenv("BACKEND_DATA_MODE") != "mock":
         scaffold_game_module.configure_scaffold_dependencies(scaffold_repository)
-    application.include_router(scaffold_game_module.router)
     return application
 
 

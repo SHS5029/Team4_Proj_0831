@@ -137,6 +137,7 @@ Front·MCP 계약을 차례로 완료한 뒤 사용할 수 있습니다. 규칙 
 │   ├── app.py                        # UUID bootstrap·화면 dispatcher
 │   ├── app_pages/home_page.py         # 게임 목록·이어하기 홈
 │   ├── app_pages/game_create_page.py  # 새 게임·인원 선택·생성 UI
+│   ├── app_pages/creation_complete_page.py # 게임 생성 완료·플레이어 안내
 │   ├── app_pages/settings_page.py    # UUID 확인·복구·교체 화면
 │   ├── components/identity_bridge.py # 브라우저 local storage UUID bridge
 │   ├── components/theme.py           # 사용자 화면 공통 시각 토큰·접근성 스타일
@@ -202,7 +203,18 @@ $env:BACKEND_DATA_MODE = "mock"
 & ".\.venv\Scripts\python.exe" -m uvicorn backend.app.main:app --port 8000
 ```
 
+8000번 포트 충돌을 자동으로 정리한 뒤 mock Backend를 다시 실행하려면 다음
+스크립트를 사용합니다. 이 스크립트는 8000번 포트에서 대기 중인 프로세스만
+종료하고 다른 포트나 파일은 변경하지 않습니다.
+
+```powershell
+& ".\scripts\run_mock_backend.ps1"
+```
+
 mock 데이터는 Backend 프로세스를 재시작하면 초기화됩니다.
+mock 전용 코드는 `backend/app/routers/mock_api_router.py`에 모아 두었고, 관련 분기에는
+`MOCK ONLY` 주석을 표시했습니다. 실제 Backend 구현으로 교체할 때 해당 파일과 표시된
+mock 블록만 제거하면 됩니다.
 관리자 통계 화면은 종료된 게임만 분석하며, 종료 게임이 없을 때는 빈 통계를 오류로
 표시하지 않고 안내 문구를 보여줍니다.
 

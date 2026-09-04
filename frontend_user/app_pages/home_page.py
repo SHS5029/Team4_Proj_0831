@@ -43,6 +43,13 @@ HOME_CSS = """
 .home-card-meta { margin:.25rem 0 .6rem; color:var(--home-muted); font-size:.75rem; }
 .home-card-badge { display:inline-block; padding:.25rem .45rem; border-radius:.35rem; color:#16864d; background:#e5f8ec; font-size:.72rem; }
 .home-card-badge.saved { color:#c66c08; background:#fff2d9; }
+[data-testid="stButton"] button:not([kind="primary"]), [data-testid="baseButton-secondary"] { color:#1f4fbd !important; background:#f7faff !important; border:1px solid #b8cdf8 !important; }
+[data-testid="stButton"] button:not([kind="primary"]) *, [data-testid="baseButton-secondary"] * { color:#1f4fbd !important; }
+[data-testid="stButton"] button:not([kind="primary"]):hover:not(:disabled), [data-testid="baseButton-secondary"]:hover:not(:disabled) { color:#17449f !important; background:#eaf2ff !important; }
+[data-testid="stButton"] button[kind="primary"] { color:#fff !important; background:linear-gradient(135deg,#3568f2,#5b83ff) !important; border-color:#3568f2 !important; }
+[data-testid="stButton"] button[kind="primary"] p { color:#fff !important; }
+[class*="st-key-home-retry"] button { color:#fff !important; background:linear-gradient(135deg,#3568f2,#5b83ff) !important; border-color:#3568f2 !important; }
+[class*="st-key-home-retry"] button p { color:#fff !important; }
 @media (max-width:760px) { .home-hero { grid-template-columns:1fr; } .home-hero-art { min-height:10rem; } .home-nav { display:none; } }
 </style>
 """
@@ -75,7 +82,7 @@ def render(client: ApiClient) -> None:
         '</div><div class="home-hero-art"><span class="home-hero-scene">▰ ▰ ▰ ▰ ▰</span></div></section>',
         unsafe_allow_html=True,
     )
-    if st.button("새 게임 시작  ›", type="primary", key="home.new_game", use_container_width=True):
+    if st.button("새 게임 시작  ›", type="primary", key="home.new_game", width="stretch"):
         st.session_state["navigation.page"] = "create"
         st.rerun()
     st.caption("6~9명 · 약 15분")
@@ -151,7 +158,7 @@ def _render_group(games: list[dict[str, Any]]) -> None:
             )
             action = "계속하기" if game.get("can_resume") else "불러오기"
             if st.button(
-                action + "  ›", key=f"home.game.{game.get('game_id')}", use_container_width=True
+                action + "  ›", key=f"home.game.{game.get('game_id')}", width="stretch"
             ):
                 game_id = game.get("game_id")
                 if isinstance(game_id, str):

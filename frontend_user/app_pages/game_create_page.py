@@ -47,11 +47,14 @@ SETUP_CSS = """
 .setup-count-selected .setup-count-icon, .setup-count-selected .setup-count-number { color:var(--setup-blue); }
 .setup-count-number { margin-top:.3rem; color:var(--setup-ink); font-size:1.7rem; font-weight:800; }
 .setup-count-subtitle { margin-top:.25rem; color:var(--setup-muted); font-size:.82rem; }
-[class*="st-key-game-player-count"] [data-testid="stButton"] button { color:#1f4fbd !important; background:#f7faff !important; border:1px solid #b8cdf8 !important; }
-[class*="st-key-game-player-count"] [data-testid="stButton"] button:hover:not(:disabled) { color:#17449f !important; background:#eaf2ff !important; }
+[data-testid="stButton"] button:not([kind="primary"]), [data-testid="baseButton-secondary"] { color:#1f4fbd !important; background:#f7faff !important; border:1px solid #b8cdf8 !important; }
+[data-testid="stButton"] button:not([kind="primary"]) *, [data-testid="baseButton-secondary"] * { color:#1f4fbd !important; }
+[data-testid="stButton"] button:not([kind="primary"]):hover:not(:disabled), [data-testid="baseButton-secondary"]:hover:not(:disabled) { color:#17449f !important; background:#eaf2ff !important; }
 [data-testid="stButton"] button[kind="primary"] { color:#fff !important; background:linear-gradient(135deg,#3568f2,#5b83ff) !important; border-color:#3568f2 !important; }
-[class*="st-key-game-create-cancel"] button { color:#53627a !important; background:#f1f4f8 !important; border-color:#cbd5e1 !important; }
-[class*="st-key-game-create-cancel"] button:hover:not(:disabled) { color:#334155 !important; background:#e3e9f1 !important; }
+[data-testid="stButton"] button[kind="primary"] p { color:#fff !important; }
+[class*="st-key-game-create-cancel"] button:not([kind="primary"]), [class*="st-key-game-create-cancel"] [data-testid="baseButton-secondary"] { color:#53627a !important; background:#f1f4f8 !important; border-color:#cbd5e1 !important; }
+[class*="st-key-game-create-cancel"] button:not([kind="primary"]) *, [class*="st-key-game-create-cancel"] [data-testid="baseButton-secondary"] * { color:#53627a !important; }
+[class*="st-key-game-create-cancel"] button:not([kind="primary"]):hover:not(:disabled), [class*="st-key-game-create-cancel"] [data-testid="baseButton-secondary"]:hover:not(:disabled) { color:#334155 !important; background:#e3e9f1 !important; }
 .setup-rules { display:flex; align-items:center; gap:1.5rem; margin-top:1.1rem; padding:1rem 1.2rem; border:1px solid var(--setup-border); border-radius:.8rem; background:#fff; }
 .setup-rule-book { font-size:2.6rem; }
 .setup-rules-title { margin-bottom:.4rem; color:var(--setup-ink); font-size:1.05rem; font-weight:800; }
@@ -97,9 +100,9 @@ def render(client: ApiClient) -> None:
 
     button_left, button_right = st.columns([1.1, .6])
     with button_left:
-        create_clicked = st.button("◉  게임 만들기", type="primary", key="game.create_submit", disabled=in_flight, use_container_width=True)
+        create_clicked = st.button("◉  게임 만들기", type="primary", key="game.create_submit", disabled=in_flight, width="stretch")
     with button_right:
-        cancel_clicked = st.button("취소", key="game.create_cancel", disabled=in_flight, use_container_width=True)
+        cancel_clicked = st.button("취소", key="game.create_cancel", disabled=in_flight, width="stretch")
     if create_clicked:
         st.session_state["game.create_pending"] = {
             "status": "PENDING_TO_RENDER",
@@ -171,8 +174,7 @@ def _render_terminal(pending: dict[str, object]) -> None:
 
     status = pending.get("status")
     if status == "SUCCEEDED":
-        st.success("게임이 만들어졌어요.")
-        st.session_state["navigation.page"] = "game"
+        st.session_state["navigation.page"] = "creation_complete"
     elif status == "RETRYABLE_UNKNOWN":
         st.warning("결과를 확인하지 못했어요. 같은 요청으로 다시 확인할 수 있습니다.")
         if st.button("같은 요청 다시 시도", key="game.create_retry"):

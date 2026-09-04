@@ -33,6 +33,7 @@ class ScaffoldGameService:
 
         game = ScaffoldGame(uuid4(), owner_user_id, payload.player_count)
         game.players = [uuid4() for _ in range(payload.player_count)]
+        # MOCK ONLY: canonical player preset이 연결되면 이 표시명 목록을 제거한다.
         game.display_names = ["민수", "철수", "영희", "태경", "지효", "성주", "환석", "유빈", "태웅", "지혜", "지토"][:payload.player_count]
         self.repository.create_game(game)
         player = ScaffoldPlayerResponse(player_id=game.players[0], display_name=game.display_names[0], kind="HUMAN")
