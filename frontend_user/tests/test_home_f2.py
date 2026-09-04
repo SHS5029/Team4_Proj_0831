@@ -1,4 +1,6 @@
 from frontend_user.app_pages.game_create_page import ROLE_COUNTS
+from frontend_user.app_pages.home_page import should_load_games
+from frontend_user.core.api_client import ApiClient
 
 
 def test_role_preview_matches_mystery_v1_for_six_to_nine_players() -> None:
@@ -26,4 +28,13 @@ def test_create_game_posts_contract_and_idempotency_header() -> None:
     )
     request = captured["request"]
     assert request.headers["Idempotency-key"] == "2c2cb976-af58-4c90-a3aa-d98ee0bd0fde"
-    assert request.data == (b'{"player_count":6,"ruleset_version":"mystery-v1","scenario_version":"scenario-v1"}')
+    assert request.data == (
+        b'{"player_count":6,"ruleset_version":"mystery-v1","scenario_version":"scenario-v1"}'
+    )
+
+
+def test_home_game_list_load_starts_only_without_data_or_error() -> None:
+    assert should_load_games({}) is True
+    assert should_load_games({"home.games": []}) is False
+    assert should_load_games({"home.games_loading": True}) is False
+    assert should_load_games({"home.games_error": "DEPENDENCY_UNAVAILABLE"}) is False

@@ -11,12 +11,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from frontend_user.app_pages.game_create_page import render as render_create  # noqa: E402
 from frontend_user.app_pages.feedback_page import render as render_feedback  # noqa: E402
+from frontend_user.app_pages.game_create_page import render as render_create  # noqa: E402
 from frontend_user.app_pages.game_page import render as render_game  # noqa: E402
-from frontend_user.app_pages.home_page import load_games, render as render_home  # noqa: E402
-from frontend_user.app_pages.role_reveal_page import render as render_role_reveal  # noqa: E402
+from frontend_user.app_pages.home_page import load_games, should_load_games  # noqa: E402
+from frontend_user.app_pages.home_page import render as render_home  # noqa: E402
 from frontend_user.app_pages.result_page import render as render_result  # noqa: E402
+from frontend_user.app_pages.role_reveal_page import render as render_role_reveal  # noqa: E402
 from frontend_user.app_pages.settings_page import render as render_settings  # noqa: E402
 from frontend_user.components.identity_bridge import (  # noqa: E402
     IDENTITY_COMPONENT_CHANGED_SESSION_KEY,
@@ -85,7 +86,7 @@ def main() -> None:
             else:
                 render_game(snapshot)
     else:
-        if "home.games" not in st.session_state and not st.session_state.get("home.games_loading"):
+        if should_load_games(st.session_state):
             st.session_state["home.games_loading"] = True
             st.rerun()
         if st.session_state.get("home.games_loading"):

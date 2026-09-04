@@ -10,7 +10,6 @@ import streamlit as st
 
 from frontend_user.core.api_client import ApiClient, ApiResponseError, ApiUnavailableError
 
-
 HOME_CSS = """
 <style>
 :root { --home-ink:#172033; --home-muted:#65728b; --home-blue:#2468ed; --home-dark:#0b1730; --home-border:#dfe5ef; --home-bg:#f4f7fb; }
@@ -49,6 +48,16 @@ HOME_CSS = """
 """
 
 
+def should_load_games(session_state: Mapping[str, object]) -> bool:
+    """최초 목록 조회만 시작하고, 실패 상태에서는 사용자의 재시도 입력을 기다린다."""
+
+    return (
+        "home.games" not in session_state
+        and "home.games_error" not in session_state
+        and not bool(session_state.get("home.games_loading"))
+    )
+
+
 def render(client: ApiClient) -> None:
     """게임 목록의 loading·empty·error·success 상태를 홈 레이아웃 안에서 표시한다."""
 
@@ -61,8 +70,8 @@ def render(client: ApiClient) -> None:
     )
     st.markdown(
         '<section class="home-hero"><div class="home-hero-copy">'
-        '<h1>AI와 함께 시작하는 추리 게임</h1>'
-        '<p>한 명의 플레이어와 개성 있는 AI들이 펼치는 마피아 게임</p>'
+        "<h1>AI와 함께 시작하는 추리 게임</h1>"
+        "<p>한 명의 플레이어와 개성 있는 AI들이 펼치는 마피아 게임</p>"
         '</div><div class="home-hero-art"><span class="home-hero-scene">▰ ▰ ▰ ▰ ▰</span></div></section>',
         unsafe_allow_html=True,
     )
@@ -74,9 +83,14 @@ def render(client: ApiClient) -> None:
         st.markdown('<div class="home-player-title">플레이어 정보</div>', unsafe_allow_html=True)
         st.caption("현재 구조에서는 UUID를 게임 식별자로 사용합니다. 닉네임은 저장하지 않습니다.")
         user_id = st.session_state.get("identity.user_id")
-        st.text_input("게임 식별자 (UUID)", value=str(user_id or ""), disabled=True, key="home.user_id")
+        st.text_input(
+            "게임 식별자 (UUID)", value=str(user_id or ""), disabled=True, key="home.user_id"
+        )
     st.markdown('<div class="home-section-title">게임 불러오기</div>', unsafe_allow_html=True)
-    st.markdown('<div class="home-tabs"><span class="home-tab home-tab-active">진행 중</span><span class="home-tab">저장됨</span><span class="home-tab">완료</span></div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="home-tabs"><span class="home-tab home-tab-active">진행 중</span><span class="home-tab">저장됨</span><span class="home-tab">완료</span></div>',
+        unsafe_allow_html=True,
+    )
     if st.session_state.get("home.games_loading"):
         st.info("게임 목록을 불러오는 중이에요.")
         return
@@ -132,11 +146,13 @@ def _render_group(games: list[dict[str, Any]]) -> None:
                 f'<article class="home-card"><div class="home-card-thumb{thumb_class}">{icon}</div>'
                 f'<div class="home-card-title">{title}</div>'
                 f'<div class="home-card-meta"><span class="home-card-badge{badge_class}">{label}</span>'
-                f' · Day {escape(str(game.get("day_number", 1)))} · Round {escape(str(game.get("round", 0)))}</div></article>',
+                f" · Day {escape(str(game.get('day_number', 1)))} · Round {escape(str(game.get('round', 0)))}</div></article>",
                 unsafe_allow_html=True,
             )
             action = "계속하기" if game.get("can_resume") else "불러오기"
-            if st.button(action + "  ›", key=f"home.game.{game.get('game_id')}", use_container_width=True):
+            if st.button(
+                action + "  ›", key=f"home.game.{game.get('game_id')}", use_container_width=True
+            ):
                 game_id = game.get("game_id")
                 if isinstance(game_id, str):
                     st.session_state["game.game_id"] = game_id
