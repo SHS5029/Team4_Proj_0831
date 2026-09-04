@@ -41,10 +41,17 @@ SETUP_CSS = """
 .setup-panel-title { margin-bottom:.9rem; color:var(--setup-ink); font-size:1.15rem; font-weight:800; }
 .setup-count { min-height:8.5rem; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:.75rem; border:1px solid var(--setup-border); border-radius:.8rem; background:#fff; text-align:center; }
 .setup-count-selected { border:2px solid var(--setup-blue); box-shadow:0 0 0 3px rgba(36,104,237,.08); }
-.setup-count-icon { color:#71809a; font-size:1.45rem; }
+.setup-count-pieces { display:flex; flex-wrap:wrap; justify-content:center; gap:.08rem; max-width:8.5rem; min-height:1.8rem; color:#71809a; font-size:1.2rem; line-height:1; }
+.setup-count-pieces span { display:inline-block; }
+.setup-count-selected .setup-count-pieces { color:var(--setup-blue); }
 .setup-count-selected .setup-count-icon, .setup-count-selected .setup-count-number { color:var(--setup-blue); }
 .setup-count-number { margin-top:.3rem; color:var(--setup-ink); font-size:1.7rem; font-weight:800; }
 .setup-count-subtitle { margin-top:.25rem; color:var(--setup-muted); font-size:.82rem; }
+[class*="st-key-game-player-count"] [data-testid="stButton"] button { color:#1f4fbd !important; background:#f7faff !important; border:1px solid #b8cdf8 !important; }
+[class*="st-key-game-player-count"] [data-testid="stButton"] button:hover:not(:disabled) { color:#17449f !important; background:#eaf2ff !important; }
+[data-testid="stButton"] button[kind="primary"] { color:#fff !important; background:linear-gradient(135deg,#3568f2,#5b83ff) !important; border-color:#3568f2 !important; }
+[class*="st-key-game-create-cancel"] button { color:#53627a !important; background:#f1f4f8 !important; border-color:#cbd5e1 !important; }
+[class*="st-key-game-create-cancel"] button:hover:not(:disabled) { color:#334155 !important; background:#e3e9f1 !important; }
 .setup-rules { display:flex; align-items:center; gap:1.5rem; margin-top:1.1rem; padding:1rem 1.2rem; border:1px solid var(--setup-border); border-radius:.8rem; background:#fff; }
 .setup-rule-book { font-size:2.6rem; }
 .setup-rules-title { margin-bottom:.4rem; color:var(--setup-ink); font-size:1.05rem; font-weight:800; }
@@ -146,12 +153,14 @@ def _render_player_choices(*, in_flight: bool) -> int:
         with column:
             selected_class = " setup-count-selected" if selected == count else ""
             st.markdown(
-                f'<div class="setup-count{selected_class}"><div class="setup-count-icon">♟♟</div>'
+                f'<div class="setup-count{selected_class}"><div class="setup-count-pieces">'
+                + "".join(f'<span aria-hidden="true">♟</span>' for _ in range(count))
+                + '</div>'
                 f'<div class="setup-count-number">{count}명</div>'
                 f'<div class="setup-count-subtitle">AI 플레이어 {count - 1}명</div></div>',
                 unsafe_allow_html=True,
             )
-            if st.button(f"{count}명 선택", key=f"game.player_count.{count}", disabled=in_flight, use_container_width=True):
+            if st.button(f"{count}명 선택", key=f"game.player_count.{count}", disabled=in_flight, width="stretch"):
                 st.session_state["game.player_count"] = count
                 st.rerun()
     return int(selected)
