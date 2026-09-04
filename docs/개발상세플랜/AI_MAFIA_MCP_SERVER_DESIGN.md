@@ -34,11 +34,11 @@ Resource의 상세 `data` field, enum, nullable, union과 길이 제약은 API �
 
 1. Backend 규칙 엔진이 유일한 authoritative game engine이다. MCP runtime은 게임을
    판정하거나 상태를 저장하지 않고 Backend 내부 Engine API만 호출한다.
-2. AI player는 `public`, `me`, `turn`, `persona` Resource와 capability가 허용한 행동
-   Tool만 사용한다.
-3. AI GM은 `public`, `gm-guide` Resource만 읽고 행동 Tool을 갖지 않는다. 생성한
-   narration은 MCP proposal 경로가 아니라 LLM adapter에서 Backend Agent Manager로
-   직접 반환된다.
+2. AI player는 `public`, `me`, `turn`, `persona` 허용 집합의 nonempty 부분집합과
+   capability가 허용한 행동 Tool만 사용한다.
+3. AI GM은 `public`, `gm-guide` 허용 집합의 nonempty 부분집합만 읽고 행동 Tool을
+   갖지 않는다. 생성한 narration은 MCP proposal 경로가 아니라 LLM adapter에서
+   Backend Agent Manager로 직접 반환된다.
 4. `agent_jobs` reservation 한 건마다 새 capability, 일회성 MCP 세션 개설
    토큰(bootstrap token)과 새 MCP session을 만든다. terminal 처리 뒤 모두 폐기하며
    reconnect에도 이전 값을 재사용하지 않는다.
@@ -50,6 +50,11 @@ Resource의 상세 `data` field, enum, nullable, union과 길이 제약은 API �
 7. MCP·Data 담당자의 PostgreSQL·Redis 책임은 실행 환경, 계정·권한, Backend 작성
    migration의 실행·재실행과 health 확인이다. schema·migration SQL·repository·Redis
    application code는 Backend 소유다.
+8. MCP context cache는 session-local을 포함해 두지 않는다. Resource list는
+   consume binding만 사용하고 Engine 0회, 허용 read는 Engine GET 1회,
+   거부 read는 Engine 0회를 고정한다. 요청 처리 중 transient local object는 허용하되
+   요청 종료 뒤 Resource JSON·model·text의 retained reference와 재사용, stale fallback은
+   금지한다.
 
 ## 3. 범위와 비범위
 
@@ -154,8 +159,8 @@ schemas와 core는 위 계층이 공유하는 검증·설정·오류·보안 정
 
 | 주체 | `subject_id` | Resource | Tool | 결과 경로 |
 |---|---|---|---|---|
-| `AI_PLAYER` | 자기 `player_id` | `public`, `me`, `turn`, `persona` 중 capability allowlist | 현재 job에 허용된 행동 Tool | MCP → Engine proposal → Backend 판정 |
-| `GM` | `game_id`와 같은 UUID | `public`, `gm-guide` | 없음 | LLM adapter → Agent Manager 직접 반환 |
+| `AI_PLAYER` | 자기 `player_id` | `public`, `me`, `turn`, `persona`의 nonempty 부분집합 | 현재 job에 허용된 행동 Tool | MCP → Engine proposal → Backend 판정 |
+| `GM` | `game_id`와 같은 UUID | `public`, `gm-guide`의 nonempty 부분집합 | 없음 | LLM adapter → Agent Manager 직접 반환 |
 
 URI, query와 Tool input으로 다른 agent를 선택할 수 없다. 공개 대화와 Resource 안의
 자연어는 모두 불신 데이터이며 system instruction이나 capability 범위를 바꾸지 못한다.
@@ -174,7 +179,7 @@ URI, query와 Tool input으로 다른 agent를 선택할 수 없다. 공개 대�
 3. MCP
    세션 개설 토큰 서명·claim·만료 검증
    -> Engine HMAC으로 세션 개설 토큰 consume
-   -> 성공한 경우에만 ACTIVE session
+   -> 성공한 경우에만 issuance binding을 저장하고 ACTIVE session
 
 4. ACTIVE
    Resource read
@@ -200,6 +205,13 @@ URI, query와 Tool input으로 다른 agent를 선택할 수 없다. 공개 대�
 
 - raw capability는 해당 session memory와 Engine 요청 header에서만 사용한다.
 - 세션 개설 토큰 consume 전 Resource·Tool 목록과 호출을 허용하지 않는다.
+- consume 성공 응답의 `allowed_resource_scopes`, `phase`, `state_version`,
+  `window_id`는 capability record의 immutable issuance binding으로 session memory에
+  저장한다. bootstrap claim은 API 9.1절 기존 field를 유지하고 이 binding을
+  추가하지 않는다.
+- consume 성공 응답 raw JSON의 duplicate member, invalid JSON 또는 5-field 폐쇄형
+  binding 위반은 fail-closed한다. 기존 status-only 성공 응답은 허용하지 않는 breaking
+  동기 전환이므로 MCP `WU-M3`와 Backend `WU-B7`이 같은 5-field shape로 함께 전환한다.
 - phase, window 또는 state version이 바뀌면 기존 capability와 결과는 stale이다.
 - 성공뿐 아니라 fallback, stale, failed(호출 취소 포함)와 lease 만료 경로에서도
   revoke·memory 폐기를 수행한다.
@@ -242,26 +254,55 @@ URI, query와 Tool input으로 다른 agent를 선택할 수 없다. 공개 대�
 AI_PLAYER와 GM이 공유하는 URI는 `public` 하나다. GM의 Resource 목록에 `me`, `turn`,
 `persona`가 나타나거나 Tool 목록이 비어 있지 않으면 계약 위반이다.
 
+raw MCP JSON-RPC 요청은 duplicate member를 허용하지 않는 decoder로 해석한다. 중복
+member를 last-value-wins로 병합하지 않고 `-32602`로 fail-closed한다.
+
+`resources/list`는 session에 저장한 `allowed_resource_scopes`만 사용해
+`public`, `me`, `turn`, `persona`, `gm-guide` canonical order로 반환한다.
+각 descriptor는 `uri`, scope 문자열인 `name`,
+`mimeType=application/json` 세 field만 갖는 폐쇄형 object다. list 처리에서
+Engine 호출은 0회다. 요청에 `cursor` field가 아예 없어야 하며 존재하면
+`-32602`로 거부한다. 응답은 pagination·`nextCursor`를 제공하지 않는다.
+
+MCP SDK 1.29.1의 Resource handler 등록으로 initialize 응답에 포함되는
+`capabilities.resources`는 `subscribe=false`, `listChanged=false`로 고정한다. 이는
+미지원 기능의 canonical 광고다. Resource template과 `resources/templates/list`,
+`notifications/resources/list_changed`는 제공하지 않는다.
+
 ### 7.2 adapter 처리 순서
 
 1. 현재 session이 `ACTIVE`인지 확인한다.
-2. URI를 상수 registry에서 Engine scope로 변환한다.
-3. subject와 capability resource allowlist를 교차 확인한다.
-4. session capability로 Engine HMAC 요청을 보낸다.
-5. 공통 envelope의 job subject, scope, window와 version 일치를 확인한다.
-6. API 8.2절의 해당 폐쇄형 `data` validator를 통과시킨다.
-7. URI가 같은 `application/json` text content 한 개로 직렬화한다.
+2. SDK의 `AnyUrl` 정규화 전에 raw `params.uri` 문자열이 상수 registry의 exact 다섯
+   값 중 하나인지 확인하고 Engine scope로 변환한다. percent-encoding, case,
+   trailing slash·문자 등 변형을 모두 거부한다.
+3. scope가 session의 `allowed_resource_scopes`에 있는지 확인한다.
+4. 2·3단계 실패는 존재를 숨긴 `-32002 CAPABILITY_DENIED`로 반환하고
+   Engine을 호출하지 않는다.
+5. 허용된 read에서 session capability로 해당 scope Engine HMAC GET을
+   정확히 한 번만 보낸다.
+6. 공통 envelope의 job subject·scope와 consume binding의 `phase`,
+   `state_version`, `window_id` 일치를 확인한다.
+7. API 8.2절의 해당 공통 envelope·폐쇄형 `data` schema와 단일 응답
+   내에서 관측할 수 있는 불변식을 검증한다. raw JSON의 duplicate member는
+   last-value-wins로 병합하지 않고 `-32004`로 거부한다.
+8. URI가 같은 `application/json` text content 한 개로 직렬화한다.
 
 Engine이 unknown field나 audience 금지 field를 반환하면 silent strip하지 않고
-Resource read를 fail-closed한다. session 밖 authoritative cache를 두지 않으며 다른
-subject의 응답을 재사용하지 않는다.
+Resource read를 fail-closed한다. Backend는 매 GET에서 revoke·현재 상태,
+projection provenance와 cross-scope 의미 불변식을 최종 판정한다. MCP는
+추가 scope GET이나 이전 응답 비교로 이 판정을 재구성하지 않는다.
+
+MCP context cache는 session-local을 포함해 두지 않는다. 한 요청을
+decode·검증·직렬화하는 동안의 transient local object는 허용하지만 요청 종료 뒤
+Resource JSON, 검증된 model object, 직렬화 text의 retained reference를 남기거나 다음
+요청에서 재사용하지 않는다. Engine 오류에서 stale fallback으로 반환하지 않는다.
 
 ### 7.3 매핑 예시
 
 ```text
 AI player가 mafia://session/turn을 읽음
 -> registry가 scope=turn으로 변환
--> GET /internal/v1/agent-context?scope=turn
+-> GET /internal/v1/agent-context?scope=turn 1회
 -> API 8.2 공통 envelope와 8.2.3 data validator 통과
 -> 같은 URI의 application/json content 반환
 ```
@@ -340,8 +381,10 @@ POST /internal/v1/agent-proposals
 signature는 padding 없는 base64url이고 constant-time 비교는 Backend가 수행한다.
 
 MCP는 opaque capability를 decode하거나 자체 권한 token으로 검증하지 않는다. 세션
-개설 토큰 서명 검증은 session 개설 권한 확인이고, Engine은 capability hash·job·subject·
-allowlist·expiry·revoke와 현재 DB 상태의 최종 판정자다. `MCP_SERVER_AUTH_SECRET`과
+개설 토큰 서명 검증은 session 개설 권한 확인이고, Engine은 매 context
+GET에서 capability hash·job·subject·allowlist·expiry·revoke·현재 DB 상태와
+projection provenance·cross-scope 의미 불변식의 최종 판정자다.
+`MCP_SERVER_AUTH_SECRET`과
 `ENGINE_INTERNAL_API_SECRET`은 방향과 용도가 다르며 같은 값을 쓰지 않는다.
 
 ## 11. 오류·fallback·재접속
@@ -350,9 +393,10 @@ allowlist·expiry·revoke와 현재 DB 상태의 최종 판정자다. `MCP_SERVE
 |---|---|---|
 | 세션 개설 토큰 누락·변조·만료·replay | session 비활성, 고정 거부 | 새 job 자격 검토 또는 fallback |
 | capability denied·stale | 상세 이유를 숨긴 고정 거부 | 현재 reservation·상태 판정 |
-| Resource schema/audience 위반 | fail-closed, payload 비노출 | 검증된 동일 audience snapshot 또는 fallback |
+| Resource URI 미등록·미허용 | 존재 은닉 `-32002`, Engine 0회 | 관여하지 않음 |
+| Resource schema/audience 위반 | fail-closed, payload 비노출·stale fallback 금지 | 검증된 동일 audience projection 또는 game fallback 판정 |
 | Tool input 오류 | Engine 호출 전 고정 validation 오류 | 필요 시 한 번 교정 후 fallback |
-| Engine timeout·5xx·disconnect | 상태 추측·자체 fallback 금지 | job/receipt 조정 후 retry 또는 fallback |
+| Engine timeout·연결 단절·429·5xx | 상태 추측·자체 fallback 금지 | job/receipt 조정 후 retry 또는 fallback |
 | proposal 응답 유실 | 동일 ID·body만 재전송 가능 | idempotency terminal 결과 반환 |
 | MCP session 유실 | 기존 자격 재사용 금지 | 살아 있는 job만 fresh reconnect |
 | GM 출력 오류·late result | 관여하지 않음 | 교정 1회, fencing 검사, 고정 문구 또는 stale |
@@ -367,15 +411,20 @@ message만 가지며 `data`를 넣지 않는다.
 | initialize | bearer 또는 capability header 누락·형식 오류 | HTTP 401 | `AUTH_REQUIRED` |
 | initialize | 세션 개설 토큰 서명·claim·만료·replay·mismatch 또는 consume 거부 | HTTP 403 | `BOOTSTRAP_DENIED` |
 | session | 알 수 없거나 이미 닫힌 `Mcp-Session-Id` | HTTP 404 | `SESSION_NOT_FOUND` |
-| protocol | JSON-RPC 또는 Tool 폐쇄형 입력 오류 | `-32602` | `VALIDATION_ERROR` |
+| protocol | raw JSON-RPC duplicate member, Tool 폐쇄형 입력 오류 또는 `resources/list`의 `cursor` 존재 | `-32602` | `VALIDATION_ERROR` |
 | handler | 비활성 session 또는 terminal 뒤 추가 호출 | `-32001` | `SESSION_NOT_ACTIVE` |
-| Engine | capability·subject·scope·phase·window·version 거부와 존재 은닉 대상 404 | `-32002` | `CAPABILITY_DENIED` |
-| Engine | timeout·연결 단절·429·5xx | `-32003` | `DEPENDENCY_UNAVAILABLE` |
-| Engine | 성공 응답의 envelope·폐쇄형 schema 위반 또는 예상하지 않은 4xx | `-32004` | `UPSTREAM_CONTRACT_VIOLATION` |
+| Resource·Engine context | local exact registry·session allowlist 거부 또는 Engine 403·존재 은닉 404 | `-32002` | `CAPABILITY_DENIED` |
+| Engine context | timeout·연결 단절·429·5xx | `-32003` | `DEPENDENCY_UNAVAILABLE` |
+| Engine context | 그 밖의 1xx·200 외 2xx·3xx·예상 밖 4xx, 잘못된 Content-Type·invalid JSON·duplicate member, 200 응답의 binding·envelope·schema·응답 내부 불변식 위반 | `-32004` | `UPSTREAM_CONTRACT_VIOLATION` |
 | proposal | 같은 `proposal_id`의 body conflict | `-32005` | `PROPOSAL_CONFLICT` |
 | handler | 위 분류에 포함되지 않은 내부 실패 | `-32603` | `INTERNAL_ERROR` |
 
-Engine response body, exception text와 stack은 어떤 매핑에서도 agent에게 전달하지 않는다.
+- `-32002` message는 `요청한 리소스에 접근할 수 없습니다.`로 고정한다.
+- `-32003` message는 `게임 컨텍스트를 불러올 수 없습니다.`로 고정한다.
+- `-32004` message는 `게임 컨텍스트 응답 형식이 올바르지 않습니다.`로 고정한다.
+
+위 세 오류에는 `data`를 넣지 않는다. Engine response body, 원문 오류·exception text와
+stack은 어떤 매핑에서도 agent에게 전달하지 않는다.
 취소는 상위 task로 전파한 뒤 session cleanup을 수행하며 임의 오류 payload로 바꾸지 않는다.
 
 ## 12. 구조화 로그와 redaction
@@ -431,6 +480,14 @@ WU-M2~WU-M5의 자동 테스트는 실제 Backend, PostgreSQL, Redis와 유료 L
 fixture와 fake Engine port를 사용한다. fixture는 API 정본에서 만들고 정본 밖 field,
 enum과 상태 전이를 계약으로 추가하지 않는다.
 
+WU-M3 fake Engine 증거는 consume binding 저장, list descriptor·순서·Engine 0회,
+허용 read당 GET 1회, 거부 read Engine 0회, 단일 응답 폐쇄형 검증, 요청 종료 뒤
+Resource context 무저장과 서로 다른 MCP session·audience 간 private payload의
+비재사용·비간섭을 독립적으로 입증한다. 이 fake 증거는 Backend가
+authoritative state와 projection provenance·cross-scope 의미 불변식을 올바르게
+판정했음을 입증하지 않는다. 그 권위 검증은 WU-B7, 실제
+Backend↔MCP 호출 횟수·binding·비간섭성 end-to-end 증거는 WU-M6이 소유한다.
+
 fake Engine은 다음 결과를 script할 수 있어야 한다.
 
 - 세션 개설 토큰 consume 성공·거부·지연·응답 유실
@@ -446,11 +503,11 @@ fake Engine은 다음 결과를 script할 수 있어야 한다.
 | 세션 개설 토큰 | canonical signature, claim, expiry, nonce replay, capability hash mismatch |
 | lifecycle | job마다 다른 capability·nonce·session, 모든 terminal revoke, fresh reconnect |
 | subject | 2×5 Resource 허용표, 다른 subject 선택 거부 |
-| Resource | 5개 exact schema, unknown field fail-closed, public subject 비의존성 |
-| noninterference | 다른 AI role·사실·event·persona, GM private field와 target 비노출 |
+| Resource | consume 5-field binding, list cursor 거부·descriptor·order·Engine 0회, SDK capability 광고, raw exact URI, 5개 exact schema, read 1/0 call, unknown field fail-closed·요청 종료 뒤 context 무저장 |
+| noninterference | 서로 다른 MCP session·audience 간 private payload 비재사용, 다른 AI role·사실·event·persona와 GM private field·target 비노출 |
 | Tool | closed input, 현재 allowlist, target, stale version, Backend 재검증 |
 | idempotency | 같은 proposal ID/body terminal replay, 다른 body conflict, 새 HMAC nonce |
-| GM | Resource 두 개·Tool 0개, direct-return, guide mismatch, late fencing fallback |
+| GM | `public`·`gm-guide`의 nonempty 부분집합·Tool 0개, direct-return, guide mismatch, late fencing fallback |
 | 장애 | Engine 4xx·5xx·timeout, MCP restart, session loss, 취소 전파 |
 | 로그 | 전 경로 key allowlist, payload·ID·secret·exception marker 부재 |
 | 경계 | MCP process에 DB·Redis client·credential 없음, Engine 세 path만 호출 |
@@ -481,7 +538,7 @@ WU-B6 + WU-B7 -------------------------------/      |
 | `WU-M1A` | DB 정본·환경 합의 | PostgreSQL·Redis 인스턴스, DDL/DML 계정, health 증거 | 계정별 연결·권한 allow/deny, Redis health | migration SQL·repository·Redis app 코드 변경 |
 | `WU-M1B` | WU-M1A, WU-B2 migration | 이름순 실행·재실행 기록, schema version 증거 | 빈 DB·기존 DB upgrade, 재실행, runtime DDL·event 수정 거부 | 적용 migration 수정, 임의 DDL, 실제 DSN 기록 |
 | `WU-M2` | CP-0, secret 분리, fake Engine | Streamable HTTP server, initialize·세션 개설 토큰 consume | 정상 initialize, 누락·변조·만료·replay·mismatch 거부 | Resource·Tool, DB·Redis, 게임 판정 |
-| `WU-M3` | WU-M2, API 8.2·9.2 | job/subject session, 다섯 Resource adapter | 2×5 허용표, exact schema, agent/GM 비간섭성 | 별도 문서 schema 재정의, Front snapshot 재사용, Tool |
+| `WU-M3` | WU-M2, API 8.2·8.3·9.2 | consume binding의 job/subject session, list·다섯 Resource adapter | binding 폐쇄형, 2×5 허용표, descriptor order, read 1/0 call, exact schema·요청 종료 뒤 무저장·session/audience 비간섭 fake 증거 | Backend 현재 상태·projection 권위 입증, 별도 문서 schema 재정의, Front snapshot 재사용, Tool |
 | `WU-M4` | WU-M3, API 8.4·9.3 | 네 Tool, proposal 조립과 Engine adapter | 입력·phase·target·stale·idempotency·응답 유실 | 규칙 판정, DB mutation, GM Tool |
 | `WU-M5` | WU-M2~WU-M4 operation/error 경로 | 중앙 allowlist log와 redaction | 성공·거부·예외 marker 캡처, 허용 key 검사 | DB·queue·spool·audit outbox, event_outbox 소비 |
 | `WU-M6` | WU-B6·WU-B7, WU-M2~WU-M5, 통합 network | 실제 Backend↔MCP job 왕복 증거 | initialize→consume→Resource→Tool, GM read-only·direct-return, Backend 최종 판정 | 공개 API·DB schema 변경, 유료 Provider 강제 |
@@ -501,8 +558,12 @@ WU-B6 + WU-B7 -------------------------------/      |
 - 인프라 계정 권한과 health 결과
 - 생략한 테스트와 위험도 기반 사유
 
-WU-M2~WU-M5는 fake Engine 독립 증거, WU-M6은 실제 Backend 계약, WU-M7은 장애 주입,
-WU-M8은 제3자 runbook 재현을 각각 완료 근거로 삼는다.
+WU-M2~WU-M5는 fake Engine 독립 증거를 완료 근거로 삼는다. 특히
+WU-M3는 MCP에서 관측 가능한 schema·binding·호출 횟수·무저장만 입증하고,
+Backend의 revoke·현재 상태·projection provenance·cross-scope 최종 판정은
+WU-B7 증거로 분리한다. WU-M6은 실제 Backend 계약과 end-to-end binding·
+호출 횟수·비간섭성, WU-M7은 장애 주입, WU-M8은 제3자 runbook 재현을 각각
+완료 근거로 삼는다.
 
 ## 16. 구현 결정 등록부
 
@@ -514,6 +575,7 @@ WU-M8은 제3자 runbook 재현을 각각 완료 근거로 삼는다.
 | `OPEN-01` | RESOLVED | `mcp_server` 독립 project, `mafia_game.main` composition root와 package-local lock/test | MCP | WU-M2 |
 | `OPEN-02` | RESOLVED | stateful manager, initialize 전 consume, DELETE·terminal cleanup, idle TTL 30초 | MCP·Backend | WU-M2, WU-M7 |
 | `OPEN-03` | RESOLVED | 11절과 API 9.3.1절의 고정 HTTP·JSON-RPC 오류 매핑 | 공통 | WU-M2~WU-M4 |
+| `OPEN-08` | RESOLVED | MCP context cache 없음; list Engine 0회, 허용 read GET 1회, 거부 read Engine 0회, 요청 종료 뒤 Resource JSON·model·text retained reference·재사용과 stale fallback 금지 | 공통 | WU-M3, WU-M7 |
 
 남은 OPEN 항목은 다음과 같다.
 
@@ -523,10 +585,10 @@ WU-M8은 제3자 runbook 재현을 각각 완료 근거로 삼는다.
 | `OPEN-05` | MCP→Engine TLS 종료·CA·mTLS와 설정 이름 | 운영·공통 | WU-M6, WU-M8 | TLS 검증 우회 |
 | `OPEN-06` | MCP liveness/readiness endpoint와 판정 기준 | MCP·운영 | WU-M8 | 임의 공개 health API 추가 |
 | `OPEN-07` | 세션 개설 토큰 consume 응답 유실의 Backend 조정 절차 | Backend·MCP | WU-M7 | 소비 token 재사용 |
-| `OPEN-08` | session-local context cache 허용 범위 | 공통 | WU-M3, WU-M7 | cross-job·authoritative cache |
 
-남은 `OPEN`은 확정 계약을 약화하지 않는다. 결정 전 기본값은 fail-closed, no cache,
-no persistent spool과 fresh credential이다.
+남은 `OPEN`은 확정 계약을 약화하지 않는다. 결정 전 기본값은 fail-closed,
+no persistent spool과 fresh credential이다. Resource context no-cache는 이제 기본값이
+아니라 `OPEN-08` 확정 계약이다.
 
 ## 17. 구현 착수·완료 체크리스트
 
@@ -542,6 +604,8 @@ no persistent spool과 fresh credential이다.
 
 - [ ] MCP runtime이 DB·Redis·`event_outbox`에 접근하지 않는가
 - [ ] Resource validator가 API 8.2절과 일치하고 별도 문서 정본을 만들지 않았는가
+- [ ] consume binding, list descriptor·순서, read 1/0 호출과 요청 종료 뒤 context 무저장을 fake
+  Engine으로 증명했으며 Backend 권위 증거로 오인하지 않았는가
 - [ ] AI_PLAYER/GM allowlist와 GM Tool 0개를 negative test로 증명했는가
 - [ ] job terminal·reconnect에서 capability와 session memory가 폐기되는가
 - [ ] proposal retry가 같은 ID·body이고 stale rebase가 없는가

@@ -460,7 +460,7 @@ Browser
 | `WU-B4` | 순수 규칙 엔진과 결정적 RNG | 6~9명 규칙·동률·다섯째 밤 단위 테스트 |
 | `WU-B5` | 공개 game·sync·feedback API | API 정본 success·reject·idempotency 테스트 |
 | `WU-B6` | Agent Manager와 기존 LLM adapter 연결 | player proposal·GM 직접 반환 검증과 fallback, 유료 호출 없는 테스트 |
-| `WU-B7` | 내부 Engine API, game event outbox와 SSE | job-bound capability/HMAC, audience 격리, event ordering 테스트 |
+| `WU-B7` | 내부 Engine API, game event outbox와 SSE | capability/HMAC, revoke·현재 상태·projection provenance·cross-scope 의미 불변식, audience 격리·event ordering 테스트 |
 | `WU-B8` | read-only 관리자 API와 audit | allowlist fail-closed, 비공개 응답 redaction 테스트 |
 | `WU-B9` | 시뮬레이션·회귀·운영 보강 | 6~9명 heuristic bot 회귀와 장애 복구 검증 |
 

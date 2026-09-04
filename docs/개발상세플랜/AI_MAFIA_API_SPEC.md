@@ -1041,6 +1041,19 @@ field를 거부한다. 모든 field는 필수이고, 아래에서 `nullable`로 
 | `AI_PLAYER` | 허용 | 허용 | 허용 | 허용 | 거부 |
 | `GM` | 허용 | 거부 | 거부 | 거부 | 허용 |
 
+Backend는 매 GET에서 capability의 미폐기·만료, 현재 job reservation,
+game·subject·phase·`state_version`·`window_id`·scope allowlist를 다시
+최종 판정한다. 또한 같은 authoritative state에서 projection이
+생성됐는지의 provenance와 `public` subject 비의존성, `turn` target과
+`public` player의 일치, `gm-guide` source event와 `public` event의 일치 같은
+여러 scope에 걸친 의미 불변식을 검증한 뒤 응답한다.
+
+MCP는 8.3절 consume에서 저장한 binding과 단일 GET 응답에서 관측할 수
+있는 공통 envelope·해당 `data` 폐쇄형 schema·응답 내 일치
+불변식만 검증한다. 다른 scope를 추가 조회하거나 이전 응답을
+저장해 cross-scope 의미를 재판정하지 않으며, 이 불변식의 최종
+권위는 Backend에 있다.
+
 #### 8.2.1 `scope=public` data
 
 모든 subject에게 같은 game·`state_version`이면 같은 projection을 반환한다. envelope의
@@ -1206,9 +1219,44 @@ Backend는 세션 개설 토큰 서명, claim의 `agent_job_id`·subject·capabi
 `X-Agent-Capability` header가 유일한 capability 원문이며 body에 중복하지 않는다.
 header hash가 세션 개설 토큰 claim·DB hash와 모두 같아야 한다. token nonce를 PostgreSQL
 `internal_request_nonces`에
-`scope=MCP_BOOTSTRAP`으로 INSERT한다. 성공 응답은 `{"status":"CONSUMED"}`이며
-재사용·만료·capability 불일치는 fail-closed한다. MCP는 이 성공 뒤에만 session을
-활성화한다.
+`scope=MCP_BOOTSTRAP`으로 INSERT한다. 성공 응답은 다음 다섯 field만 가진
+폐쇄형 object며 모든 field가 필수다.
+
+```json
+{
+  "status": "CONSUMED",
+  "allowed_resource_scopes": ["public", "me", "turn", "persona"],
+  "phase": "DAY_DISCUSSION",
+  "state_version": 12,
+  "window_id": "11137761-d31b-46d1-8fb0-144ecf436069"
+}
+```
+
+- `status`는 상수 `CONSUMED`다.
+- `allowed_resource_scopes`는 `public`, `me`, `turn`, `persona`, `gm-guide`
+  순서를 canonical order로 사용하는 중복 없는 nonempty 배열이다.
+  `AI_PLAYER`는 `public`, `me`, `turn`, `persona`의 nonempty 부분집합,
+  `GM`은 `public`, `gm-guide`의 nonempty 부분집합만 받을 수 있다.
+- `phase`는 2.1절 `GamePhase`, `state_version`은 1 이상 정수,
+  `window_id`는 capability가 고정한 job window UUID다.
+- `status`를 제외한 네 binding 값은 Backend가 token·capability·reservation을
+  같은 판정에서 검증할 때 사용한 capability record의 immutable issuance
+  metadata를 그대로 반환한 것이다. 현재 상태를 별도로 재계산해 응답
+  binding을 바꾸지 않는다.
+- 9.1절의 bootstrap claim field는 그대로 유지하며 이 네 binding을
+  claim에 추가하지 않는다.
+
+재사용·만료·capability 불일치는 fail-closed한다. MCP는 이 성공
+뒤에만 session을 활성화하고 네 binding을 session memory에 저장한다.
+`allowed_resource_scopes`는 `resources/list`·read allowlist로, 나머지 세 값은
+8.2절 Engine context envelope의 `phase`·`state_version`·`window_id`
+교차 검증에 사용한다.
+
+MCP는 Engine consume 성공 응답의 raw JSON을 duplicate member를 허용하지 않는
+decoder로 해석한다. duplicate member, invalid JSON, 위 5-field binding 위반은
+fail-closed하며 session을 활성화하지 않는다. 기존 `{"status":"CONSUMED"}`
+status-only 성공 응답은 더 이상 허용하지 않는 breaking 동기 전환이다. MCP `WU-M3`와
+Backend `WU-B7`은 같은 시점에 위 5-field 폐쇄형 응답으로 전환해야 한다.
 
 ### 8.4 `POST /internal/v1/agent-proposals`
 
@@ -1269,6 +1317,9 @@ MCP Tool 성공은 게임 행동의 무조건 성공이 아니라 Backend가 pro
   SHA-256 lowercase hex 64자이며, `iat`와 `exp`는 UTC Unix seconds 정수다.
   `iat <= current_time < exp`이고 `1 <= exp - iat <= 120`인 경우만 허용하며 clock
   leeway를 적용하지 않는다. 운영 host는 동기화된 시스템 시계를 사용한다.
+- bootstrap claim은 위 field를 그대로 유지하며
+  `allowed_resource_scopes`, `phase`, `state_version`, `window_id`를 추가하지 않는다.
+  이 네 값은 8.3절 consume이 capability record에서 반환한다.
 - initialize HTTP 요청의 `X-Agent-Capability` header에 raw opaque capability를 정확히
   한 번 전달한다. MCP는 해당 header를 session memory에만 보관하고 세션 개설 토큰
   signature를 확인한 뒤 8.3절 consume까지 성공해야 session을 연다.
@@ -1305,6 +1356,8 @@ MCP Tool 성공은 게임 행동의 무조건 성공이 아니라 Backend가 pro
 ### 9.2 Resource
 
 session이 agent를 이미 고정하므로 URI에서 다른 agent ID를 받지 않는다.
+MCP는 raw JSON-RPC 요청을 duplicate member를 허용하지 않는 decoder로 해석하며,
+중복 member를 last-value-wins로 병합하지 않고 `-32602`로 fail-closed한다.
 
 | URI | Engine `scope` | 허용 subject | `data` 정본 |
 |---|---|---|---|
@@ -1317,10 +1370,34 @@ session이 agent를 이미 고정하므로 URI에서 다른 agent ID를 받지 �
 AI GM session은 `public`과 `gm-guide`만 사용할 수 있다. `me`, `turn`, `persona`와
 모든 행동 Tool capability를 받지 않는다.
 
+`resources/list`는 8.3절 consume binding의 `allowed_resource_scopes`만
+`public`, `me`, `turn`, `persona`, `gm-guide` canonical order로 직렬화한다.
+각 descriptor는 `uri`, `name`, `mimeType` 세 field만 가진 폐쇄형 object며
+`name`은 scope 문자열, `mimeType`은 `application/json`이다. list는 Engine을
+호출하지 않는다. 요청에는 `cursor` field가 아예 없어야 하며 존재하면
+`-32602`로 거부한다. 응답은 pagination·`nextCursor`를 제공하지 않는다.
+
+MCP SDK 1.29.1에서 Resource handler 등록으로 initialize 응답에 포함되는
+`capabilities.resources`는 `subscribe=false`, `listChanged=false`로 고정한다. 이는 두
+기능을 지원하지 않는 canonical 광고다. Resource template과
+`resources/templates/list`, `notifications/resources/list_changed`는 제공하지 않는다.
+
 Resource read는 요청 URI와 같은 URI, MIME type `application/json`인 text content를
 정확히 한 개 반환한다. text의 JSON은 8.2절 공통 envelope와 해당 `data` schema 전체다.
 MCP는 Engine 응답의 subject·scope·version과 폐쇄형 schema를 확인한 뒤 그대로
 직렬화하며, 알 수 없거나 금지된 field를 임의로 제거해서 성공 응답으로 바꾸지 않는다.
+MCP는 SDK의 `AnyUrl` 정규화 전에 raw `params.uri` 문자열을 상수 registry의 위 다섯
+URI와 exact 비교한다. percent-encoding, scheme·host case 변경, trailing slash·문자 등
+모든 변형은 거부한다. exact URI가 아니거나 session binding에 허용되지 않은 URI인
+경우 존재 여부를 숨기고 Engine 호출 0회로
+`-32002 CAPABILITY_DENIED`를 반환한다. 허용된 read 한 번은 해당
+scope의 Engine GET을 정확히 한 번만 호출하며 cross-scope 검증을 위한 추가
+GET을 하지 않는다.
+
+MCP는 session-local을 포함해 요청 종료 뒤 context cache나 Resource JSON,
+model object, 직렬화 text의 retained reference를 남기거나 이후 요청에서 재사용하지
+않는다. 한 요청을 decode·검증·직렬화하는 동안의 transient local object까지 금지하는
+뜻은 아니다. Engine 실패나 계약 위반에서 stale Resource로 fallback하지 않는다.
 
 ### 9.3 Tool
 
@@ -1355,13 +1432,20 @@ exception text와 stack trace를 포함하지 않는다.
 | initialize | bearer 또는 capability header 누락·형식 오류 | HTTP 401 | `AUTH_REQUIRED` |
 | initialize | 세션 개설 토큰 서명·claim·만료·replay·mismatch 또는 consume 거부 | HTTP 403 | `BOOTSTRAP_DENIED` |
 | session | 알 수 없거나 닫힌 `Mcp-Session-Id` | HTTP 404 | `SESSION_NOT_FOUND` |
-| protocol | JSON-RPC 또는 Tool 폐쇄형 입력 오류 | `-32602` | `VALIDATION_ERROR` |
+| protocol | raw JSON-RPC duplicate member, Tool 폐쇄형 입력 오류 또는 `resources/list`의 `cursor` 존재 | `-32602` | `VALIDATION_ERROR` |
 | handler | 비활성 session 또는 terminal 뒤 호출 | `-32001` | `SESSION_NOT_ACTIVE` |
-| Engine | capability·subject·scope·phase·window·version 거부와 존재 은닉 대상 404 | `-32002` | `CAPABILITY_DENIED` |
-| Engine | timeout·연결 단절·429·5xx | `-32003` | `DEPENDENCY_UNAVAILABLE` |
-| Engine | 성공 응답 schema 위반 또는 예상하지 않은 4xx | `-32004` | `UPSTREAM_CONTRACT_VIOLATION` |
+| Resource·Engine context | local exact registry·session allowlist 거부 또는 Engine 403·존재 은닉 404 | `-32002` | `CAPABILITY_DENIED` |
+| Engine context | timeout·연결 단절·429·5xx | `-32003` | `DEPENDENCY_UNAVAILABLE` |
+| Engine context | 그 밖의 1xx·200 외 2xx·3xx·예상 밖 4xx, 잘못된 Content-Type·invalid JSON·duplicate member, 200 응답의 binding·envelope·schema·응답 내부 불변식 위반 | `-32004` | `UPSTREAM_CONTRACT_VIOLATION` |
 | proposal | 같은 `proposal_id`의 body conflict | `-32005` | `PROPOSAL_CONFLICT` |
 | handler | 분류되지 않은 내부 실패 | `-32603` | `INTERNAL_ERROR` |
+
+- `-32002` message는 `요청한 리소스에 접근할 수 없습니다.`로 고정한다.
+- `-32003` message는 `게임 컨텍스트를 불러올 수 없습니다.`로 고정한다.
+- `-32004` message는 `게임 컨텍스트 응답 형식이 올바르지 않습니다.`로 고정한다.
+
+위 세 오류에는 `data`를 넣지 않고 Engine response body, 원문 오류·exception text와
+stack trace를 노출하지 않는다.
 
 취소는 상위 task로 전파하고 session cleanup을 수행한다. 취소 원문을 별도 protocol
 payload로 변환하지 않는다.
@@ -1477,12 +1561,19 @@ window와 `state_version`을 다시 확인한 뒤에만 `PUBLIC` event로 저장
 - feedback union과 게임별 unique
 - Engine canonical query/body HMAC, 60초 timestamp, 120초 nonce replay,
   stale capability와 agent 간 비간섭성
+- bootstrap claim field 유지, consume 성공 응답의 5-field 폐쇄형 schema,
+  scope 부분집합·canonical order와 issuance binding 교차 검증, status-only 응답 거부
 - 5개 Resource의 공통 envelope·scope별 exact key·nullable·union 검증과 unknown field
   fail-closed 처리
+- raw JSON-RPC·Engine consume/context 응답의 duplicate member 거부와 context 고정 오류
+  분류·message·payload 비노출
+- `resources/list`의 cursor 거부, binding 기반 descriptor·canonical order·Engine 0회,
+  SDK capability 광고, 허용 read당 GET 1회, raw URI 변형·미허용 URI의 존재 은닉·Engine
+  0회와 요청 종료 뒤 context 무저장
 - 같은 public projection의 subject 비의존성, 다른 AI의 `me`·`persona` 비간섭성과
   `turn` target의 role 비노출
 - GM session에 `me`, `turn`, `persona`, role-conditioned target과 행동 Tool이 없고
-  `public`, `gm-guide`만 있는지 확인
+  `public`, `gm-guide` 허용 집합의 nonempty 부분집합만 있는지 확인
 - GM 구조화 결과가 Agent Manager로 직접 반환되고 MCP Tool·proposal API 호출은 0회인지,
   잘못된 guide reference·private 사실·late fencing 결과가 fallback 또는 stale인지 확인
 - job마다 capability hash·세션 개설 토큰의 nonce·MCP session ID가 다르고
