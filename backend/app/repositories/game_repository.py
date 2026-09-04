@@ -154,6 +154,11 @@ GAME_COLUMNS = """
     fast_forward_enabled, winner, win_reason, saved_at, finished_at,
     created_at, updated_at
 """
+# scenario_catalog과 join할 때 id 같은 공통 컬럼이 모호해지지 않도록 games alias를
+# 모든 고정 컬럼에 붙인 목록이다. 외부 입력을 조합하지 않는다.
+GAME_COLUMNS_QUALIFIED = ", ".join(
+    f"games.{column.strip()}" for column in GAME_COLUMNS.split(",")
+)
 
 
 class PostgresGameRepository:
@@ -253,6 +258,105 @@ class PostgresGameRepository:
             (game_id,),
         )
         return cursor.fetchone()
+
+    def list_owned_games(
+        self,
+        cursor: Any,
+        *,
+        owner_user_id: UUID,
+        status: str | None,
+        limit: int,
+    ) -> list[Mapping[str, Any]]:
+        """소유자 목록에 필요한 공개 게임 요약만 최신순으로 읽는다."""
+
+        cursor.execute(
+            """
+            SELECT g.id, g.status, g.phase, g.round, g.day_number,
+                   g.state_version, g.player_count, g.winner, g.updated_at,
+                   s.title AS scenario_title,
+                   human.alive AS human_alive
+            FROM public.games AS g
+            JOIN public.scenario_catalog AS s
+              ON s.id = g.scenario_id AND s.version = g.scenario_version
+            JOIN public.game_players AS human
+              ON human.game_id = g.id AND human.kind = 'HUMAN'
+            WHERE g.owner_user_id = %s
+              AND (%s IS NULL OR g.status = %s)
+            ORDER BY g.updated_at DESC, g.id DESC
+            LIMIT %s
+            """,
+            (owner_user_id, status, status, limit),
+        )
+        return list(cursor.fetchall())
+
+    def get_owned_game(
+        self,
+        cursor: Any,
+        *,
+        owner_user_id: UUID,
+        game_id: UUID,
+    ) -> Mapping[str, Any] | None:
+        """소유자 확인을 SQL 조건에 포함해 타인 게임 존재를 숨긴다."""
+
+        # GAME_COLUMNS는 이 모듈의 고정 상수이며 두 UUID는 bound parameter다.
+        cursor.execute(
+            f"""
+            SELECT {GAME_COLUMNS_QUALIFIED},
+                   scenario.title AS scenario_title,
+                   scenario.background AS scenario_background,
+                   scenario.victim AS scenario_victim,
+                   scenario.locations AS scenario_locations
+            FROM public.games
+            JOIN public.scenario_catalog AS scenario
+              ON scenario.id = games.scenario_id
+             AND scenario.version = games.scenario_version
+            WHERE games.id = %s AND games.owner_user_id = %s
+            """,  # noqa: S608
+            (game_id, owner_user_id),
+        )
+        return cursor.fetchone()
+
+    def update_game_state(
+        self,
+        cursor: Any,
+        *,
+        state: GameState,
+        expected_state_version: int,
+    ) -> Mapping[str, Any]:
+        """검증된 client-visible state 변경을 정확히 한 version 증가로 저장한다."""
+
+        if state.state_version != expected_state_version + 1:
+            raise ValueError("Game state version must increase by exactly one")
+        cursor.execute(
+            """
+            UPDATE public.games
+            SET status = %s, phase = %s, round = %s, day_number = %s,
+                state_version = %s, fast_forward_enabled = %s, winner = %s,
+                win_reason = %s, saved_at = %s, finished_at = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s AND state_version = %s
+            RETURNING id, status, phase, round, day_number, state_version,
+                      fast_forward_enabled, winner, win_reason, updated_at
+            """,
+            (
+                state.status.value,
+                state.phase.value,
+                state.round,
+                state.day_number,
+                state.state_version,
+                not state.human_alive,
+                state.winner.value if state.winner else None,
+                state.win_reason.value if state.win_reason else None,
+                state.updated_at if state.status.value == "SAVED" else None,
+                state.updated_at if state.status.value == "COMPLETED" else None,
+                state.game_id,
+                expected_state_version,
+            ),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise LookupError("게임 상태가 이미 변경되었습니다.")
+        return row
 
     def next_event_sequence(self, cursor: Any, game_id: UUID) -> int:
         """게임의 다음 내부 event sequence를 원자적으로 예약한다."""

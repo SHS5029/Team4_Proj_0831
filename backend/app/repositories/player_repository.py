@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping
 from typing import Any
 from uuid import UUID
 
@@ -96,6 +97,43 @@ class PostgresPlayerRepository:
                 ),
             )
 
+    def list_players(self, cursor: Any, *, game_id: UUID) -> list[Mapping[str, Any]]:
+        """snapshot 복원에 필요한 플레이어 상태를 좌석 순서로 읽는다."""
+
+        cursor.execute(
+            """
+            SELECT id, game_id, user_id, kind, seat, display_name, role, faction,
+                   alive, persona_id, eliminated_phase, eliminated_round,
+                   created_at, updated_at
+            FROM public.game_players
+            WHERE game_id = %s
+            ORDER BY seat
+            """,
+            (game_id,),
+        )
+        return list(cursor.fetchall())
+
+    def list_player_facts(
+        self,
+        cursor: Any,
+        *,
+        game_id: UUID,
+        player_id: UUID,
+    ) -> list[Mapping[str, Any]]:
+        """인간 플레이어에게만 보낼 개인 단서를 읽는다."""
+
+        cursor.execute(
+            """
+            SELECT id, fact_kind, template_id, rendered_text, subject_player_id,
+                   created_at
+            FROM public.player_scenario_facts
+            WHERE game_id = %s AND player_id = %s
+            ORDER BY fact_kind
+            """,
+            (game_id, player_id),
+        )
+        return list(cursor.fetchall())
+
 
 def _validate_players(players: list[PlayerInsert]) -> None:
     """DB에 보내기 전에 인원·좌석·HUMAN/AI 식별 규칙을 검사한다."""
@@ -135,4 +173,3 @@ def _validate_facts(facts: list[ScenarioFactInsert]) -> None:
             raise ValueError("Scenario fact kind is invalid")
         if not fact.rendered_text.strip() or len(fact.rendered_text) > 240:
             raise ValueError("Rendered scenario fact is invalid")
-

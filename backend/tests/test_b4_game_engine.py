@@ -1,12 +1,12 @@
 """B4 순수 게임 엔진 테스트."""
 
+from datetime import UTC, datetime
 from uuid import UUID
 
 import pytest
 
 from backend.app.agent.game_engine import GameEngine, RuleViolation
 from backend.app.models.enums import GamePhase, GameStatus, NightActionType, PlayerKind, PlayerRole
-from backend.app.models.game_state import PlayerState
 
 
 IDS = [UUID(int=index) for index in range(1, 10)]
@@ -149,3 +149,30 @@ def test_save_resume_keeps_roles_and_rejects_fast_forward_when_human_alive():
     assert [player.role for player in state.players] == original_roles
     with pytest.raises(RuleViolation, match="FAST_FORWARD_NOT_ALLOWED"):
         engine.fast_forward(state)
+
+
+def test_save_resume_without_deadline_keeps_a_windowless_state_untimed():
+    """발언·ROLE_REVEAL처럼 시간이 없는 저장 상태는 deadline 없이 다시 연다."""
+
+    engine = GameEngine()
+    state = GameEngine.new_game(players(6, human=1), seed=b"untimed-save-seed")
+    engine.save(state, None)
+
+    engine.resume(state, now=datetime(2026, 1, 1, tzinfo=UTC))
+
+    assert state.status is GameStatus.IN_PROGRESS
+    assert state.remaining_ms_on_save is None
+    assert state.deadline_at is None
+
+
+def test_final_discussion_one_cycle_moves_to_final_accusation():
+    """다섯 번째 밤 이후 최종 토론은 추가 질문 없이 한 순환 뒤 마지막 지목으로 간다."""
+
+    engine = GameEngine()
+    state = GameEngine.new_game(players(6, human=1), seed=b"final-discussion-seed")
+    state.phase = GamePhase.FINAL_DISCUSSION
+
+    for player in state.alive_players:
+        engine.pass_turn(state, player.player_id)
+
+    assert state.phase is GamePhase.FINAL_ACCUSATION

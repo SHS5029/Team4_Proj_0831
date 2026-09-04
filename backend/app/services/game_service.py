@@ -23,9 +23,22 @@ from backend.app.agent.game_engine import GameEngine, RuleViolation
 from backend.app.agent.rng import DeterministicRng
 from backend.app.core.errors import ApiError
 from backend.app.infrastructure.transaction import TransactionManager, lock_idempotency
-from backend.app.models.enums import GamePhase, GameStatus, NightActionType, PlayerKind, PlayerRole
-from backend.app.models.game_state import GameState
+from backend.app.models.enums import (
+    Faction,
+    GamePhase,
+    GameStatus,
+    NightActionType,
+    PlayerKind,
+    PlayerRole,
+    WinReason,
+)
+from backend.app.models.game_state import GameState, PlayerState
 from backend.app.repositories.agent_repository import PostgresAgentRepository
+from backend.app.repositories.action_repository import (
+    ActionSubmissionInsert,
+    ActionWindowInsert,
+    PostgresActionRepository,
+)
 from backend.app.repositories.event_repository import PostgresEventRepository
 from backend.app.repositories.game_repository import GameStateKeyring, PostgresGameRepository
 from backend.app.repositories.outbox_repository import PostgresOutboxRepository
@@ -1120,6 +1133,7 @@ class CanonicalGameService:
 
         code_map = {
             "INVALID_PHASE": "INVALID_PHASE",
+            "GAME_NOT_SAVED": "GAME_NOT_SAVED",
             "PLAYER_DEAD": "PLAYER_DEAD",
             "TARGET_DEAD": "TARGET_INVALID",
             "SELF_TARGET_INVALID": "TARGET_INVALID",
@@ -1136,6 +1150,1132 @@ class CanonicalGameService:
             code=code,
             message="현재 게임 상태에서 허용되지 않는 행동입니다.",
         )
+
+
+class PostgresBeginGameService:
+    """ROLE_REVEAL에서 첫날 토론을 여는 BEGIN_GAME 전용 DB transaction 서비스."""
+
+    def __init__(
+        self,
+        *,
+        transactions: TransactionManager,
+        keyring: GameStateKeyring,
+        games: PostgresGameRepository | None = None,
+        players: PostgresPlayerRepository | None = None,
+        actions: PostgresActionRepository | None = None,
+        events: PostgresEventRepository | None = None,
+        outbox: PostgresOutboxRepository | None = None,
+        receipts: PostgresReceiptRepository | None = None,
+    ) -> None:
+        """한 명령의 모든 DB 변경을 같은 transaction 안에서 처리한다."""
+
+        self._transactions = transactions
+        self._keyring = keyring
+        self._games = games or PostgresGameRepository()
+        self._players = players or PostgresPlayerRepository()
+        self._actions = actions or PostgresActionRepository()
+        self._events = events or PostgresEventRepository(self._games)
+        self._outbox = outbox or PostgresOutboxRepository()
+        self._receipts = receipts or PostgresReceiptRepository()
+
+    def begin(
+        self,
+        owner_user_id: UUID,
+        game_id: UUID,
+        payload: GameCommandRequest,
+        idempotency_key: UUID,
+    ) -> tuple[dict[str, Any], bool]:
+        """BEGIN_GAME을 DB 원본·event·outbox·receipt에 함께 확정한다."""
+
+        if payload.type != "BEGIN_GAME":
+            raise ValueError("PostgresBeginGameService only accepts BEGIN_GAME")
+        request_hash = _request_hash(payload.model_dump(mode="json"))
+        route_scope = f"POST /api/v1/games/{game_id}/commands"
+        try:
+            with self._transactions.transaction() as connection:
+                with connection.cursor(row_factory=dict_row) as cursor:
+                    lock_idempotency(cursor, "USER", owner_user_id, idempotency_key)
+                    game_row = self._games.lock_game(cursor, game_id)
+                    if game_row is None or UUID(str(game_row["owner_user_id"])) != owner_user_id:
+                        raise ApiError(
+                            status_code=404,
+                            code="GAME_NOT_FOUND",
+                            message="게임을 찾을 수 없습니다.",
+                        )
+                    replay = self._find_replay(
+                        cursor,
+                        owner_user_id=owner_user_id,
+                        idempotency_key=idempotency_key,
+                        request_hash=request_hash,
+                        route_scope=route_scope,
+                    )
+                    if replay is not None:
+                        return replay, True
+                    state, human_player_id = self._state_from_locked_game(cursor, game_row)
+                    accepted_version = state.state_version
+                    if payload.expected_state_version != accepted_version:
+                        raise ApiError(
+                            status_code=409,
+                            code="STALE_STATE_VERSION",
+                            message="게임 상태가 변경되었습니다. 최신 상태를 다시 확인하세요.",
+                            details={"current_state_version": accepted_version},
+                        )
+                    if self._actions.current_window(cursor, game_id=game_id) is not None:
+                        raise ApiError(
+                            status_code=409,
+                            code="WINDOW_NOT_READY",
+                            message="현재 행동 window가 아직 정리되지 않았습니다.",
+                        )
+                    try:
+                        GameEngine().begin_game(state)
+                    except RuleViolation as exc:
+                        raise CanonicalGameService._rule_error(exc) from exc
+                    self._games.update_game_state(
+                        cursor,
+                        state=state,
+                        expected_state_version=accepted_version,
+                    )
+                    front_sequence = self._games.next_front_sequence(cursor, game_id)
+                    window_id = uuid5_for_window(game_id, state.state_version)
+                    self._actions.open_window(
+                        cursor,
+                        ActionWindowInsert(
+                            window_id=window_id,
+                            game_id=game_id,
+                            window_kind="SPEECH",
+                            phase=state.phase.value,
+                            round=state.round,
+                            cycle=1,
+                            turn_player_id=human_player_id,
+                            opened_state_version=state.state_version,
+                            deadline_at=None,
+                        ),
+                    )
+                    self._append_front_events(
+                        cursor,
+                        game_id=game_id,
+                        state=state,
+                        front_sequence=front_sequence,
+                    )
+                    result = {
+                        "command_id": str(idempotency_key),
+                        "command_type": "BEGIN_GAME",
+                        "accepted_state_version": accepted_version,
+                        "result_state_version": state.state_version,
+                        "sync_url": f"/api/v1/games/{game_id}/sync",
+                    }
+                    self._receipts.insert(
+                        cursor,
+                        principal_type="USER",
+                        principal_id=owner_user_id,
+                        idempotency_key=idempotency_key,
+                        route_scope=route_scope,
+                        game_id=game_id,
+                        request_hash=request_hash,
+                        result_state_version=state.state_version,
+                        http_status=200,
+                        result_body=result,
+                    )
+                    return result, False
+        except ApiError:
+            raise
+        except Exception as exc:
+            raise ApiError(
+                status_code=503,
+                code="DEPENDENCY_UNAVAILABLE",
+                message="게임 저장소를 사용할 수 없습니다.",
+                retryable=True,
+            ) from exc
+
+    def _find_replay(
+        self,
+        cursor: Any,
+        *,
+        owner_user_id: UUID,
+        idempotency_key: UUID,
+        request_hash: str,
+        route_scope: str,
+    ) -> dict[str, Any] | None:
+        """같은 사용자·key의 terminal 명령 결과만 안전하게 재사용한다."""
+
+        previous = self._receipts.find(
+            cursor,
+            principal_type="USER",
+            principal_id=owner_user_id,
+            idempotency_key=idempotency_key,
+        )
+        if previous is None:
+            return None
+        if previous["request_hash"] != request_hash or previous["route_scope"] != route_scope:
+            raise ApiError(
+                status_code=409,
+                code="IDEMPOTENCY_KEY_REUSED",
+                message="같은 Idempotency-Key가 다른 요청에 사용되었습니다.",
+            )
+        result_body = previous["result_body"]
+        if not isinstance(result_body, dict):
+            raise RuntimeError("Stored command receipt is invalid")
+        return copy.deepcopy(result_body)
+
+    def _state_from_locked_game(
+        self,
+        cursor: Any,
+        game_row: Mapping[str, Any],
+    ) -> tuple[GameState, UUID]:
+        """FOR UPDATE로 잠근 game과 player 행을 순수 엔진 상태로 복원한다."""
+
+        game_id = UUID(str(game_row["id"]))
+        seed = self._keyring.decrypt_seed(
+            ciphertext=bytes(game_row["seed_ciphertext"]),
+            nonce=bytes(game_row["seed_nonce"]),
+            key_id=str(game_row["seed_key_id"]),
+        )
+        players: list[PlayerState] = []
+        human_player_id: UUID | None = None
+        for row in self._players.list_players(cursor, game_id=game_id):
+            player_id = UUID(str(row["id"]))
+            kind = PlayerKind(str(row["kind"]))
+            players.append(
+                PlayerState(
+                    player_id=player_id,
+                    seat=int(row["seat"]),
+                    role=PlayerRole(str(row["role"])),
+                    kind=kind,
+                    display_name=str(row["display_name"]),
+                    alive=bool(row["alive"]),
+                )
+            )
+            if kind is PlayerKind.HUMAN:
+                if human_player_id is not None or row["user_id"] is None:
+                    raise RuntimeError("Persisted human player is invalid")
+                human_player_id = player_id
+        if human_player_id is None or len(players) != int(game_row["player_count"]):
+            raise RuntimeError("Persisted players are incomplete")
+        if not isinstance(game_row["updated_at"], datetime):
+            raise RuntimeError("Persisted game timestamp is invalid")
+        return (
+            GameState(
+                game_id=game_id,
+                seed=seed,
+                players=players,
+                phase=GamePhase(str(game_row["phase"])),
+                status=GameStatus(str(game_row["status"])),
+                round=int(game_row["round"]),
+                day_number=int(game_row["day_number"]),
+                state_version=int(game_row["state_version"]),
+                updated_at=game_row["updated_at"],
+            ),
+            human_player_id,
+        )
+
+    def _append_front_events(
+        self,
+        cursor: Any,
+        *,
+        game_id: UUID,
+        state: GameState,
+        front_sequence: int,
+    ) -> None:
+        """한 BEGIN_GAME transaction의 complete operation batch를 append-only로 남긴다."""
+
+        state_event = self._events.append(
+            cursor,
+            game_id=game_id,
+            state_version=state.state_version,
+            event_type="PHASE_CHANGED",
+            audience="PUBLIC",
+            front_sequence=front_sequence,
+            operation_index=0,
+            operation_type="SET_GAME_STATE",
+            payload={
+                "status": state.status.value,
+                "phase": state.phase.value,
+                "round": state.round,
+                "day_number": state.day_number,
+                "state_version": state.state_version,
+                "fast_forward_enabled": False,
+            },
+        )
+        began_event = self._events.append(
+            cursor,
+            game_id=game_id,
+            state_version=state.state_version,
+            event_type="GAME_BEGAN",
+            audience="PUBLIC",
+            front_sequence=front_sequence,
+            operation_index=1,
+            operation_type="APPEND_PUBLIC_EVENT",
+            payload={"message": INTRO_MESSAGE},
+        )
+        self._outbox.enqueue(cursor, UUID(str(state_event["id"])))
+        self._outbox.enqueue(cursor, UUID(str(began_event["id"])))
+
+
+class PostgresGameSaveService(PostgresBeginGameService):
+    """진행 중 게임을 안전하게 멈추는 SAVE_AND_EXIT DB transaction 서비스."""
+
+    def save(
+        self,
+        owner_user_id: UUID,
+        game_id: UUID,
+        payload: GameCommandRequest,
+        idempotency_key: UUID,
+        *,
+        now: datetime | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """남은 시간을 DB 기준으로 계산해 상태·window·event·receipt를 함께 저장한다."""
+
+        if payload.type != "SAVE_AND_EXIT":
+            raise ValueError("PostgresGameSaveService only accepts SAVE_AND_EXIT")
+        request_hash = _request_hash(payload.model_dump(mode="json"))
+        route_scope = f"POST /api/v1/games/{game_id}/commands"
+        current_time = now or datetime.now(UTC)
+        try:
+            with self._transactions.transaction() as connection:
+                with connection.cursor(row_factory=dict_row) as cursor:
+                    lock_idempotency(cursor, "USER", owner_user_id, idempotency_key)
+                    game_row = self._games.lock_game(cursor, game_id)
+                    if game_row is None or UUID(str(game_row["owner_user_id"])) != owner_user_id:
+                        raise ApiError(
+                            status_code=404,
+                            code="GAME_NOT_FOUND",
+                            message="게임을 찾을 수 없습니다.",
+                        )
+                    replay = self._find_replay(
+                        cursor,
+                        owner_user_id=owner_user_id,
+                        idempotency_key=idempotency_key,
+                        request_hash=request_hash,
+                        route_scope=route_scope,
+                    )
+                    if replay is not None:
+                        return replay, True
+                    state, _ = self._state_from_locked_game(cursor, game_row)
+                    accepted_version = state.state_version
+                    if payload.expected_state_version != accepted_version:
+                        raise ApiError(
+                            status_code=409,
+                            code="STALE_STATE_VERSION",
+                            message="게임 상태가 변경되었습니다. 최신 상태를 다시 확인하세요.",
+                            details={"current_state_version": accepted_version},
+                        )
+                    window = self._actions.current_window(cursor, game_id=game_id)
+                    if window is not None and window["status"] == "RESOLVING":
+                        raise ApiError(
+                            status_code=409,
+                            code="WINDOW_NOT_READY",
+                            message="현재 행동 window가 아직 정리되지 않았습니다.",
+                        )
+                    remaining_ms = self._remaining_ms(window, current_time)
+                    try:
+                        GameEngine().save(state, remaining_ms)
+                    except RuleViolation as exc:
+                        raise CanonicalGameService._rule_error(exc) from exc
+                    self._games.update_game_state(
+                        cursor,
+                        state=state,
+                        expected_state_version=accepted_version,
+                    )
+                    if window is not None:
+                        self._actions.pause_window(
+                            cursor,
+                            window_id=UUID(str(window["id"])),
+                            remaining_ms=remaining_ms,
+                        )
+                    front_sequence = self._games.next_front_sequence(cursor, game_id)
+                    self._append_save_events(
+                        cursor,
+                        game_id=game_id,
+                        state=state,
+                        front_sequence=front_sequence,
+                    )
+                    result = {
+                        "command_id": str(idempotency_key),
+                        "command_type": "SAVE_AND_EXIT",
+                        "accepted_state_version": accepted_version,
+                        "result_state_version": state.state_version,
+                        "sync_url": f"/api/v1/games/{game_id}/sync",
+                    }
+                    self._receipts.insert(
+                        cursor,
+                        principal_type="USER",
+                        principal_id=owner_user_id,
+                        idempotency_key=idempotency_key,
+                        route_scope=route_scope,
+                        game_id=game_id,
+                        request_hash=request_hash,
+                        result_state_version=state.state_version,
+                        http_status=200,
+                        result_body=result,
+                    )
+                    return result, False
+        except ApiError:
+            raise
+        except Exception as exc:
+            raise ApiError(
+                status_code=503,
+                code="DEPENDENCY_UNAVAILABLE",
+                message="게임 저장소를 사용할 수 없습니다.",
+                retryable=True,
+            ) from exc
+
+    @staticmethod
+    def _remaining_ms(window: Mapping[str, Any] | None, now: datetime) -> int | None:
+        """deadline이 없는 상태는 None, timed window는 남은 정수 ms를 계산한다."""
+
+        if window is None or window["window_kind"] == "SPEECH":
+            return None
+        deadline = window["deadline_at"]
+        if not isinstance(deadline, datetime):
+            raise RuntimeError("Timed action window deadline is invalid")
+        return max(int((deadline - now).total_seconds() * 1000), 0)
+
+    def _append_save_events(
+        self,
+        cursor: Any,
+        *,
+        game_id: UUID,
+        state: GameState,
+        front_sequence: int,
+    ) -> None:
+        """저장 상태와 GAME_SAVED 공개 event를 끊기지 않는 batch로 기록한다."""
+
+        state_event = self._events.append(
+            cursor,
+            game_id=game_id,
+            state_version=state.state_version,
+            event_type="PHASE_CHANGED",
+            audience="PUBLIC",
+            front_sequence=front_sequence,
+            operation_index=0,
+            operation_type="SET_GAME_STATE",
+            payload={
+                "status": state.status.value,
+                "phase": state.phase.value,
+                "round": state.round,
+                "day_number": state.day_number,
+                "state_version": state.state_version,
+                "fast_forward_enabled": not state.human_alive,
+            },
+        )
+        saved_event = self._events.append(
+            cursor,
+            game_id=game_id,
+            state_version=state.state_version,
+            event_type="GAME_SAVED",
+            audience="PUBLIC",
+            front_sequence=front_sequence,
+            operation_index=1,
+            operation_type="APPEND_PUBLIC_EVENT",
+            payload={"phase": state.phase.value, "round": state.round},
+        )
+        self._outbox.enqueue(cursor, UUID(str(state_event["id"])))
+        self._outbox.enqueue(cursor, UUID(str(saved_event["id"])))
+
+
+class PostgresGameResumeService(PostgresBeginGameService):
+    """저장된 게임을 같은 DB 원본에서 안전하게 이어 가는 RESUME transaction 서비스."""
+
+    def resume(
+        self,
+        owner_user_id: UUID,
+        game_id: UUID,
+        payload: GameCommandRequest,
+        idempotency_key: UUID,
+        *,
+        now: datetime | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """저장 상태·멈춘 window·event·outbox·receipt를 한 commit으로 재개한다."""
+
+        if payload.type != "RESUME":
+            raise ValueError("PostgresGameResumeService only accepts RESUME")
+        request_hash = _request_hash(payload.model_dump(mode="json"))
+        route_scope = f"POST /api/v1/games/{game_id}/commands"
+        current_time = now or datetime.now(UTC)
+        try:
+            with self._transactions.transaction() as connection:
+                with connection.cursor(row_factory=dict_row) as cursor:
+                    lock_idempotency(cursor, "USER", owner_user_id, idempotency_key)
+                    game_row = self._games.lock_game(cursor, game_id)
+                    if game_row is None or UUID(str(game_row["owner_user_id"])) != owner_user_id:
+                        raise ApiError(
+                            status_code=404,
+                            code="GAME_NOT_FOUND",
+                            message="게임을 찾을 수 없습니다.",
+                        )
+                    replay = self._find_replay(
+                        cursor,
+                        owner_user_id=owner_user_id,
+                        idempotency_key=idempotency_key,
+                        request_hash=request_hash,
+                        route_scope=route_scope,
+                    )
+                    if replay is not None:
+                        return replay, True
+                    state, _ = self._state_from_locked_game(cursor, game_row)
+                    accepted_version = state.state_version
+                    if payload.expected_state_version != accepted_version:
+                        raise ApiError(
+                            status_code=409,
+                            code="STALE_STATE_VERSION",
+                            message="게임 상태가 변경되었습니다. 최신 상태를 다시 확인하세요.",
+                            details={"current_state_version": accepted_version},
+                        )
+                    window = self._actions.current_window(cursor, game_id=game_id)
+                    state.remaining_ms_on_save = self._saved_remaining_ms(window)
+                    try:
+                        GameEngine().resume(state, current_time)
+                    except RuleViolation as exc:
+                        raise CanonicalGameService._rule_error(exc) from exc
+                    self._games.update_game_state(
+                        cursor,
+                        state=state,
+                        expected_state_version=accepted_version,
+                    )
+                    if window is not None:
+                        self._actions.resume_window(
+                            cursor,
+                            window_id=UUID(str(window["id"])),
+                            deadline_at=state.deadline_at,
+                        )
+                    front_sequence = self._games.next_front_sequence(cursor, game_id)
+                    self._append_resume_events(
+                        cursor,
+                        game_id=game_id,
+                        state=state,
+                        front_sequence=front_sequence,
+                    )
+                    result = {
+                        "command_id": str(idempotency_key),
+                        "command_type": "RESUME",
+                        "accepted_state_version": accepted_version,
+                        "result_state_version": state.state_version,
+                        "sync_url": f"/api/v1/games/{game_id}/sync",
+                    }
+                    self._receipts.insert(
+                        cursor,
+                        principal_type="USER",
+                        principal_id=owner_user_id,
+                        idempotency_key=idempotency_key,
+                        route_scope=route_scope,
+                        game_id=game_id,
+                        request_hash=request_hash,
+                        result_state_version=state.state_version,
+                        http_status=200,
+                        result_body=result,
+                    )
+                    return result, False
+        except ApiError:
+            raise
+        except Exception as exc:
+            raise ApiError(
+                status_code=503,
+                code="DEPENDENCY_UNAVAILABLE",
+                message="게임 저장소를 사용할 수 없습니다.",
+                retryable=True,
+            ) from exc
+
+    @staticmethod
+    def _saved_remaining_ms(window: Mapping[str, Any] | None) -> int | None:
+        """저장된 window의 종류와 PAUSED 상태를 검사해 재개 가능한 시간을 꺼낸다."""
+
+        if window is None:
+            return None
+        if window["status"] != "PAUSED":
+            raise RuntimeError("Saved game action window is not paused")
+        window_kind = str(window["window_kind"])
+        remaining_ms = window.get("remaining_ms_on_save")
+        if window_kind == "SPEECH":
+            if remaining_ms is not None:
+                raise RuntimeError("Saved speech window contains a remaining time")
+            return None
+        if window_kind not in {"NIGHT", "VOTE", "REVOTE", "FINAL_VOTE"}:
+            raise RuntimeError("Saved action window kind is invalid")
+        if isinstance(remaining_ms, bool) or not isinstance(remaining_ms, int) or remaining_ms < 0:
+            raise RuntimeError("Saved timed window remaining time is invalid")
+        return remaining_ms
+
+    def _append_resume_events(
+        self,
+        cursor: Any,
+        *,
+        game_id: UUID,
+        state: GameState,
+        front_sequence: int,
+    ) -> None:
+        """재개 상태와 GAME_RESUMED 공개 event를 하나의 순서 있는 batch로 남긴다."""
+
+        state_event = self._events.append(
+            cursor,
+            game_id=game_id,
+            state_version=state.state_version,
+            event_type="PHASE_CHANGED",
+            audience="PUBLIC",
+            front_sequence=front_sequence,
+            operation_index=0,
+            operation_type="SET_GAME_STATE",
+            payload={
+                "status": state.status.value,
+                "phase": state.phase.value,
+                "round": state.round,
+                "day_number": state.day_number,
+                "state_version": state.state_version,
+                "fast_forward_enabled": not state.human_alive,
+            },
+        )
+        resumed_event = self._events.append(
+            cursor,
+            game_id=game_id,
+            state_version=state.state_version,
+            event_type="GAME_RESUMED",
+            audience="PUBLIC",
+            front_sequence=front_sequence,
+            operation_index=1,
+            operation_type="APPEND_PUBLIC_EVENT",
+            payload={"phase": state.phase.value, "round": state.round},
+        )
+        self._outbox.enqueue(cursor, UUID(str(state_event["id"])))
+        self._outbox.enqueue(cursor, UUID(str(resumed_event["id"])))
+
+
+class PostgresDiscussionCommandService(PostgresBeginGameService):
+    """사람의 SPEAK·PASS를 DB 원장과 다음 발언 차례에 함께 반영한다."""
+
+    def submit(
+        self,
+        owner_user_id: UUID,
+        game_id: UUID,
+        payload: GameCommandRequest,
+        idempotency_key: UUID,
+        *,
+        now: datetime | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """현재 인간 차례의 발언 하나를 검증하고 순서 있는 공개 batch로 확정한다."""
+
+        if payload.type not in {"SPEAK", "PASS"}:
+            raise ValueError("PostgresDiscussionCommandService only accepts SPEAK or PASS")
+        request_hash = _request_hash(payload.model_dump(mode="json"))
+        route_scope = f"POST /api/v1/games/{game_id}/commands"
+        current_time = now or datetime.now(UTC)
+        try:
+            with self._transactions.transaction() as connection:
+                with connection.cursor(row_factory=dict_row) as cursor:
+                    lock_idempotency(cursor, "USER", owner_user_id, idempotency_key)
+                    game_row = self._games.lock_game(cursor, game_id)
+                    if game_row is None or UUID(str(game_row["owner_user_id"])) != owner_user_id:
+                        raise ApiError(
+                            status_code=404,
+                            code="GAME_NOT_FOUND",
+                            message="게임을 찾을 수 없습니다.",
+                        )
+                    replay = self._find_replay(
+                        cursor,
+                        owner_user_id=owner_user_id,
+                        idempotency_key=idempotency_key,
+                        request_hash=request_hash,
+                        route_scope=route_scope,
+                    )
+                    if replay is not None:
+                        return replay, True
+                    state, human_player_id = self._state_from_locked_game(cursor, game_row)
+                    accepted_version = state.state_version
+                    if payload.expected_state_version != accepted_version:
+                        raise ApiError(
+                            status_code=409,
+                            code="STALE_STATE_VERSION",
+                            message="게임 상태가 변경되었습니다. 최신 상태를 다시 확인하세요.",
+                            details={"current_state_version": accepted_version},
+                        )
+                    window = self._actions.current_window(cursor, game_id=game_id)
+                    self._validate_human_discussion_window(
+                        state=state,
+                        human_player_id=human_player_id,
+                        window=window,
+                        payload=payload,
+                    )
+                    self._hydrate_discussion_state(cursor, state=state, window=window)
+                    try:
+                        if payload.type == "SPEAK":
+                            if payload.message is None:
+                                raise ApiError(
+                                    status_code=422,
+                                    code="INVALID_REQUEST",
+                                    message="SPEAK에는 message가 필요합니다.",
+                                )
+                            GameEngine().speak(state, human_player_id, payload.message)
+                        else:
+                            if payload.message is not None:
+                                raise ApiError(
+                                    status_code=422,
+                                    code="INVALID_REQUEST",
+                                    message="PASS에는 message를 보낼 수 없습니다.",
+                                )
+                            GameEngine().pass_turn(state, human_player_id)
+                    except RuleViolation as exc:
+                        raise CanonicalGameService._rule_error(exc) from exc
+                    operation = state.operations[-1]
+                    self._actions.insert_submission(
+                        cursor,
+                        ActionSubmissionInsert(
+                            game_id=game_id,
+                            window_id=UUID(str(window["id"])),
+                            actor_player_id=human_player_id,
+                            action_type=payload.type,
+                            target_player_id=None,
+                            message=operation.text if payload.type == "SPEAK" else None,
+                            source="HUMAN",
+                            observed_state_version=accepted_version,
+                        ),
+                    )
+                    self._games.update_game_state(
+                        cursor,
+                        state=state,
+                        expected_state_version=accepted_version,
+                    )
+                    self._actions.cancel_current_window(cursor, game_id=game_id)
+                    next_window = self._next_window(state, current_time)
+                    if next_window is not None:
+                        self._actions.open_window(cursor, next_window)
+                    front_sequence = self._games.next_front_sequence(cursor, game_id)
+                    self._append_discussion_events(
+                        cursor,
+                        game_id=game_id,
+                        state=state,
+                        actor_player_id=human_player_id,
+                        command_type=payload.type,
+                        message=operation.text,
+                        next_window=next_window,
+                        front_sequence=front_sequence,
+                        now=current_time,
+                    )
+                    result = {
+                        "command_id": str(idempotency_key),
+                        "command_type": payload.type,
+                        "accepted_state_version": accepted_version,
+                        "result_state_version": state.state_version,
+                        "sync_url": f"/api/v1/games/{game_id}/sync",
+                    }
+                    self._receipts.insert(
+                        cursor,
+                        principal_type="USER",
+                        principal_id=owner_user_id,
+                        idempotency_key=idempotency_key,
+                        route_scope=route_scope,
+                        game_id=game_id,
+                        request_hash=request_hash,
+                        result_state_version=state.state_version,
+                        http_status=200,
+                        result_body=result,
+                    )
+                    return result, False
+        except ApiError:
+            raise
+        except Exception as exc:
+            raise ApiError(
+                status_code=503,
+                code="DEPENDENCY_UNAVAILABLE",
+                message="게임 저장소를 사용할 수 없습니다.",
+                retryable=True,
+            ) from exc
+
+    @staticmethod
+    def _validate_human_discussion_window(
+        *,
+        state: GameState,
+        human_player_id: UUID,
+        window: Mapping[str, Any] | None,
+        payload: GameCommandRequest,
+    ) -> None:
+        """다른 game window·AI 차례·닫힌 window의 발언을 저장 전에 차단한다."""
+
+        if state.phase not in {GamePhase.DAY_DISCUSSION, GamePhase.FINAL_DISCUSSION}:
+            raise ApiError(status_code=409, code="INVALID_PHASE", message="현재 발언 단계가 아닙니다.")
+        if window is None or payload.window_id is None or UUID(str(window["id"])) != payload.window_id:
+            raise ApiError(
+                status_code=409,
+                code="WINDOW_CLOSED",
+                message="현재 행동 window가 더 이상 유효하지 않습니다.",
+            )
+        if (
+            window["status"] != "OPEN"
+            or window["window_kind"] != "SPEECH"
+            or window["phase"] != state.phase.value
+            or UUID(str(window["turn_player_id"])) != human_player_id
+        ):
+            raise ApiError(
+                status_code=409,
+                code="ACTION_NOT_ALLOWED",
+                message="현재 발언 차례가 아닙니다.",
+            )
+
+    def _hydrate_discussion_state(
+        self,
+        cursor: Any,
+        *,
+        state: GameState,
+        window: Mapping[str, Any],
+    ) -> None:
+        """원장 발언을 현재 순환의 메모리 규칙 상태로 복원한다."""
+
+        cycle = int(window["cycle"])
+        submissions = self._actions.list_discussion_submissions(
+            cursor,
+            game_id=state.game_id,
+            phase=state.phase.value,
+            round=state.round,
+            cycle=cycle,
+        )
+        state.speech_actors = {UUID(str(row["actor_player_id"])) for row in submissions}
+        state.speech_had_content = any(row["action_type"] == "SPEAK" for row in submissions)
+        # 첫날 추가 질문 순환은 DB window의 cycle=2가 원본이다. 메모리 기본값을
+        # 믿으면 서버 재시작 뒤 같은 질문을 여러 번 열 수 있다.
+        state.speech_question_cycle_used = state.day_number == 1 and cycle == 2
+
+    @staticmethod
+    def _next_window(state: GameState, now: datetime) -> ActionWindowInsert | None:
+        """규칙 엔진이 확정한 다음 phase에 맞는 단 하나의 window 입력을 만든다."""
+
+        if state.phase in {GamePhase.DAY_DISCUSSION, GamePhase.FINAL_DISCUSSION}:
+            next_actor = next(
+                (player for player in state.alive_players if player.player_id not in state.speech_actors),
+                None,
+            )
+            if next_actor is None:
+                return None
+            return ActionWindowInsert(
+                window_id=uuid5_for_window(state.game_id, state.state_version),
+                game_id=state.game_id,
+                window_kind="SPEECH",
+                phase=state.phase.value,
+                round=state.round,
+                cycle=2 if state.day_number == 1 and state.speech_question_cycle_used else 1,
+                turn_player_id=next_actor.player_id,
+                opened_state_version=state.state_version,
+                deadline_at=None,
+            )
+        timed_windows = {
+            GamePhase.NIGHT_ACTION: ("NIGHT", 20),
+            GamePhase.DAY_VOTE: ("VOTE", 30),
+            GamePhase.REVOTE: ("REVOTE", 30),
+            GamePhase.FINAL_ACCUSATION: ("FINAL_VOTE", 30),
+        }
+        next_kind = timed_windows.get(state.phase)
+        if next_kind is None:
+            return None
+        window_kind, seconds = next_kind
+        return ActionWindowInsert(
+            window_id=uuid5_for_window(state.game_id, state.state_version),
+            game_id=state.game_id,
+            window_kind=window_kind,
+            phase=state.phase.value,
+            round=state.round,
+            cycle=1,
+            turn_player_id=None,
+            opened_state_version=state.state_version,
+            deadline_at=now + timedelta(seconds=seconds),
+        )
+
+    def _append_discussion_events(
+        self,
+        cursor: Any,
+        *,
+        game_id: UUID,
+        state: GameState,
+        actor_player_id: UUID,
+        command_type: str,
+        message: str | None,
+        next_window: ActionWindowInsert | None,
+        front_sequence: int,
+        now: datetime,
+    ) -> None:
+        """상태·공개 발언·다음 window를 끊기지 않는 Front operation batch로 남긴다."""
+
+        events: list[Mapping[str, Any]] = []
+        events.append(
+            self._events.append(
+                cursor,
+                game_id=game_id,
+                state_version=state.state_version,
+                event_type="PHASE_CHANGED",
+                audience="PUBLIC",
+                front_sequence=front_sequence,
+                operation_index=0,
+                operation_type="SET_GAME_STATE",
+                payload={
+                    "status": state.status.value,
+                    "phase": state.phase.value,
+                    "round": state.round,
+                    "day_number": state.day_number,
+                    "state_version": state.state_version,
+                    "fast_forward_enabled": not state.human_alive,
+                },
+            )
+        )
+        event_payload: dict[str, Any] = {"player_id": str(actor_player_id)}
+        if command_type == "SPEAK":
+            event_payload["message"] = message
+        events.append(
+            self._events.append(
+                cursor,
+                game_id=game_id,
+                state_version=state.state_version,
+                event_type="PLAYER_SPOKE" if command_type == "SPEAK" else "PLAYER_PASSED",
+                audience="PUBLIC",
+                front_sequence=front_sequence,
+                operation_index=1,
+                operation_type="APPEND_PUBLIC_EVENT",
+                payload=event_payload,
+            )
+        )
+        if next_window is None:
+            window_operation = "CLEAR_ACTION_WINDOW"
+            window_payload: dict[str, Any] = {"window_id": None}
+        else:
+            window_operation = "SET_ACTION_WINDOW"
+            window_payload = {
+                "window_id": str(next_window.window_id),
+                "kind": next_window.window_kind,
+                "cycle": next_window.cycle,
+                "paused": False,
+                "opened_state_version": next_window.opened_state_version,
+                "server_time": now.isoformat().replace("+00:00", "Z"),
+                "deadline_at": (
+                    next_window.deadline_at.isoformat().replace("+00:00", "Z")
+                    if next_window.deadline_at is not None
+                    else None
+                ),
+                "remaining_ms": (
+                    max(int((next_window.deadline_at - now).total_seconds() * 1000), 0)
+                    if next_window.deadline_at is not None
+                    else None
+                ),
+                "turn_player_id": (
+                    str(next_window.turn_player_id) if next_window.turn_player_id is not None else None
+                ),
+                "has_submitted": False,
+                "legal_actions": [],
+                "valid_targets": [],
+            }
+        events.append(
+            self._events.append(
+                cursor,
+                game_id=game_id,
+                state_version=state.state_version,
+                event_type="TURN_OPENED",
+                audience="PUBLIC",
+                front_sequence=front_sequence,
+                operation_index=2,
+                operation_type=window_operation,
+                payload=window_payload,
+            )
+        )
+        for event in events:
+            self._outbox.enqueue(cursor, UUID(str(event["id"])))
+
+
+class PostgresGameReadService:
+    """DB 원본에서 게임 목록과 최초 ROLE_REVEAL snapshot을 읽는 서비스.
+
+    명령과 action window 영속화 전 단계이므로, 아직 이 reader는 생성 직후의
+    ROLE_REVEAL 상태만 snapshot으로 복원한다. 진행 중인 phase를 메모리 규칙으로
+    추측해 잘못된 deadline이나 window를 보여 주지 않는 것이 안전하다.
+    """
+
+    def __init__(
+        self,
+        *,
+        transactions: TransactionManager,
+        keyring: GameStateKeyring,
+        games: PostgresGameRepository | None = None,
+        players: PostgresPlayerRepository | None = None,
+    ) -> None:
+        """읽기 전용 service가 필요한 transaction과 저장소를 주입한다."""
+
+        self._transactions = transactions
+        self._keyring = keyring
+        self._games = games or PostgresGameRepository()
+        self._players = players or PostgresPlayerRepository()
+        self._presenter = CanonicalGameService(InMemoryGameRepository())
+
+    def list_games(
+        self,
+        owner_user_id: UUID,
+        *,
+        status: str | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """알 수 없는 UUID도 user 생성 없이 빈 목록으로 처리한다."""
+
+        try:
+            with self._transactions.transaction() as connection:
+                with connection.cursor(row_factory=dict_row) as cursor:
+                    rows = self._games.list_owned_games(
+                        cursor,
+                        owner_user_id=owner_user_id,
+                        status=status,
+                        limit=limit,
+                    )
+            return [self._list_item(row) for row in rows]
+        except ApiError:
+            raise
+        except Exception as exc:
+            raise ApiError(
+                status_code=503,
+                code="DEPENDENCY_UNAVAILABLE",
+                message="게임 저장소를 사용할 수 없습니다.",
+                retryable=True,
+            ) from exc
+
+    def snapshot(self, owner_user_id: UUID, game_id: UUID) -> dict[str, Any]:
+        """소유자만 최초 상태의 공개 정보와 본인 단서를 함께 읽는다."""
+
+        try:
+            with self._transactions.transaction() as connection:
+                with connection.cursor(row_factory=dict_row) as cursor:
+                    game = self._games.get_owned_game(
+                        cursor,
+                        owner_user_id=owner_user_id,
+                        game_id=game_id,
+                    )
+                    if game is None:
+                        raise ApiError(
+                            status_code=404,
+                            code="GAME_NOT_FOUND",
+                            message="게임을 찾을 수 없습니다.",
+                        )
+                    player_rows = self._players.list_players(cursor, game_id=game_id)
+                    record = self._initial_record_from_rows(game, player_rows)
+                    facts = self._players.list_player_facts(
+                        cursor,
+                        game_id=game_id,
+                        player_id=record.human_player_id,
+                    )
+            self._attach_human_facts(record, facts)
+            return self._presenter._snapshot(record)
+        except ApiError:
+            raise
+        except Exception as exc:
+            raise ApiError(
+                status_code=503,
+                code="DEPENDENCY_UNAVAILABLE",
+                message="게임 저장소를 사용할 수 없습니다.",
+                retryable=True,
+            ) from exc
+
+    def _initial_record_from_rows(
+        self,
+        game: Mapping[str, Any],
+        player_rows: list[Mapping[str, Any]],
+    ) -> CanonicalGameRecord:
+        """암호화된 seed와 game_players를 순수 GameState로 복원한다."""
+
+        if game["phase"] != GamePhase.ROLE_REVEAL.value or game["state_version"] != 1:
+            raise RuntimeError("Persisted game phase is not supported by the current read adapter")
+        if not isinstance(game["updated_at"], datetime):
+            raise RuntimeError("Persisted game timestamp is invalid")
+        seed = self._keyring.decrypt_seed(
+            ciphertext=bytes(game["seed_ciphertext"]),
+            nonce=bytes(game["seed_nonce"]),
+            key_id=str(game["seed_key_id"]),
+        )
+        players: list[PlayerState] = []
+        human_player_id: UUID | None = None
+        eliminated: dict[UUID, tuple[str, int]] = {}
+        for row in player_rows:
+            player_id = UUID(str(row["id"]))
+            kind = PlayerKind(str(row["kind"]))
+            player = PlayerState(
+                player_id=player_id,
+                seat=int(row["seat"]),
+                role=PlayerRole(str(row["role"])),
+                kind=kind,
+                display_name=str(row["display_name"]),
+                alive=bool(row["alive"]),
+            )
+            players.append(player)
+            if kind is PlayerKind.HUMAN:
+                if human_player_id is not None or row["user_id"] is None:
+                    raise RuntimeError("Persisted human player is invalid")
+                human_player_id = player_id
+            if not player.alive:
+                phase = row["eliminated_phase"]
+                round_number = row["eliminated_round"]
+                if phase is None or round_number is None:
+                    raise RuntimeError("Persisted eliminated player is invalid")
+                eliminated[player_id] = (str(phase), int(round_number))
+        if human_player_id is None or len(players) != int(game["player_count"]):
+            raise RuntimeError("Persisted players are incomplete")
+
+        winner = Faction(str(game["winner"])) if game["winner"] is not None else None
+        win_reason = WinReason(str(game["win_reason"])) if game["win_reason"] is not None else None
+        state = GameState(
+            game_id=UUID(str(game["id"])),
+            seed=seed,
+            players=players,
+            phase=GamePhase(str(game["phase"])),
+            status=GameStatus(str(game["status"])),
+            round=int(game["round"]),
+            day_number=int(game["day_number"]),
+            state_version=int(game["state_version"]),
+            updated_at=game["updated_at"],
+            winner=winner,
+            win_reason=win_reason,
+        )
+        locations = game["scenario_locations"]
+        if not isinstance(locations, list) or not all(isinstance(item, str) for item in locations):
+            raise RuntimeError("Persisted scenario locations are invalid")
+        return CanonicalGameRecord(
+            state=state,
+            scenario={
+                "scenario_id": str(game["scenario_id"]),
+                "title": str(game["scenario_title"]),
+                "background": str(game["scenario_background"]),
+                "victim": str(game["scenario_victim"]),
+                "locations": list(locations),
+            },
+            human_player_id=human_player_id,
+            owner_user_id=UUID(str(game["owner_user_id"])),
+            alibi="",
+            observation="",
+            front_sequence=max(int(game["next_front_sequence"]) - 1, 0),
+            eliminated=eliminated,
+        )
+
+    @staticmethod
+    def _attach_human_facts(
+        record: CanonicalGameRecord,
+        facts: list[Mapping[str, Any]],
+    ) -> None:
+        """snapshot에는 본인의 두 단서만 넣고 다른 플레이어 단서는 제외한다."""
+
+        by_kind = {str(fact["fact_kind"]): str(fact["rendered_text"]) for fact in facts}
+        if set(by_kind) != {"ALIBI", "OBSERVATION"}:
+            raise RuntimeError("Persisted human facts are incomplete")
+        record.alibi = by_kind["ALIBI"]
+        record.observation = by_kind["OBSERVATION"]
+
+    @staticmethod
+    def _list_item(row: Mapping[str, Any]) -> dict[str, Any]:
+        """목록에는 role·seed·개인 단서를 넣지 않는 공개 projection을 만든다."""
+
+        updated_at = row["updated_at"]
+        if not isinstance(updated_at, datetime):
+            raise RuntimeError("Persisted game timestamp is invalid")
+        status = GameStatus(str(row["status"]))
+        return {
+            "game_id": str(row["id"]),
+            "status": status.value,
+            "phase": str(row["phase"]),
+            "round": int(row["round"]),
+            "day_number": int(row["day_number"]),
+            "state_version": int(row["state_version"]),
+            "scenario_title": str(row["scenario_title"]),
+            "player_count": int(row["player_count"]),
+            "human_alive": bool(row["human_alive"]),
+            "winner": str(row["winner"]) if row["winner"] is not None else None,
+            "can_resume": status is GameStatus.SAVED,
+            "updated_at": updated_at.isoformat(),
+        }
 
 
 def _request_hash(value: dict[str, Any]) -> str:
