@@ -41,10 +41,23 @@ class Settings:
     app_env: str = "development"
     internal_api_secret: str = field(default="", repr=False)
     internal_api_max_age_seconds: int = 300
+    # 내부 Engine 서명과 MCP bootstrap 서명은 서로 다른 키를 사용한다.
+    # 두 키를 하나로 합치면 한 경계가 유출될 때 다른 경계까지 함께 무너진다.
+    engine_internal_api_secret: str = field(default="", repr=False)
+    mcp_server_auth_secret: str = field(default="", repr=False)
+    engine_internal_api_max_age_seconds: int = 60
     redis_url: str = field(default="redis://127.0.0.1:6379/0", repr=False)
+    # 게임 seed와 snapshot 암호화 키는 .env에 직접 넣지 않는다. .env에는
+    # 저장소 밖의 keyring 파일 위치와 현재 사용할 key ID만 기록한다.
+    game_state_keyring_file: str = field(default="", repr=False)
+    game_state_active_key_id: str = ""
     llm_provider: str = "dummy"
     mafia_mcp_url: str = "http://127.0.0.1:8010/mcp"
     mcp_internal_secret: str = field(default="", repr=False)
+    # 관리자 API는 이 목록에 있는 UUID v4만 읽기 권한을 갖는다. 형식 검증은
+    # AdminService가 fail-closed로 수행하므로 잘못된 설정이 일부 관리자만
+    # 남기는 상태로 시작되지 않는다.
+    admin_user_ids: tuple[str, ...] = ()
     local_llm_base_url: str = "http://127.0.0.1:1234/v1"
     local_llm_model: str = "local-model"
     openai_api_key: str = field(default="", repr=False)
@@ -89,8 +102,23 @@ class Settings:
             raise ValueError("DATABASE_NAME contains an invalid character")
         if not 1 <= self.internal_api_max_age_seconds <= 3_600:
             raise ValueError("INTERNAL_API_MAX_AGE_SECONDS must be between 1 and 3600")
+        if not 1 <= self.engine_internal_api_max_age_seconds <= 3_600:
+            raise ValueError(
+                "ENGINE_INTERNAL_API_MAX_AGE_SECONDS must be between 1 and 3600"
+            )
         if not self.redis_url.strip():
             raise ValueError("REDIS_URL must not be empty")
+        keyring_file = self.game_state_keyring_file.strip()
+        active_key_id = self.game_state_active_key_id.strip()
+        # 아직 DB 게임 저장 기능을 사용하지 않는 개발 환경은 두 설정을 모두
+        # 비워 둘 수 있다. 단, 하나만 설정하면 암호화가 불완전하므로 시작부터
+        # 명확하게 거부한다.
+        if bool(keyring_file) != bool(active_key_id):
+            raise ValueError(
+                "GAME_STATE_KEYRING_FILE and GAME_STATE_ACTIVE_KEY_ID must be set together"
+            )
+        if len(active_key_id) > 64:
+            raise ValueError("GAME_STATE_ACTIVE_KEY_ID must be 64 characters or fewer")
         if self.llm_provider.strip().lower() not in {"dummy", "local", "openai", "gemini"}:
             raise ValueError("LLM_PROVIDER is not supported")
         if not self.mafia_mcp_url.strip():
@@ -119,7 +147,19 @@ class Settings:
         object.__setattr__(self, "database_url", raw_url)
         object.__setattr__(self, "database_name", self.database_name.strip())
         object.__setattr__(self, "internal_api_secret", self.internal_api_secret.strip())
+        object.__setattr__(
+            self,
+            "engine_internal_api_secret",
+            self.engine_internal_api_secret.strip(),
+        )
+        object.__setattr__(
+            self,
+            "mcp_server_auth_secret",
+            self.mcp_server_auth_secret.strip(),
+        )
         object.__setattr__(self, "redis_url", self.redis_url.strip())
+        object.__setattr__(self, "game_state_keyring_file", keyring_file)
+        object.__setattr__(self, "game_state_active_key_id", active_key_id)
         object.__setattr__(self, "llm_provider", self.llm_provider.strip().lower())
         object.__setattr__(self, "mafia_mcp_url", self.mafia_mcp_url.strip().rstrip("/"))
         object.__setattr__(self, "mcp_internal_secret", self.mcp_internal_secret.strip())
@@ -142,6 +182,24 @@ class Settings:
         secret = self.internal_api_secret
         if len(secret) < 32 or secret.upper().startswith("REPLACE_"):
             raise RuntimeError("Internal API signing is not configured")
+        return secret.encode("utf-8")
+
+    @property
+    def validated_engine_internal_api_secret(self) -> bytes:
+        """Engine HMAC에 사용할 별도 비밀값을 검증해 바이트로 반환한다."""
+
+        secret = self.engine_internal_api_secret
+        if len(secret) < 32 or secret.upper().startswith("REPLACE_"):
+            raise RuntimeError("Engine internal API signing is not configured")
+        return secret.encode("utf-8")
+
+    @property
+    def validated_mcp_server_auth_secret(self) -> bytes:
+        """MCP bootstrap token 서명용 키를 검증해 바이트로 반환한다."""
+
+        secret = self.mcp_server_auth_secret
+        if len(secret) < 32 or secret.upper().startswith("REPLACE_"):
+            raise RuntimeError("MCP bootstrap signing is not configured")
         return secret.encode("utf-8")
 
     @property
@@ -185,10 +243,21 @@ class Settings:
                 os.getenv("INTERNAL_API_MAX_AGE_SECONDS", "300"),
                 name="INTERNAL_API_MAX_AGE_SECONDS",
             ),
+            engine_internal_api_secret=os.getenv("ENGINE_INTERNAL_API_SECRET", ""),
+            mcp_server_auth_secret=os.getenv("MCP_SERVER_AUTH_SECRET", ""),
+            engine_internal_api_max_age_seconds=_read_positive_int(
+                os.getenv("ENGINE_INTERNAL_API_MAX_AGE_SECONDS", "60"),
+                name="ENGINE_INTERNAL_API_MAX_AGE_SECONDS",
+            ),
             redis_url=os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0"),
+            game_state_keyring_file=os.getenv("GAME_STATE_KEYRING_FILE", ""),
+            game_state_active_key_id=os.getenv("GAME_STATE_ACTIVE_KEY_ID", ""),
             llm_provider=os.getenv("LLM_PROVIDER", "dummy"),
             mafia_mcp_url=os.getenv("MAFIA_MCP_URL", "http://127.0.0.1:8010/mcp"),
             mcp_internal_secret=os.getenv("MCP_INTERNAL_SECRET", ""),
+            admin_user_ids=tuple(
+                item.strip() for item in os.getenv("ADMIN_USER_IDS", "").split(",")
+            ),
             local_llm_base_url=os.getenv("LOCAL_LLM_BASE_URL", "http://127.0.0.1:1234/v1"),
             local_llm_model=os.getenv("LOCAL_LLM_MODEL", "local-model"),
             openai_api_key=os.getenv("OPENAI_API_KEY", ""),

@@ -1,86 +1,95 @@
-"""계획서의 read-only 관리자 API를 mock 데이터로 제공한다."""
+"""read-only 관리자 API route."""
 
 from __future__ import annotations
 
-import os
-from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Header, Query, Request
+from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from backend.app.core.errors import ApiError
-from backend.app.routers import scaffold_game_router as scaffold_game_module
+from backend.app.core.responses import api_success_response, request_trace_id
+from backend.app.routers.scaffold_game_router import user_id_header
+from backend.app.schemas.admin_schema import AdminGameListQuery, AdminMetricsQuery
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
 
-def _admin_user_id(value: str | None) -> UUID:
-    """요청 UUID가 환경 변수 allowlist에 등록됐는지 fail-closed로 확인한다."""
+def _validation_error(error: ValidationError) -> ApiError:
+    """관리자 query의 내부 검증 원문 대신 위치와 유형만 공개한다."""
+
+    return ApiError(
+        status_code=422,
+        code="INVALID_REQUEST",
+        message="요청 형식이 올바르지 않습니다.",
+        details=[{"location": list(item["loc"]), "type": item["type"]} for item in error.errors()],
+    )
+
+
+def _admin_service(request: Request):
+    """앱 생성 시 주입한 관리자 서비스를 사용한다."""
+
+    return request.app.state.admin_service
+
+
+@router.get("/games", response_model=None)
+async def list_admin_games(
+    request: Request,
+    x_user_id: str | None = Header(default=None),
+    status: str | None = Query(default=None),
+    phase: str | None = Query(default=None),
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> JSONResponse:
+    """관리자 allowlist를 통과한 경우 게임 요약 목록만 반환한다."""
 
     try:
-        user_id = UUID(value or "")
-    except ValueError as error:
-        raise ApiError(status_code=403, code="ADMIN_ACCESS_DENIED", message="관리자 권한이 없습니다.") from error
-    allowed = {item.strip().lower() for item in os.getenv("ADMIN_USER_IDS", "").split(",") if item.strip()}
-    if str(user_id).lower() not in allowed:
-        raise ApiError(status_code=403, code="ADMIN_ACCESS_DENIED", message="관리자 권한이 없습니다.")
-    return user_id
+        query = AdminGameListQuery(status=status, phase=phase, cursor=cursor, limit=limit)
+    except ValidationError as error:
+        raise _validation_error(error) from error
+    data = _admin_service(request).list_games(
+        user_id_header(x_user_id),
+        status=query.status,
+        phase=query.phase,
+        cursor=query.cursor,
+        limit=query.limit,
+        request_id=UUID(request_trace_id(request)),
+    )
+    return api_success_response(request, data)
 
 
-def _item(game) -> dict:
-    """관리자 목록에 필요한 공개 게임 요약만 만든다."""
+@router.get("/games/{game_id}", response_model=None)
+async def get_admin_game(
+    request: Request,
+    game_id: UUID,
+    x_user_id: str | None = Header(default=None),
+) -> JSONResponse:
+    """관리자에게도 role·개인 사실·개별 행동·seed를 보내지 않는다."""
 
-    return {
-        "game_id": str(game.game_id),
-        "status": game.status,
-        "phase": game.phase,
-        "round": 0,
-        "day_number": 1,
-        "state_version": game.state_version,
-        "scenario_title": "정전된 방송국",
-        "player_count": game.player_count,
-        "updated_at": game.updated_at.isoformat(),
-    }
+    data = _admin_service(request).get_game(
+        user_id_header(x_user_id), game_id, request_id=UUID(request_trace_id(request))
+    )
+    return api_success_response(request, data)
 
 
-@router.get("/metrics")
-async def metrics(x_user_id: str | None = Header(default=None)) -> dict:
-    """allowlist를 통과한 관리자에게 mock 운영 지표를 반환한다."""
+@router.get("/metrics", response_model=None)
+async def get_admin_metrics(
+    request: Request,
+    x_user_id: str | None = Header(default=None),
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = Query(default=None),
+) -> JSONResponse:
+    """최대 31일 범위의 운영 지표만 반환한다."""
 
-    _admin_user_id(x_user_id)
-    games = list(scaffold_game_module.service.repository.games.values()) if hasattr(scaffold_game_module.service.repository, "games") else []
-    completed = sum(game.status == "COMPLETED" for game in games)
-    return {"data": {"games_created": len(games), "games_completed": completed,
-                      "games_saved": sum(game.status == "PAUSED" for game in games),
-                      "completion_rate": completed / len(games) if games else 0.0,
-                      "average_rounds": 0.0, "wins_by_faction": {"CITIZEN": 0, "MAFIA": 0},
-                      "auto_action_count": 0, "feedback_average": 0.0}}
-
-
-@router.get("/games")
-async def games(status: str | None = None, phase: str | None = None, limit: int = 20,
-                 x_user_id: str | None = Header(default=None)) -> dict:
-    """allowlist를 통과한 관리자에게 mock 게임 요약 목록을 반환한다."""
-
-    _admin_user_id(x_user_id)
-    if not 1 <= limit <= 100:
-        raise ApiError(status_code=400, code="INVALID_REQUEST", message="게임 목록 limit이 올바르지 않습니다.")
-    items = [_item(game) for game in scaffold_game_module.service.repository.games.values()] if hasattr(scaffold_game_module.service.repository, "games") else []
-    if status is not None:
-        items = [item for item in items if item["status"] == status]
-    if phase is not None:
-        items = [item for item in items if item["phase"] == phase]
-    items.sort(key=lambda item: (item["updated_at"], item["game_id"]), reverse=True)
-    return {"data": {"items": items[:limit], "next_cursor": None}}
-
-
-@router.get("/games/{game_id}")
-async def game_detail(game_id: UUID, x_user_id: str | None = Header(default=None)) -> dict:
-    """allowlist를 통과한 관리자에게 비밀 필드 없는 mock 상세를 반환한다."""
-
-    _admin_user_id(x_user_id)
-    game = scaffold_game_module.service.repository.get_game(game_id)
-    if game is None:
-        raise ApiError(status_code=404, code="RESOURCE_NOT_FOUND", message="리소스를 찾을 수 없습니다.")
-    return {"data": {**_item(game), "public_events": [], "failure_code": None,
-                      "window": None, "players": []}}
+    try:
+        query = AdminMetricsQuery.model_validate({"from": from_, "to": to})
+    except ValidationError as error:
+        raise _validation_error(error) from error
+    data = _admin_service(request).metrics(
+        user_id_header(x_user_id),
+        from_time=query.from_,
+        to_time=query.to,
+        request_id=UUID(request_trace_id(request)),
+    )
+    return api_success_response(request, data)

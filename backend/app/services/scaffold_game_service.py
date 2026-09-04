@@ -3,6 +3,7 @@
 import hashlib
 import json
 from datetime import datetime, timezone
+from typing import Protocol
 from uuid import UUID, uuid4
 
 from backend.app.core.errors import ApiError
@@ -19,18 +20,32 @@ from backend.app.schemas.scaffold_schema import (
 )
 
 
+class UserContextService(Protocol):
+    """게임 생성 전에 UUID 사용자 행을 준비하는 최소 서비스 형태."""
+
+    def ensure_user(self, user_id: UUID) -> object: ...
+
+
 class ScaffoldGameService:
     """후속 규칙 엔진을 끼울 수 있는 최소 game service다."""
 
-    def __init__(self, repository: ScaffoldRepository, redis=None, llm=None, mcp_client=None) -> None:
+    def __init__(self, repository: ScaffoldRepository, redis=None, llm=None, mcp_client=None, user_service: UserContextService | None = None) -> None:
         self.repository = repository
         self.redis = redis
         self.llm = llm
         self.mcp_client = mcp_client
+        self.user_service = user_service
 
     def create(self, owner_user_id: UUID, payload: CreateScaffoldGameRequest) -> CreateScaffoldGameResponse:
-        """소유자와 인간 참가자 한 명을 가진 dummy game을 생성한다."""
+        """사용자를 준비한 뒤 소유자와 인간 참가자 한 명의 dummy game을 생성한다.
 
+        게임 생성은 사용자가 처음으로 보내는 쓰기 요청일 수 있으므로 이
+        시점에만 ``users`` 멱등 생성을 호출한다. 조회나 command 경로에서는
+        이 메서드를 호출하지 않으므로 알 수 없는 UUID를 자동 생성하지 않는다.
+        """
+
+        if self.user_service is not None:
+            self.user_service.ensure_user(owner_user_id)
         game = ScaffoldGame(uuid4(), owner_user_id, payload.player_count)
         game.players = [uuid4() for _ in range(payload.player_count)]
         game.display_names = ["민수", "철수", "영희", "태경", "지효", "성주", "환석", "유빈", "태웅", "지혜", "지토"][:payload.player_count]

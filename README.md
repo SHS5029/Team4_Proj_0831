@@ -200,8 +200,9 @@ PowerShell 가상환경 자동 전환을 제공합니다. PowerShell 7에서 발
 전달합니다. 홈·게임·피드백 화면은 화면 정본의 상태 표현과 반응형·접근성 스타일을
 공유하며, 게임 상태와 결과의 원본은 계속 Backend snapshot입니다.
 
-Backend의 현재 scaffold 실행에서는 in-memory mock repository가 `GET /api/v1/games`를
-지원합니다. 같은 Backend 프로세스에서 생성한 게임만 UUID 소유자별 목록으로 반환하며,
+Backend의 현재 게임 API는 canonical `mystery-v1` 계약을 사용하고, 기존 `scaffold-v1`
+요청은 호환 경로로 처리합니다. in-memory mock repository를 주입한 실행에서는
+`GET /api/v1/games`가 같은 Backend 프로세스에서 생성한 게임만 UUID 소유자별 목록으로 반환하며,
 게임이 없으면 오류가 아닌 `200`과 빈 `items`를 반환합니다.
 mock 게임의 좌석은 화면 표시용으로 민수·철수·영희·태경·지효·성주·환석·유빈·태웅·지혜·지토
 preset 이름을 사용하지만,
@@ -361,7 +362,8 @@ history나 완료 로그에 쓰지 않습니다.
 uv run python -m backend.app.infrastructure.migrations
 ```
 
-`001`·`002` migration은 legacy `users`·`oauth_identities`와 `scaffold_*` 게임
+현재 seed 정본은 `004_seed_scenarios_and_personas.sql` 하나이며, 중복된 `004` 번호의
+seed 파일을 함께 두지 않습니다. `001`·`002` migration은 legacy `users`·`oauth_identities`와 `scaffold_*` 게임
 테이블을 생성합니다. `003_create_mystery_v1_schema.sql`은 기존 객체와 데이터를
 삭제하지 않고 `users.last_seen_at`을 보강한 뒤
 [DB 설계 정본](docs/개발상세플랜/AI_MAFIA_DB_DESIGN.md)의 canonical `mystery-v1`

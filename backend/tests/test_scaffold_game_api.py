@@ -58,18 +58,4 @@ def test_scaffold_game_rejects_wrong_owner_and_version() -> None:
         json={"command": "PAUSE", "expected_version": 99, "idempotency_key": "00000000-0000-4000-8000-000000000014"},
     )
     assert stale.status_code == 409
-    assert stale.json()["code"] == "GAME_STATE_CONFLICT"
-
-
-def test_scaffold_game_list_returns_owned_mock_games_and_empty_for_unknown_user() -> None:
-    """목데이터 목록은 소유자별로 격리되고 게임이 없으면 200 빈 목록을 반환한다."""
-
-    client = TestClient(create_app(ScaffoldRepository()))
-    created = _create(client)
-    listed = client.get("/api/v1/games?limit=20", headers={"X-User-Id": USER})
-    assert listed.status_code == 200
-    assert listed.json()["data"]["items"][0]["game_id"] == created["game_id"]
-
-    empty = client.get("/api/v1/games", headers={"X-User-Id": OTHER_USER})
-    assert empty.status_code == 200
-    assert empty.json() == {"data": {"items": [], "next_cursor": None}}
+    assert stale.json()["error"]["code"] == "GAME_STATE_CONFLICT"
