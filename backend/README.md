@@ -1,8 +1,8 @@
 # Backend API
 
-FastAPI가 외부 HTTP 요청, 게임 판정과 PostgreSQL 저장을 소유합니다. 현재 코드에는
-legacy identity·Front HMAC route가 남아 있지만 목표 MVP에서는 제거하고 UUID v4
-`X-User-Id`만 사용합니다. Frontend는 어떤 상태에서도 DB에 직접 연결하지 않습니다.
+FastAPI가 외부 HTTP 요청, 게임 판정과 PostgreSQL 저장을 소유합니다. 사용자 구분은
+UUID v4 `X-User-Id`만 사용합니다. Frontend는 어떤 상태에서도 DB에 직접 연결하지
+않습니다.
 
 섹터 분담에서는 Backend가 DB schema·migration·repository와 Redis application
 코드를 작성하고, MCP 섹터가 PostgreSQL·Redis 실행 환경 구축·기동·migration
@@ -12,8 +12,7 @@ legacy identity·Front HMAC route가 남아 있지만 목표 MVP에서는 제거
 ## 실행
 
 MCP 담당자가 PostgreSQL을 기동하고 migration 상태를 확인한 후, 저장소 루트의
-`.env`에 전달받은 `DATABASE_URL`, `DATABASE_NAME`과 32자 이상의
-`INTERNAL_API_SECRET`을 설정해 Backend를 실행합니다.
+`.env`에 전달받은 `DATABASE_URL`과 `DATABASE_NAME`을 설정해 Backend를 실행합니다.
 
 현재 `backend/requirements.txt`에는 Backend 실행과 회귀 테스트·정적 검사 의존성이
 함께 있습니다. 저장소 전체 개발 환경은 루트 `pyproject.toml`을 사용합니다.
@@ -64,7 +63,6 @@ MVP에서는 앱 수준의 LLM timeout, token 상한·사용량과 비용·예�
 
 ## 보안 경계
 
-현재 `POST /api/v1/identity/provision`은 legacy HMAC 검증을 수행하며 `WU-B1`에서 route와
-함께 제거합니다. 목표 공개 API의 UUID는 인증 수단이 아니므로 개인 개발·사설망으로
+목표 공개 API의 UUID는 인증 수단이 아니므로 개인 개발·사설망으로
 배포 범위를 제한합니다. Backend↔MCP 내부 HMAC·capability는 별도 보안 경계로 유지하며
 실제 secret, DB URL과 token은 응답과 로그에 포함하지 않습니다.

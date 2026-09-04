@@ -133,9 +133,9 @@ UUID로 동작하며 새로고침 뒤 게임 복구가 보장되지 않는다는
 - `core/api_client.py`: UUID 공개 Backend API client
 - `app_pages/settings_page.py`: UUID 확인·복구·교체 UI
 
-`frontend_user/auth/`와 `app_pages/login_page.py`는 legacy OIDC 코드로 남아 있지만
-현재 `app.py` 실행 경로에서는 호출하지 않습니다. Frontend는 PostgreSQL, Redis,
-MCP 서버에 직접 연결하지 않습니다.
+Frontend는 로그인 없이 브라우저 UUID로 사용자를 구분합니다. UUID는 인증 수단이
+아니므로 이 앱은 신뢰된 로컬·사설망 환경을 전제로 합니다. Frontend는 PostgreSQL,
+Redis, MCP 서버에 직접 연결하지 않습니다.
 
 ## 팀 전달 사항
 
@@ -154,7 +154,7 @@ CP-6: F8 관리자 guard·read-only API와 Backend B8을 운영 환경에서 검
 - `CP-6`: F8 관리자 guard·read-only API + Backend B8 운영 검증
 
 - Backend는 `X-User-Id`와 `X-Request-Id`를 공개 사용자 API 계약으로 처리합니다.
-- Frontend는 Authorization, OIDC token, email, Front HMAC을 보내지 않습니다.
+- Frontend는 UUID와 요청 추적 ID만 공개 Backend API에 전달합니다.
 - Backend CORS 또는 proxy는 `X-User-Id`, `X-Request-Id`, `Idempotency-Key`,
   `Last-Event-ID`를 허용해야 합니다.
 - `GET /api/v1/games/{game_id}/sync`와 SSE `/events`는 동일한 Front sequence를

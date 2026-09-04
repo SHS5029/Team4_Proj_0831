@@ -10,11 +10,10 @@
 [AI 마피아 MVP 공통 마스터플랜](docs/개발상세플랜/AI_MAFIA_MASTER_PLAN.md)을
 기준으로 합니다.
 
-현재 저장소는 이 MVP를 구현하기 위한 기반 단계입니다. 기존 Google OIDC, Front
-HMAC identity API와 scaffold game은 아직 코드에 남아 있지만 새 정본에서는 폐기
-대상입니다. `WU-F1`·`WU-B1`에서 로그인 흐름을 제거하고 브라우저가 생성·보관한 UUID
-`user_id`와 `X-User-Id`만 사용하도록 전환합니다. 실제 `mystery-v1` 게임 엔진과 AI
-플레이어 기능도 후속 WU 범위이며 계획 문서만으로 구현 완료로 간주하지 않습니다.
+현재 저장소는 로그인 없이 브라우저가 생성·보관한 UUID `user_id`와
+`X-User-Id`로 사용자를 구분합니다. UUID는 인증 수단이 아니므로 신뢰된 로컬·사설망
+환경을 전제로 합니다. 실제 `mystery-v1` 게임 엔진과 AI 플레이어 기능은 후속 WU
+범위이며 계획 문서만으로 구현 완료로 간주하지 않습니다.
 
 개발하거나 기여하기 전에 반드시 [AGENTS.MD](AGENTS.MD)의 브랜치, 커밋,
 파일·디렉터리 구조, 테스트, 주석 및 문서화 규칙을 확인하세요.
@@ -22,14 +21,8 @@ HMAC identity API와 scaffold game은 아직 코드에 남아 있지만 새 정�
 ## 현재 구현 범위
 
 - UUID-only 사용자 Frontend의 홈·게임 진행·관전·서버 확정 결과·게임별 피드백 화면과 Backend 공개 API client
-- Streamlit `st.login("google")`, `st.user`, `st.logout()` 기반 Google OIDC 로그인
-- OIDC 설정 누락, placeholder, 취약한 cookie secret, 안전하지 않은 URL 사전 검사
-- Google `sub` 기반 provider-neutral 사용자 식별과 외부 프로필 정규화
-- Frontend가 timestamp, UUID request id, raw body를 HMAC-SHA256으로 서명하는 내부 API
-- FastAPI `GET /health`, `POST /api/v1/identity/provision`
-- 첫 로그인 시 `users`와 `oauth_identities` 레코드의 원자적 생성
-- 재로그인 프로필·최근 로그인 시각 갱신과 비활성 사용자 fail-closed 차단
-- 외부 프로필 HTML escape와 HTTPS 아바타 URL 제한
+- 브라우저 UUID v4 생성·보관과 `X-User-Id` 기반 사용자 구분
+- FastAPI 공개 게임 API와 UUID별 게임 소유권 확인
 - Backend 소유 PostgreSQL migration 실행 코드(MCP 섹터가 실제 실행)
 - 독립 관리자 Streamlit 앱과 후속 MCP 서버 예약 구조(`mcp_server/mcp_2`)
 - `WU-M2` Mafia Game MCP의 stateful `/mcp` initialize, 일회성 MCP 세션 개설
@@ -68,6 +61,9 @@ agent 한 세션을 마스터플랜의 WU 한 개 이하로 제한합니다.
 | [AI_MAFIA_FRONTEND_TECHNICAL_DESIGN.md](docs/개발상세플랜/AI_MAFIA_FRONTEND_TECHNICAL_DESIGN.md) | Streamlit Front 전용 WU-F1~F8 기술 설계, 상태·동기화·협업 계약·보안·테스트·완료 기준 |
 | [AI_MAFIA_FRONTEND_BACKEND_HANDOFF.md](docs/개발상세플랜/AI_MAFIA_FRONTEND_BACKEND_HANDOFF.md) | Frontend–Backend 공개 API, SSE·CORS, 오류·private 경계와 공동 완료 조건 요약 |
 | [AI_MAFIA_INDEPENDENT_CONTRACT.md](docs/개발상세플랜/AI_MAFIA_INDEPENDENT_CONTRACT.md) | 세 섹터가 독립 구현할 때 공통으로 고정할 최소 연결 형식과 경계 |
+| [AI_MAFIA_GAME_ENGINE_STRATEGY_DRAFT.md](docs/개발상세플랜/AI_MAFIA_GAME_ENGINE_STRATEGY_DRAFT.md) | 게임 엔진·Agent Manager 모듈화 전략 임시 초안 |
+| [AI_MAFIA_INTEGRATION_MVP_PLAN.md](docs/temp/AI_MAFIA_INTEGRATION_MVP_PLAN.md) | 로그인 제거와 Frontend–Backend–DB–Redis–MCP–LLM 연결 중심의 축소 MVP 계획 |
+| [AI_MAFIA_FRONTEND_BACKEND_CONNECTION_PLAN.md](docs/temp/AI_MAFIA_FRONTEND_BACKEND_CONNECTION_PLAN.md) | Frontend–Backend 공개 API 연결만 수행하는 소단위 구현 계획 |
 
 다섯 MCP Resource의 상세 `data` schema는 API 명세 8.2절과 그 절이 명시적으로
 참조하는 API 공통 모델만 정본이며 MCP 서버 설계서에는 URI·Engine scope 매핑과
@@ -130,12 +126,12 @@ Front·MCP 계약을 차례로 완료한 뒤 사용할 수 있습니다. 규칙 
 ├── pyproject.toml                    # ai-mafia 통합 런타임·개발 의존성 및 도구 설정
 ├── backend/
 │   ├── app/main.py                   # FastAPI 생성과 router·오류 처리 등록
-│   ├── app/routers/                  # health·legacy identity·scaffold endpoint
+│   ├── app/routers/                  # health·공개 게임·내부 Engine endpoint
 │   ├── app/schemas/                  # 요청·응답 validation 계약
-│   ├── app/services/                 # identity 연결 유스케이스
-│   ├── app/models/identity.py        # 외부 identity·내부 사용자 도메인 모델
+│   ├── app/services/                 # UUID 사용자·게임 유스케이스
+│   ├── app/models/identity.py        # UUID 내부 사용자 모델
 │   ├── app/repositories/             # PostgreSQL 사용자 저장소
-│   ├── app/infrastructure/           # migration·PostgreSQL·HMAC 구현
+│   ├── app/infrastructure/           # migration·PostgreSQL·내부 HMAC 구현
 │   ├── app/agent/                    # 아직 loop가 없는 Agent 정책·orchestrator 골격
 │   ├── app/llm_provider/             # 현재 LLM Provider adapter
 │   ├── app/mcp/                      # 현재 scaffold MCP client·registry
@@ -153,9 +149,6 @@ Front·MCP 계약을 차례로 완료한 뒤 사용할 수 있습니다. 규칙 
 │   ├── core/identity.py              # UUID v4 검증·생성
 │   ├── core/session.py               # identity scope·session mirror
 │   ├── core/api_client.py            # UUID 공개 Backend API client
-│   ├── app_pages/login_page.py       # legacy OIDC 코드(실행 경로 제외)
-│   ├── auth/                         # OIDC 설정·claim·접근·저장 결과 정책
-│   ├── components/ui.py              # 안전한 HTML·CSS 표현
 │   ├── .streamlit/secrets.toml.example
 │   └── tests/
 ├── frontend_admin/                   # 관리자 독립 앱의 최소 실행 골격
@@ -175,7 +168,7 @@ Front·MCP 계약을 차례로 완료한 뒤 사용할 수 있습니다. 규칙 
 │       ├── AI_MAFIA_FRONTEND_BACKEND_HANDOFF.md # Frontend–Backend 연동 인계 요약
 │       └── AI_MAFIA_INDEPENDENT_CONTRACT.md # 섹터 간 최소 연결 형식·독립 개발 규칙
 ├── tests/{integration,e2e}/          # 서버 간·브라우저 검증 확장 위치
-└── scripts/configure_google_oidc.py  # Google client JSON → Streamlit secrets 생성
+└── scripts/                          # 운영·개발 보조 스크립트
 ```
 
 ### Frontend 컴포넌트별 가상환경
@@ -251,7 +244,6 @@ fresh credential 조정은 `WU-M7` 범위입니다. 초기 요청의 capability 
 - Python 3.12 이상
 - PostgreSQL 서버와 데이터베이스 생성 권한(MCP 섹터 운영 책임)
 - Redis 실행 환경(MCP 섹터 운영 책임, 게임 기능 구현 단계부터 필요)
-- 현재 legacy 로그인 실행에만 필요한 Google Cloud OAuth client. UUID-only 전환 뒤 제거
 - 권장 패키지 관리자: [uv](https://docs.astral.sh/uv/)
 
 모든 명령은 저장소 루트에서 실행합니다.
@@ -260,9 +252,8 @@ fresh credential 조정은 `WU-M7` 범위입니다. 초기 요청의 capability 
 uv sync --dev
 ```
 
-현재 legacy 앱은 Google OIDC 자격증명을 사용하고 기존 LLM adapter는 선택한
-Provider key를 사용합니다. UUID-only 전환 뒤 Google 설정과 Front HMAC secret을
-제거합니다. 실제 값은 `.env.example`의 placeholder만 참고하고 Git에 넣지 않습니다.
+기존 LLM adapter는 선택한 Provider key를 사용합니다. 실제 값은 `.env.example`의
+placeholder만 참고하고 Git에 넣지 않습니다.
 
 ## Backend·Data Infrastructure 환경 설정
 
@@ -282,8 +273,6 @@ chmod 600 .env
 DATABASE_URL=postgresql://app_user:change-me@localhost:5432/Team4_Proj
 DATABASE_MIGRATION_URL=postgresql://migration_user:change-me@localhost:5432/Team4_Proj
 DATABASE_NAME=Team4_Proj
-INTERNAL_API_SECRET=REPLACE_WITH_AT_LEAST_32_RANDOM_CHARACTERS
-INTERNAL_API_MAX_AGE_SECONDS=300
 ```
 
 - `DATABASE_URL`에는 Backend runtime이 사용할 DML 최소 권한 계정을 설정합니다.
@@ -291,11 +280,6 @@ INTERNAL_API_MAX_AGE_SECONDS=300
   runner는 아직 이 이름을 읽지 않으므로 아래 migration 절의 격리 주입 절차를
   따릅니다. Backend runtime 프로세스에는 전달하지 않습니다.
 - 앱은 URL의 원래 DB 경로 대신 `DATABASE_NAME`을 사용하며 기본값은 `Team4_Proj`입니다.
-- `INTERNAL_API_SECRET`은 현재 legacy identity API에만 필요한 32자 이상의 값이며
-  `WU-F1`·`WU-B1` 완료 뒤 제거합니다.
-- 같은 `INTERNAL_API_SECRET`을 `frontend_user/.streamlit/secrets.toml`의
-  `backend.internal_api_secret`에도 설정합니다. 브라우저나 소스 코드에는 넣지 않습니다.
-- Backend의 기본 서명 허용 시간 오차는 300초이며 최대 3600초로 제한됩니다.
 - 현재 scaffold는 `.env.example`의 `REDIS_URL`, `LLM_PROVIDER`, 선택 Provider 설정과
   `MAFIA_MCP_URL`을 이미 읽습니다. game state keyring, `MCP_SERVER_AUTH_SECRET`,
   `ENGINE_INTERNAL_API_SECRET`, `ADMIN_USER_IDS`와 `ENGINE_API_URL`은 Backend canonical
@@ -310,8 +294,7 @@ INTERNAL_API_MAX_AGE_SECONDS=300
   `GAME_STATE_KEYRING_FILE`은 저장소 밖의 권한 제한 JSON을 가리키고
   `GAME_STATE_ACTIVE_KEY_ID`는 신규 seed·snapshot 암호화 key를 선택합니다.
   `MCP_SERVER_AUTH_SECRET`은 Backend→MCP 세션 개설 토큰 서명,
-  `ENGINE_INTERNAL_API_SECRET`은 MCP→Backend 내부 경계용입니다. 두 값과
-  `INTERNAL_API_SECRET`은 모두 서로 다른 값을 사용해야 합니다. 운영 MCP 연결은
+  `ENGINE_INTERNAL_API_SECRET`은 MCP→Backend 내부 경계용입니다. 운영 MCP 연결은
   검증된 TLS를 사용합니다.
 - 앱 수준의 LLM timeout, token 상한·사용량, 비용·예산 설정은 MVP에서 사용하지
   않습니다. 중단된 Agent worker는 조정 불가능한 고정 lease와 fencing token으로
@@ -327,8 +310,8 @@ INTERNAL_API_MAX_AGE_SECONDS=300
 
 | 환경 소비자 | 허용하는 AI 마피아 관련 키 | 주입 금지 |
 |---|---|---|
-| Front 서버 | 현재 legacy OIDC·`INTERNAL_API_SECRET`, 목표 상태의 Backend URL | DB·Redis·LLM·MCP/Engine secret |
-| Backend runtime | `DATABASE_URL`, `DATABASE_NAME`, `REDIS_URL`, game state keyring, LLM Provider·model·key, `MAFIA_MCP_URL`, `MCP_REQUIRE_TLS`, `MCP_TLS_CA_FILE`, `MCP_SERVER_AUTH_SECRET`, `ENGINE_INTERNAL_API_SECRET`, `ADMIN_USER_IDS`, 전환 전 `INTERNAL_API_SECRET` | `DATABASE_MIGRATION_URL` |
+| Front 서버 | Backend URL | DB·Redis·LLM·MCP/Engine secret |
+| Backend runtime | `DATABASE_URL`, `DATABASE_NAME`, `REDIS_URL`, game state keyring, LLM Provider·model·key, `MAFIA_MCP_URL`, `MCP_REQUIRE_TLS`, `MCP_TLS_CA_FILE`, `MCP_SERVER_AUTH_SECRET`, `ENGINE_INTERNAL_API_SECRET`, `ADMIN_USER_IDS` | `DATABASE_MIGRATION_URL` |
 | migration 실행 프로세스 | `DATABASE_MIGRATION_URL`, `DATABASE_NAME` | runtime·LLM·MCP secret |
 | MCP runtime | `MCP_SERVER_AUTH_SECRET`, `ENGINE_INTERNAL_API_SECRET`, `ENGINE_API_URL`와 비밀이 아닌 listen/TLS 설정 | DB·Redis·LLM 자격증명 |
 
@@ -374,42 +357,11 @@ seed 파일을 함께 두지 않습니다. `001`·`002` migration은 legacy `use
 포함하지 않으며, 적용된 migration 파일은 수정하지 않고 이후 번호의 순방향
 migration으로 확장합니다.
 
-## Legacy Google OAuth와 Streamlit secrets
+## Frontend 설정
 
-이 절은 아직 남아 있는 현재 identity 코드 실행용입니다. 새 MVP 목표에는 포함되지
-않으며 `WU-F1`·`WU-B1` 완료 뒤 설정·스크립트·route와 함께 제거합니다.
-
-Google Cloud Console에서 OAuth 동의 화면과 웹 애플리케이션 client를 만들고 로컬
-승인된 redirect URI를 다음 값과 정확히 일치시킵니다.
-
-```text
-http://localhost:8501/oauth2callback
-```
-
-운영 환경은 실제 HTTPS 도메인의 `/oauth2callback`을 Google 설정과 Streamlit
-secrets 양쪽에 동일하게 등록합니다.
-
-Google client JSON은 저장소 밖의 안전한 경로에 두고 다음 스크립트로 OIDC 항목을
-생성합니다. 이 스크립트는 client secret을 출력하지 않으며 기존 파일을 기본적으로
-덮어쓰지 않습니다.
-
-```bash
-uv run python scripts/configure_google_oidc.py \
-  --client-json /secure/path/google-oauth-client.json
-```
-
-기본 출력은 `frontend_user/.streamlit/secrets.toml`, redirect URI는
-`http://localhost:8501/oauth2callback`, 파일 권한은 `0600`입니다. 생성 후 예시의
-`[backend]` 항목을 참고해 Backend 주소와 `.env`와 동일한 내부 서명 secret을
-추가해야 합니다.
-
-```toml
-[backend]
-api_url = "http://127.0.0.1:8000"
-internal_api_secret = "REPLACE_WITH_THE_SAME_RANDOM_VALUE_AS_BACKEND"
-```
-
-수동 설정은 예시를 복사한 뒤 OIDC와 Backend 값을 모두 채웁니다.
+Frontend는 Google 로그인 없이 브라우저 localStorage에 UUID v4를 저장하고,
+Backend 요청의 `X-User-Id` header로 사용자 scope를 전달합니다. UUID는 인증 수단이
+아니므로 신뢰된 로컬·사설망 환경에서만 사용합니다. Backend 주소만 설정합니다.
 
 ```bash
 cp frontend_user/.streamlit/secrets.toml.example \
@@ -417,8 +369,7 @@ cp frontend_user/.streamlit/secrets.toml.example \
 chmod 600 frontend_user/.streamlit/secrets.toml
 ```
 
-실제 `.env`, `secrets.toml`, Google OAuth JSON은 Git 무시 대상이며 이동·커밋하지
-않습니다.
+실제 `.env`와 `secrets.toml`은 Git 무시 대상이며 이동·커밋하지 않습니다.
 
 ## 실행
 
@@ -461,9 +412,8 @@ Windows에서 `uv`를 사용하지 않는 경우 프로젝트 가상환경의 Py
 & ".\frontend_user\.venv\Scripts\python.exe" -m streamlit run ".\frontend_user\app.py" --server.port 8501
 ```
 
-브라우저에서 [http://localhost:8501](http://localhost:8501)을 엽니다. OIDC 또는
-Backend 설정이 없거나 안전성 검사를 통과하지 못하면 접근을 허용하지 않고 고정된
-구성·재시도 안내만 표시합니다.
+브라우저에서 [http://localhost:8501](http://localhost:8501)을 엽니다. Backend
+설정이 없거나 연결되지 않으면 고정된 연결 오류 안내를 표시합니다.
 
 관리자 앱은 업무 기능 없이 독립 실행 경계만 확인할 수 있습니다.
 
@@ -473,39 +423,6 @@ uv run streamlit run frontend_admin/app.py --server.port 8502
 
 관리자 entrypoint는 실행 위치와 무관하게 저장소 루트를 import 경로에 등록해
 `frontend_admin` 패키지를 불러옵니다.
-
-## 현재 legacy 구현: Google 로그인
-
-Google OIDC 인증부터 내부 사용자 계정 연결, 로그인 프로필 표시와 로그아웃까지
-현재 코드에 구현돼 있습니다. 이 흐름은 새 UUID-only 계약과 동시에 사용하는 기능이
-아니며 `WU-F1`·`WU-B1`에서 제거합니다. 전환 전 제공되는 화면은 연결된 계정의
-프로필과 로그아웃 UI이고 AI 마피아 홈·게임 화면은 후속 구현 범위입니다.
-
-1. 앱 시작 시 `auth.redirect_uri`, 32자 이상의 cookie secret, Google client
-   ID·secret과 HTTPS metadata URL을 검사합니다. 설정이 누락되거나 안전하지 않으면
-   로그인 버튼을 비활성화하고, 남아 있는 OIDC cookie도 인증 상태로 사용하지 않습니다.
-2. 사용자가 `Google로 계속하기`를 누르면 `st.login("google")`이 Google OIDC
-   리디렉션을 시작하고 Streamlit이 `/oauth2callback`과 cookie session을 처리합니다.
-3. 콜백 후 `st.user`의 `sub`, email, 표시명, email 검증 여부와 프로필 이미지를
-   공급자 중립 신원 모델로 변환합니다. 문자열은 제어 문자와 길이를 제한하고,
-   아바타는 HTTPS 절대 URL만 허용합니다.
-4. Frontend는 정규화한 신원을 JSON body로 만들고
-   `timestamp.request_id.raw_body`를 HMAC-SHA256으로 서명해
-   `POST /api/v1/identity/provision`만 호출합니다. DB에는 직접 접근하지 않습니다.
-5. Backend는 UUID request id, 기본 300초 시간 오차, HMAC과 요청 schema를 다시
-   검증한 뒤 `IdentityService`와 PostgreSQL 저장소를 호출합니다.
-6. 첫 로그인은 `users`와 `oauth_identities`를 한 트랜잭션에서 생성하고,
-   재로그인은 프로필과 최근 로그인 시각을 갱신합니다. 동시 첫 로그인은
-   `(provider, provider_subject)` 기준 advisory transaction lock으로 직렬화합니다.
-7. 저장된 활성 사용자 응답을 받은 실행에서만 애플리케이션 접근을 허용합니다.
-   설정 오류, 서명 실패, Backend·DB 장애와 비활성 계정은 모두 접근 거부로 끝납니다.
-8. 로그아웃은 세션에 캐시한 계정 연결 결과를 제거한 뒤 `st.logout()`을 호출해
-   다른 Google 계정으로 다시 로그인할 때 이전 사용자 상태가 재사용되지 않게 합니다.
-
-이메일은 변경 가능한 프로필일 뿐 계정 연결 키가 아니며, `(provider,
-provider_subject)`만 외부 계정 연결에 사용합니다. `request_id`는 현재 추적
-상관관계에 사용하고, Redis가 추가되는 후속 단계에서 짧은 TTL의 재전송 차단 키로
-확장합니다.
 
 ## 테스트와 정적 검사
 
@@ -532,16 +449,14 @@ uv run python -m compileall -q backend frontend_user frontend_admin mcp_server
 uv run ruff check .
 ```
 
-자동 테스트는 synthetic identity, 가짜 DB 연결, mock HTTP transport를 사용해 Google,
-운영 DB, 유료 API를 호출하지 않습니다. 실제 Google OAuth 왕복과 실제 PostgreSQL
+자동 테스트는 synthetic identity, 가짜 DB 연결, mock HTTP transport를 사용해 운영 DB와
+유료 API를 호출하지 않습니다. 실제 PostgreSQL
 마이그레이션은 자격 증명과 로컬 인프라가 필요하므로 MCP 담당자가 실행 환경을
 준비·검증하고 Backend 담당자와 결과를 공동 판정합니다.
 
 ## 보안 원칙과 알려진 제약
 
-- `.env`, 실제 `secrets.toml`, OAuth JSON, token과 모든 실제 자격증명을 커밋하지 않습니다.
-- 현재 legacy OIDC cookie secret과 Front HMAC secret은 전환 전까지 재사용하지 않고
-  응답·로그에 넣지 않습니다.
+- `.env`, 실제 `secrets.toml`, token과 모든 실제 자격증명을 커밋하지 않습니다.
 - 목표 공개 API의 `X-User-Id`는 인증이 아니라 UUID scope 선택값입니다. UUID를 아는
   사용자의 가장을 막지 못하므로 MVP는 개인 개발 환경 또는 사설망으로 제한합니다.
 - 내부 Engine HMAC과 MCP 세션 개설 토큰 서명 secret은 Front에 전달하지 않고 서로
@@ -573,8 +488,8 @@ uv run ruff check .
 
 ## 확장 지점
 
-- 제거 대상 legacy identity: `frontend_user/auth/`, `frontend_user/app_pages/login_page.py`,
-  `backend/app/routers/identity_router.py`, `backend/app/services/identity_service.py`
+- UUID 사용자 식별: `frontend_user/core/identity.py`, `frontend_user/core/session.py`,
+  `frontend_user/components/identity_bridge.py`, `backend/app/services/identity_service.py`
 - Backend API client: `frontend_user/core/api_client.py`
 - 사용자 저장소: `backend/app/repositories/user_repository.py`
 - schema 변경: Backend가 `backend/migrations/`에 다음 번호의 순방향 SQL을

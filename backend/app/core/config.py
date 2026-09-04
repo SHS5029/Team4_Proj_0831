@@ -39,8 +39,6 @@ class Settings:
     database_url: str = field(repr=False)
     database_name: str = "Team4_Proj"
     app_env: str = "development"
-    internal_api_secret: str = field(default="", repr=False)
-    internal_api_max_age_seconds: int = 300
     # 내부 Engine 서명과 MCP bootstrap 서명은 서로 다른 키를 사용한다.
     # 두 키를 하나로 합치면 한 경계가 유출될 때 다른 경계까지 함께 무너진다.
     engine_internal_api_secret: str = field(default="", repr=False)
@@ -53,7 +51,6 @@ class Settings:
     game_state_active_key_id: str = ""
     llm_provider: str = "dummy"
     mafia_mcp_url: str = "http://127.0.0.1:8010/mcp"
-    mcp_internal_secret: str = field(default="", repr=False)
     # 관리자 API는 이 목록에 있는 UUID v4만 읽기 권한을 갖는다. 형식 검증은
     # AdminService가 fail-closed로 수행하므로 잘못된 설정이 일부 관리자만
     # 남기는 상태로 시작되지 않는다.
@@ -100,8 +97,6 @@ class Settings:
             raise ValueError("DATABASE_NAME must not be empty")
         if any(character in self.database_name for character in ("/", "\x00")):
             raise ValueError("DATABASE_NAME contains an invalid character")
-        if not 1 <= self.internal_api_max_age_seconds <= 3_600:
-            raise ValueError("INTERNAL_API_MAX_AGE_SECONDS must be between 1 and 3600")
         if not 1 <= self.engine_internal_api_max_age_seconds <= 3_600:
             raise ValueError(
                 "ENGINE_INTERNAL_API_MAX_AGE_SECONDS must be between 1 and 3600"
@@ -146,7 +141,6 @@ class Settings:
         # 한 번만 저장한다. 이후 요청 처리 중 설정이 바뀌지 않는다.
         object.__setattr__(self, "database_url", raw_url)
         object.__setattr__(self, "database_name", self.database_name.strip())
-        object.__setattr__(self, "internal_api_secret", self.internal_api_secret.strip())
         object.__setattr__(
             self,
             "engine_internal_api_secret",
@@ -162,27 +156,12 @@ class Settings:
         object.__setattr__(self, "game_state_active_key_id", active_key_id)
         object.__setattr__(self, "llm_provider", self.llm_provider.strip().lower())
         object.__setattr__(self, "mafia_mcp_url", self.mafia_mcp_url.strip().rstrip("/"))
-        object.__setattr__(self, "mcp_internal_secret", self.mcp_internal_secret.strip())
         object.__setattr__(self, "local_llm_base_url", self.local_llm_base_url.strip().rstrip("/"))
         object.__setattr__(self, "local_llm_model", self.local_llm_model.strip())
         object.__setattr__(self, "openai_api_key", self.openai_api_key.strip())
         object.__setattr__(self, "openai_model", self.openai_model.strip())
         object.__setattr__(self, "gemini_api_key", self.gemini_api_key.strip())
         object.__setattr__(self, "gemini_model", self.gemini_model.strip())
-
-    @property
-    def validated_internal_api_secret(self) -> bytes:
-        """내부 API 서명에 사용할 충분히 긴 비밀값을 바이트로 반환한다.
-
-        비밀값 자체를 오류에 포함하지 않고 누락·자리표시자·짧은 값을 모두 같은
-        구성 오류로 처리한다. 이 검사는 Backend가 요청을 신뢰하기 직전에 실행해
-        잘못된 배포 설정에서 서명 검증이 우연히 활성화되지 않게 한다.
-        """
-
-        secret = self.internal_api_secret
-        if len(secret) < 32 or secret.upper().startswith("REPLACE_"):
-            raise RuntimeError("Internal API signing is not configured")
-        return secret.encode("utf-8")
 
     @property
     def validated_engine_internal_api_secret(self) -> bytes:
@@ -234,11 +213,6 @@ class Settings:
             database_url=os.getenv("DATABASE_URL", ""),
             database_name=os.getenv("DATABASE_NAME", "Team4_Proj"),
             app_env=os.getenv("APP_ENV", "development"),
-            internal_api_secret=os.getenv("INTERNAL_API_SECRET", ""),
-            internal_api_max_age_seconds=_read_positive_int(
-                os.getenv("INTERNAL_API_MAX_AGE_SECONDS", "300"),
-                name="INTERNAL_API_MAX_AGE_SECONDS",
-            ),
             engine_internal_api_secret=os.getenv("ENGINE_INTERNAL_API_SECRET", ""),
             mcp_server_auth_secret=os.getenv("MCP_SERVER_AUTH_SECRET", ""),
             engine_internal_api_max_age_seconds=_read_positive_int(
@@ -250,7 +224,6 @@ class Settings:
             game_state_active_key_id=os.getenv("GAME_STATE_ACTIVE_KEY_ID", ""),
             llm_provider=os.getenv("LLM_PROVIDER", "dummy"),
             mafia_mcp_url=os.getenv("MAFIA_MCP_URL", "http://127.0.0.1:8010/mcp"),
-            mcp_internal_secret=os.getenv("MCP_INTERNAL_SECRET", ""),
             admin_user_ids=tuple(
                 item.strip() for item in os.getenv("ADMIN_USER_IDS", "").split(",")
             ),

@@ -62,10 +62,9 @@ class BackendApiConfig:
 class ApiClient:
     """공개 사용자 API를 호출하는 UUID-only client."""
 
-    # 팀 전달 사항: Backend는 일반 사용자 요청에서 X-User-Id와 X-Request-Id만
-    # 읽고, Authorization·OIDC token·Front HMAC은 요구하지 않아야 한다. UUID는
-    # 인증 자격증명이 아니므로 Backend가 최초 쓰기 요청에서 사용자 행을 멱등
-    # 생성하고 게임 소유권은 owner_user_id와 비교해야 한다.
+    # Backend는 일반 사용자 요청에서 UUID 식별자와 요청 추적 ID만 읽는다.
+    # UUID는 인증 자격증명이 아니므로 Backend가 최초 쓰기 요청에서 사용자 행을
+    # 멱등 생성하고 게임 소유권은 owner_user_id와 비교한다.
 
     def __init__(self, *, user_id: UUID | str, api_url: str | None = None,
                  transport: HttpTransport | None = None,

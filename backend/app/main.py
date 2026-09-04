@@ -87,7 +87,6 @@ def create_app(
         )
 
     application.include_router(health_router)
-    # 과거 OIDC identity/provision 라우트는 정본 계약에서 제거되었다.
     # 사용자 식별은 공개 요청의 X-User-Id(UUID v4)로만 처리한다.
     application.include_router(scaffold_mcp_router)
     application.include_router(internal_router)
