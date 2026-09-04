@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -74,6 +74,31 @@ class PostgresAgentRepository:
         """짧은 Repository transaction을 열 연결 관리자를 받는다."""
 
         self.transaction_manager = transaction_manager
+
+    def list_active_personas(
+        self,
+        cursor: Any,
+        *,
+        version: str,
+    ) -> list[Mapping[str, Any]]:
+        """게임 생성 시 AI에게 배정할 활성 persona 목록을 ID 순서로 읽는다.
+
+        페르소나는 말투와 행동 성향만 바꾸며, 추리 능력 차이를 만들지 않는다.
+        선택은 service의 seed 기반 RNG가 맡고 이 저장소는 승인된 후보만 반환한다.
+        """
+
+        cursor.execute(
+            """
+            SELECT id, version, display_name, speech_style, backstory,
+                   parameters, content_hash
+            FROM public.agent_personas
+            WHERE version = %s
+              AND active = TRUE
+            ORDER BY id
+            """,
+            (version,),
+        )
+        return list(cursor.fetchall())
 
     def _connection_cursor(self):
         """공개 Repository 메서드가 사용할 짧은 DB transaction을 연다."""

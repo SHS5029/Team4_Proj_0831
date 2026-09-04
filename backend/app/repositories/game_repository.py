@@ -1,10 +1,149 @@
-"""게임 상태 행을 잠그고 내부 sequence를 발급하는 PostgreSQL 저장소."""
+"""게임 seed 보호와 PostgreSQL 게임 상태 저장을 담당하는 모듈."""
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
+import os
+import re
+import stat
 from collections.abc import Mapping
-from typing import Any
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
+
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+if TYPE_CHECKING:
+    from backend.app.core.config import Settings
+    from backend.app.models.game_state import GameState
+
+
+KEYRING_MAX_BYTES = 64 * 1024
+AES_256_KEY_BYTES = 32
+AES_GCM_NONCE_BYTES = 12
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class EncryptedGameSeed:
+    """DB의 세 seed 컬럼에 그대로 저장할 암호화 결과."""
+
+    ciphertext: bytes
+    nonce: bytes
+    key_id: str
+
+
+class GameStateKeyring:
+    """저장소 밖 keyring을 읽어 게임 seed를 AES-256-GCM으로 보호한다.
+
+    키 원문은 객체 외부로 반환하지 않는다. DB에는 암호문, 매번 새로 만든 nonce,
+    복호화에 사용할 key ID만 저장한다. 설정이나 keyring이 잘못되면 평문 저장으로
+    넘어가지 않고 게임 쓰기 자체를 거부한다.
+    """
+
+    __slots__ = ("_active_key_id", "_keys")
+
+    def __init__(self, *, active_key_id: str, keys: Mapping[str, bytes]) -> None:
+        self._active_key_id = active_key_id
+        self._keys = dict(keys)
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> GameStateKeyring:
+        """검증된 설정이 가리키는 JSON keyring을 안전하게 불러온다."""
+
+        keyring_file = settings.game_state_keyring_file
+        active_key_id = settings.game_state_active_key_id
+        if not keyring_file or not active_key_id:
+            raise RuntimeError("Game state encryption is not configured")
+
+        path = Path(keyring_file)
+        try:
+            if not path.is_file() or path.stat().st_size > KEYRING_MAX_BYTES:
+                raise RuntimeError("Game state keyring is unavailable")
+            # POSIX에서는 다른 사용자에게 읽기 권한이 열려 있는 파일을 거부한다.
+            # Windows ACL은 mode bit만으로 판별할 수 없어 배포 환경에서 제한한다.
+            if os.name != "nt" and stat.S_IMODE(path.stat().st_mode) & 0o077:
+                raise RuntimeError("Game state keyring permissions are not restricted")
+            raw_document = path.read_text(encoding="utf-8")
+        except RuntimeError:
+            raise
+        except (OSError, UnicodeError) as exc:
+            # 경로나 파일 내용은 운영 로그에 노출하지 않고 고정 메시지만 남긴다.
+            raise RuntimeError("Game state keyring is unavailable") from exc
+
+        keys = _parse_keyring(raw_document)
+        if active_key_id not in keys:
+            raise RuntimeError("Active game state key is unavailable")
+        return cls(active_key_id=active_key_id, keys=keys)
+
+    def encrypt_seed(self, seed: bytes) -> EncryptedGameSeed:
+        """게임 seed를 현재 active key와 매번 새로운 nonce로 암호화한다."""
+
+        if not isinstance(seed, bytes) or not seed:
+            raise ValueError("Game seed must be non-empty bytes")
+        nonce = os.urandom(AES_GCM_NONCE_BYTES)
+        ciphertext = AESGCM(self._keys[self._active_key_id]).encrypt(nonce, seed, None)
+        return EncryptedGameSeed(
+            ciphertext=ciphertext,
+            nonce=nonce,
+            key_id=self._active_key_id,
+        )
+
+    def decrypt_seed(self, *, ciphertext: bytes, nonce: bytes, key_id: str) -> bytes:
+        """DB의 key ID로 기존 seed를 복호화하며 위변조는 즉시 거부한다."""
+
+        key = self._keys.get(key_id)
+        if key is None:
+            raise RuntimeError("Game state decryption key is unavailable")
+        if not ciphertext or len(nonce) != AES_GCM_NONCE_BYTES:
+            raise RuntimeError("Encrypted game state is invalid")
+        try:
+            return AESGCM(key).decrypt(nonce, ciphertext, None)
+        except (InvalidTag, ValueError) as exc:
+            # 실패 시 새 seed를 뽑거나 게임을 이어가면 결과가 달라지므로 거부한다.
+            raise RuntimeError("Encrypted game state authentication failed") from exc
+
+
+def _parse_keyring(raw_document: str) -> dict[str, bytes]:
+    """정본 JSON 구조와 모든 AES-256 key 길이를 한 번에 검증한다."""
+
+    try:
+        document = json.loads(raw_document)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Game state keyring is malformed") from exc
+    if not isinstance(document, dict) or set(document) != {"version", "keys"}:
+        raise RuntimeError("Game state keyring is malformed")
+    if document["version"] != 1 or not isinstance(document["keys"], dict):
+        raise RuntimeError("Game state keyring is malformed")
+    if not document["keys"]:
+        raise RuntimeError("Game state keyring contains no keys")
+
+    decoded_keys: dict[str, bytes] = {}
+    for key_id, encoded_key in document["keys"].items():
+        if not isinstance(key_id, str) or not key_id.strip() or len(key_id) > 64:
+            raise RuntimeError("Game state keyring contains an invalid key ID")
+        if key_id != key_id.strip() or not isinstance(encoded_key, str):
+            raise RuntimeError("Game state keyring contains an invalid key")
+        # 일반 Base64의 '+'와 '/'는 받지 않고 정본이 지정한 Base64URL 문자만
+        # 허용한다. '=' padding은 문자열 끝에 최대 두 개만 올 수 있다.
+        if re.fullmatch(r"[A-Za-z0-9_-]+={0,2}", encoded_key) is None:
+            raise RuntimeError("Game state keyring contains an invalid key")
+        try:
+            padding = "=" * (-len(encoded_key) % 4)
+            decoded = base64.b64decode(
+                encoded_key + padding,
+                altchars=b"-_",
+                validate=True,
+            )
+        except (binascii.Error, ValueError) as exc:
+            raise RuntimeError("Game state keyring contains an invalid key") from exc
+        if len(decoded) != AES_256_KEY_BYTES:
+            raise RuntimeError("Game state keyring contains an invalid key")
+        decoded_keys[key_id] = decoded
+    return decoded_keys
 
 
 GAME_COLUMNS = """
@@ -20,16 +159,97 @@ GAME_COLUMNS = """
 class PostgresGameRepository:
     """게임별 PostgreSQL row lock과 sequence 발급을 담당한다."""
 
+    def insert_initial_game(
+        self,
+        cursor: Any,
+        *,
+        state: GameState,
+        owner_user_id: UUID,
+        scenario_version: str,
+        scenario_id: str,
+        scenario_content_hash: str,
+        encrypted_seed: EncryptedGameSeed,
+        agent_config_version: str = "agent-config-v1",
+    ) -> Mapping[str, Any]:
+        """역할 배정이 끝난 최초 ROLE_REVEAL 게임 행을 저장한다.
+
+        이 메서드는 연결을 직접 열지 않는다. 호출 서비스가 users, players, facts,
+        event, receipt와 함께 하나의 transaction으로 묶을 수 있도록 같은 cursor를
+        전달받는다.
+        """
+
+        if (
+            state.status.value != "IN_PROGRESS"
+            or state.phase.value != "ROLE_REVEAL"
+            or state.round != 0
+            or state.day_number != 1
+            or state.state_version != 1
+        ):
+            raise ValueError("Initial game state is invalid")
+        if not 6 <= len(state.players) <= 9:
+            raise ValueError("Initial game player count is invalid")
+        if len(scenario_content_hash) != 64 or any(
+            character not in "0123456789abcdef" for character in scenario_content_hash
+        ):
+            raise ValueError("Scenario content hash is invalid")
+
+        mafia_count = sum(player.role.value == "MAFIA" for player in state.players)
+        cursor.execute(
+            """
+            INSERT INTO public.games (
+                id, owner_user_id, status, phase, round, day_number,
+                state_version, next_event_sequence, next_front_sequence,
+                player_count, mafia_count, ruleset_version, scenario_version,
+                scenario_id, scenario_content_hash, seed_ciphertext, seed_nonce,
+                seed_key_id, agent_config_version, fast_forward_enabled,
+                winner, win_reason, saved_at, finished_at
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s,
+                %s, 1, 1,
+                %s, %s, 'mystery-v1', %s,
+                %s, %s, %s, %s,
+                %s, %s, FALSE,
+                NULL, NULL, NULL, NULL
+            )
+            RETURNING id, owner_user_id, status, phase, round, day_number,
+                      state_version, player_count, mafia_count, scenario_id
+            """,
+            (
+                state.game_id,
+                owner_user_id,
+                state.status.value,
+                state.phase.value,
+                state.round,
+                state.day_number,
+                state.state_version,
+                len(state.players),
+                mafia_count,
+                scenario_version,
+                scenario_id,
+                scenario_content_hash,
+                encrypted_seed.ciphertext,
+                encrypted_seed.nonce,
+                encrypted_seed.key_id,
+                agent_config_version,
+            ),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise RuntimeError("게임 생성 결과가 반환되지 않았습니다.")
+        return row
+
     def lock_game(self, cursor: Any, game_id: UUID) -> Mapping[str, Any] | None:
         """동시 command가 같은 게임 상태를 동시에 읽지 못하도록 행을 잠근다."""
 
+        # GAME_COLUMNS는 사용자 입력이 아닌 이 모듈의 고정 상수다. game_id는 아래
+        # bound parameter로 전달하므로 문자열 조합을 통한 SQL 주입 경로가 없다.
         cursor.execute(
             f"""
             SELECT {GAME_COLUMNS}
             FROM public.games
             WHERE id = %s
             FOR UPDATE
-            """,
+            """,  # noqa: S608
             (game_id,),
         )
         return cursor.fetchone()

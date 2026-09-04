@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Protocol, cast
 from uuid import UUID
 
@@ -92,8 +92,8 @@ class PostgresUserRepository:
             # 고정 시각은 테스트용 경로다. timezone 없는 값을 DB에 넣지 않도록
             # UTC로 정규화해 운영 데이터와 같은 timestamptz 의미를 유지한다.
             if now.tzinfo is None:
-                now = now.replace(tzinfo=timezone.utc)
-            now = now.astimezone(timezone.utc)
+                now = now.replace(tzinfo=UTC)
+            now = now.astimezone(UTC)
             query = """
                 INSERT INTO users (id, created_at, last_seen_at)
                 VALUES (%s, %s, %s)
@@ -109,6 +109,26 @@ class PostgresUserRepository:
                 row = _required_row(cursor.fetchone(), "ensured user")
 
         return _row_to_user(row)
+
+    def ensure_user_in_transaction(self, cursor: CursorLike, user_id: UUID) -> UserRecord:
+        """이미 열린 게임 생성 transaction 안에서 사용자를 멱등 준비한다.
+
+        게임 생성은 users, games, players, facts, event, receipt가 모두 성공해야만
+        commit되어야 한다. 별도 연결을 여는 ``ensure_user``와 달리 이 메서드는
+        호출자가 가진 cursor만 사용해 중간 실패 시 users 행까지 함께 rollback한다.
+        """
+
+        cursor.execute(
+            """
+            INSERT INTO users (id, created_at, last_seen_at)
+            VALUES (%s, NOW(), NOW())
+            ON CONFLICT (id) DO UPDATE
+                SET last_seen_at = EXCLUDED.last_seen_at
+            RETURNING id, created_at, last_seen_at
+            """,
+            (user_id,),
+        )
+        return _row_to_user(_required_row(cursor.fetchone(), "ensured user"))
 
     def get_user(self, user_id: UUID) -> UserRecord | None:
         """사용자 행을 조회한다. 행이 없으면 생성하지 않고 ``None``을 반환한다."""
