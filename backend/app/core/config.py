@@ -172,8 +172,12 @@ class Settings:
         """
 
         load_dotenv(env_file or PROJECT_ROOT / ".env", override=False)
+        database_url = os.getenv("DATABASE_URL", "")
+        if not database_url and os.getenv("BACKEND_DATA_MODE") == "mock":
+            # mock 모드에서는 연결하지 않지만 import 단계의 설정 형식 검증은 유지한다.
+            database_url = "postgresql://mock:mock@127.0.0.1:5432/Team4_Proj"
         return cls(
-            database_url=os.getenv("DATABASE_URL", ""),
+            database_url=database_url,
             database_name=os.getenv("DATABASE_NAME", "Team4_Proj"),
             app_env=os.getenv("APP_ENV", "development"),
             internal_api_secret=os.getenv("INTERNAL_API_SECRET", ""),

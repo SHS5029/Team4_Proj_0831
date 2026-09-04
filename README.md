@@ -139,6 +139,7 @@ Front·MCP 계약을 차례로 완료한 뒤 사용할 수 있습니다. 규칙 
 │   ├── app_pages/game_create_page.py  # 새 게임·인원 선택·생성 UI
 │   ├── app_pages/settings_page.py    # UUID 확인·복구·교체 화면
 │   ├── components/identity_bridge.py # 브라우저 local storage UUID bridge
+│   ├── components/theme.py           # 사용자 화면 공통 시각 토큰·접근성 스타일
 │   ├── components/browser_components/identity/ # 정적 UUID bridge
 │   ├── core/identity.py              # UUID v4 검증·생성
 │   ├── core/session.py               # identity scope·session mirror
@@ -176,12 +177,44 @@ Windows에서는 컴포넌트별 환경을 분리합니다. 기존 `.venv`가 �
 ```
 
 `.vscode\settings.json`과 `.vscode\project-venv.ps1`은 현재 폴더에 맞는
-PowerShell 가상환경 자동 전환을 제공합니다. 원본 Python 설치가 바뀐 경우에는
+PowerShell 가상환경 자동 전환을 제공합니다. PowerShell 7에서 발생할 수 있는
+`Split-Path -LiteralPath ... -Parent` 매개변수 집합 오류를 피하기 위해 스크립트는
+상위 폴더를 .NET API로 계산합니다. 원본 Python 설치가 바뀐 경우에는
 각 컴포넌트의 `.venv`를 재생성하기 전에 먼저 Python 3.12 설치 경로를 확인합니다.
 
-현재 일반 사용자 Frontend는 WU-F1 UUID-only bootstrap을 사용합니다. 브라우저
+현재 일반 사용자 Frontend는 WU-F1 UUID-only bootstrap과 공통 화면 테마를 사용합니다. 브라우저
 저장 key는 `ai_mafia_user_id_v1`이며, Backend에는 UUID를 `X-User-Id` header로만
-전달합니다. 게임 화면과 Backend 공개 API 연결은 후속 WU-F2부터 진행합니다.
+전달합니다. 홈·게임·피드백 화면은 화면 정본의 상태 표현과 반응형·접근성 스타일을
+공유하며, 게임 상태와 결과의 원본은 계속 Backend snapshot입니다.
+
+Backend의 현재 scaffold 실행에서는 in-memory mock repository가 `GET /api/v1/games`를
+지원합니다. 같은 Backend 프로세스에서 생성한 게임만 UUID 소유자별 목록으로 반환하며,
+게임이 없으면 오류가 아닌 `200`과 빈 `items`를 반환합니다.
+mock 게임의 좌석은 화면 표시용으로 민수·철수·영희·태경·지효·성주·환석·유빈·태웅·지혜·지토
+preset 이름을 사용하지만,
+API 식별자와 소유권 검사는 계속 UUID를 사용합니다.
+
+PostgreSQL 없이 화면을 확인할 때는 Backend를 mock 모드로 실행합니다. 기존 개발용
+Backend 포트 `8000`을 그대로 사용하므로 Frontend의 주소를 바꿀 필요가 없습니다.
+
+```powershell
+$env:BACKEND_DATA_MODE = "mock"
+& ".\.venv\Scripts\python.exe" -m uvicorn backend.app.main:app --port 8000
+```
+
+mock 데이터는 Backend 프로세스를 재시작하면 초기화됩니다.
+관리자 통계 화면은 종료된 게임만 분석하며, 종료 게임이 없을 때는 빈 통계를 오류로
+표시하지 않고 안내 문구를 보여줍니다.
+
+관리자 mock 화면을 확인하려면 관리자 Frontend의 local storage에 생성된 UUID를
+`ADMIN_USER_IDS`에 등록한 뒤 Backend를 재시작합니다. UUID는 관리자 화면의 브라우저
+개발자 도구에서 `ai_mafia_admin_user_id_v1` 값을 확인할 수 있습니다.
+
+```powershell
+$env:BACKEND_DATA_MODE = "mock"
+$env:ADMIN_USER_IDS = "브라우저에서_확인한_UUID"
+& ".\.venv\Scripts\python.exe" -m uvicorn backend.app.main:app --port 8000
+```
 
 `frontend_user`와 `frontend_admin`은 Backend만 HTTP로 호출합니다. Frontend가 DB,
 Redis, MCP 서버에 직접 연결하거나 MCP 서버끼리 서로의 내부 모듈을 import하지

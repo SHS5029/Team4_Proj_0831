@@ -41,8 +41,31 @@ class PostgresScaffoldRepository:
         return ScaffoldGame(
             game_id=row["id"], owner_user_id=row["owner_user_id"], player_count=row["player_count"],
             state_version=row["state_version"], phase=row["phase"], status=row["status"],
-            updated_at=row["updated_at"],
+            updated_at=row["updated_at"], players=[], display_names=[],
         )
+
+    def list_games(self, owner_user_id: UUID, *, status: str | None = None,
+                   limit: int = 20) -> list[ScaffoldGame]:
+        """공개 목록에 필요한 소유자 게임만 최신 갱신순으로 조회한다."""
+
+        query = "SELECT * FROM scaffold_games WHERE owner_user_id=%s"
+        parameters: list[object] = [owner_user_id]
+        if status is not None:
+            query += " AND status=%s"
+            parameters.append(status)
+        query += " ORDER BY updated_at DESC, id DESC LIMIT %s"
+        parameters.append(limit)
+        with psycopg.connect(self.database_url, row_factory=dict_row) as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        return [
+            ScaffoldGame(
+                game_id=row["id"], owner_user_id=row["owner_user_id"],
+                player_count=row["player_count"], state_version=row["state_version"],
+                phase=row["phase"], status=row["status"], updated_at=row["updated_at"],
+                players=[], display_names=[],
+            )
+            for row in rows
+        ]
 
     def save_command(self, game: ScaffoldGame, operation: ScaffoldOperation, event_payload: dict) -> None:
         """상태·operation·event를 같은 transaction에서 확정한다."""
