@@ -10,7 +10,7 @@ from __future__ import annotations
 import copy
 import re
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from backend.app.agent.fallback import auto_night_target, auto_vote_target
@@ -18,7 +18,6 @@ from backend.app.agent.rng import DeterministicRng, generate_seed
 from backend.app.agent.state_machine import (
     after_night,
     after_vote,
-    check_standard_winner,
     finish_game,
     touch,
 )
@@ -80,7 +79,8 @@ class GameEngine:
             + [PlayerRole.CITIZEN] * citizen
         )
         shuffled = DeterministicRng(seed_bytes).shuffle(source, "role-assignment")
-        for player, role in zip(shuffled, roles):
+        # 역할표와 player 수가 일치하지 않으면 조용히 일부만 배정하지 않고 즉시 실패한다.
+        for player, role in zip(shuffled, roles, strict=True):
             player.role = role
         # 역할 배정 순서와 좌석은 별개다. 공개 화면의 좌석은 생성 입력 순서를 유지한다.
         ordered = sorted(shuffled, key=lambda player: player.seat)
@@ -159,6 +159,12 @@ class GameEngine:
         alive_ids = {player.player_id for player in state.alive_players}
         if self._speech_pending(state, alive_ids):
             return
+        # 최종 토론은 한 순환만 진행한 뒤 마지막 지목 단계로 넘어간다. 첫날의
+        # 전원 PASS 추가 질문 규칙을 최종 토론에 재사용하면 제품 규칙과 달라진다.
+        if state.phase is GamePhase.FINAL_DISCUSSION:
+            state.phase = GamePhase.FINAL_ACCUSATION
+            state.speech_actors.clear()
+            return
         if (
             state.day_number == 1
             and not state.speech_question_cycle_used
@@ -187,7 +193,7 @@ class GameEngine:
     def speak(self, state: GameState, actor_id: UUID | None, text: str) -> GameState:
         """생존 플레이어의 발언을 1~200자로 정규화해 처리한다."""
 
-        if state.phase is not GamePhase.DAY_DISCUSSION:
+        if state.phase not in {GamePhase.DAY_DISCUSSION, GamePhase.FINAL_DISCUSSION}:
             raise RuleViolation("INVALID_PHASE")
         actor = self._alive_actor(state, actor_id)
         if actor.player_id in state.speech_actors:
@@ -203,7 +209,7 @@ class GameEngine:
     def pass_turn(self, state: GameState, actor_id: UUID | None) -> GameState:
         """발언하지 않고 PASS한 것으로 처리한다."""
 
-        if state.phase is not GamePhase.DAY_DISCUSSION:
+        if state.phase not in {GamePhase.DAY_DISCUSSION, GamePhase.FINAL_DISCUSSION}:
             raise RuleViolation("INVALID_PHASE")
         actor = self._alive_actor(state, actor_id)
         if actor.player_id in state.speech_actors:
@@ -413,12 +419,18 @@ class GameEngine:
         self._record(state, "FINAL_ACCUSATION", actor.player_id, target_id=target_id)
         return state
 
-    def save(self, state: GameState, remaining_ms: int) -> GameState:
-        """저장 시 deadline을 멈추고 남은 시간만 보관한다."""
+    def save(self, state: GameState, remaining_ms: int | None) -> GameState:
+        """저장 시 deadline을 멈추고 timed window의 시간만 보관한다.
+
+        발언 window와 ROLE_REVEAL처럼 deadline이 원래 없던 상태에는 ``None``을
+        유지한다. 이를 0으로 바꾸면 재개 시 원래 시간 제한이 없던 화면이 즉시
+        만료된 것처럼 보일 수 있으므로, 0은 실제 timed window가 이미 끝났을 때만
+        허용한다.
+        """
 
         if state.status is not GameStatus.IN_PROGRESS:
             raise RuleViolation("GAME_NOT_IN_PROGRESS")
-        if remaining_ms < 0:
+        if remaining_ms is not None and remaining_ms < 0:
             raise RuleViolation("REMAINING_TIME_INVALID")
         state.status = GameStatus.SAVED
         state.remaining_ms_on_save = remaining_ms
@@ -428,13 +440,20 @@ class GameEngine:
         return state
 
     def resume(self, state: GameState, now: datetime | None = None) -> GameState:
-        """저장된 게임의 timed window만 새로 시작한다."""
+        """저장된 게임을 재개하고 timed window에만 새 서버 deadline을 만든다.
 
-        if state.status is not GameStatus.SAVED or state.remaining_ms_on_save is None:
+        저장 당시 window가 없었거나 발언 차례였다면 남은 시간이 없다. 그 경우에도
+        게임은 재개할 수 있지만 deadline은 만들지 않아야 한다.
+        """
+
+        if state.status is not GameStatus.SAVED:
             raise RuleViolation("GAME_NOT_SAVED")
-        current = now or datetime.now(timezone.utc)
+        current = now or datetime.now(UTC)
         state.status = GameStatus.IN_PROGRESS
-        state.deadline_at = current + timedelta(milliseconds=state.remaining_ms_on_save)
+        if state.remaining_ms_on_save is None:
+            state.deadline_at = None
+        else:
+            state.deadline_at = current + timedelta(milliseconds=state.remaining_ms_on_save)
         state.remaining_ms_on_save = None
         touch(state)
         self._record(state, "RESUME")
