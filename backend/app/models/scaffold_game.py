@@ -17,7 +17,6 @@ class ScaffoldGame:
     status: str = "IN_PROGRESS"
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     players: list[UUID] = field(default_factory=list)
-    display_names: list[str] = field(default_factory=list)
 
 
 @dataclass

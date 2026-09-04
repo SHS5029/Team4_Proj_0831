@@ -1,6 +1,5 @@
 """FastAPI Backend 생성, 공통 오류 처리, router 등록 진입점."""
 
-import os
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, Request
@@ -13,9 +12,6 @@ from backend.app.routers.health_router import router as health_router
 from backend.app.routers.identity_router import router as identity_router
 from backend.app.routers import scaffold_game_router as scaffold_game_module
 from backend.app.routers.scaffold_mcp_router import router as scaffold_mcp_router
-from backend.app.routers.admin_router import router as admin_router
-from backend.app.routers.mock_api_router import router as mock_api_router
-from backend.app.repositories.scaffold_repository import ScaffoldRepository
 
 
 def _trace_id_from_header(value: str | None) -> str:
@@ -76,17 +72,10 @@ def create_app(scaffold_repository=None) -> FastAPI:
     application.include_router(health_router)
     application.include_router(identity_router)
     application.include_router(scaffold_mcp_router)
-    # MOCK ONLY: 실제 DB·규칙 엔진 연결 시 이 분기와 mock_api_router import를 제거한다.
-    if os.getenv("BACKEND_DATA_MODE") == "mock":
-        application.include_router(mock_api_router)
-    else:
-        application.include_router(scaffold_game_module.router)
-    application.include_router(admin_router)
-    if scaffold_repository is not None and os.getenv("BACKEND_DATA_MODE") != "mock":
+    if scaffold_repository is not None:
         scaffold_game_module.configure_scaffold_dependencies(scaffold_repository)
+    application.include_router(scaffold_game_module.router)
     return application
 
 
-# DB가 준비되지 않은 개발 환경에서만 명시적으로 in-memory mock을 사용한다.
-# 운영 기본값은 기존처럼 PostgreSQL 저장소를 사용해 실수로 mock이 노출되지 않게 한다.
-app = create_app(ScaffoldRepository()) if os.getenv("BACKEND_DATA_MODE") == "mock" else create_app()
+app = create_app()

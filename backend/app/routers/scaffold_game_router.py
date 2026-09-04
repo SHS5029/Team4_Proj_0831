@@ -60,18 +60,6 @@ async def create_game(payload: CreateScaffoldGameRequest, x_user_id: str | None 
     return service.create(user_id_header(x_user_id), payload)
 
 
-@router.get("")
-async def list_games(status: str | None = None, limit: int = 20,
-                     x_user_id: str | None = Header(default=None)) -> dict:
-    """현재 사용자의 게임 목록을 mock repository에서 조회한다."""
-
-    if status is not None and status not in {"IN_PROGRESS", "SAVED", "COMPLETED", "FAILED"}:
-        raise ApiError(status_code=400, code="INVALID_REQUEST", message="게임 목록 조건이 올바르지 않습니다.")
-    if not 1 <= limit <= 100:
-        raise ApiError(status_code=400, code="INVALID_REQUEST", message="게임 목록 limit이 올바르지 않습니다.")
-    return service.list_games(user_id_header(x_user_id), status=status, limit=limit)
-
-
 @router.get("/{game_id}", response_model=ScaffoldGameStateResponse)
 async def get_game(game_id: UUID, x_user_id: str | None = Header(default=None)) -> ScaffoldGameStateResponse:
     """소유자에게 game projection을 반환한다."""

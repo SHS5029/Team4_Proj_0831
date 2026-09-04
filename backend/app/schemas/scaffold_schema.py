@@ -21,7 +21,6 @@ class ScaffoldPlayerResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     player_id: UUID
-    display_name: str = Field(min_length=1, max_length=20)
     kind: Literal["HUMAN", "AI"]
     role: None = None
     alive: bool = True

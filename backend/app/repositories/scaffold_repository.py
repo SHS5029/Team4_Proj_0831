@@ -24,19 +24,6 @@ class ScaffoldRepository:
 
         return self.games.get(game_id)
 
-    def list_games(self, owner_user_id: UUID, *, status: str | None = None,
-                   limit: int = 20) -> list[ScaffoldGame]:
-        """목데이터에서 현재 사용자가 소유한 게임만 최신순으로 반환한다.
-
-        UUID는 인증 토큰이 아니므로 다른 사용자의 게임을 섞지 않는다. 게임이
-        없을 때는 예외 대신 빈 목록을 반환해 공개 API의 정상 응답으로 처리한다.
-        """
-
-        games = [game for game in self.games.values() if game.owner_user_id == owner_user_id]
-        if status is not None:
-            games = [game for game in games if game.status == status]
-        return sorted(games, key=lambda game: (game.updated_at, game.game_id), reverse=True)[:limit]
-
     def save_operation(self, operation: ScaffoldOperation) -> None:
         """operation 결과를 기록한다."""
 

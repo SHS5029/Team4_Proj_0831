@@ -188,46 +188,6 @@ PowerShell 가상환경 자동 전환을 제공합니다. PowerShell 7에서 발
 전달합니다. 홈·게임·피드백 화면은 화면 정본의 상태 표현과 반응형·접근성 스타일을
 공유하며, 게임 상태와 결과의 원본은 계속 Backend snapshot입니다.
 
-Backend의 현재 scaffold 실행에서는 in-memory mock repository가 `GET /api/v1/games`를
-지원합니다. 같은 Backend 프로세스에서 생성한 게임만 UUID 소유자별 목록으로 반환하며,
-게임이 없으면 오류가 아닌 `200`과 빈 `items`를 반환합니다.
-mock 게임의 좌석은 화면 표시용으로 민수·철수·영희·태경·지효·성주·환석·유빈·태웅·지혜·지토
-preset 이름을 사용하지만,
-API 식별자와 소유권 검사는 계속 UUID를 사용합니다.
-
-PostgreSQL 없이 화면을 확인할 때는 Backend를 mock 모드로 실행합니다. 기존 개발용
-Backend 포트 `8000`을 그대로 사용하므로 Frontend의 주소를 바꿀 필요가 없습니다.
-
-```powershell
-$env:BACKEND_DATA_MODE = "mock"
-& ".\.venv\Scripts\python.exe" -m uvicorn backend.app.main:app --port 8000
-```
-
-8000번 포트 충돌을 자동으로 정리한 뒤 mock Backend를 다시 실행하려면 다음
-스크립트를 사용합니다. 이 스크립트는 8000번 포트에서 대기 중인 프로세스만
-종료하고 다른 포트나 파일은 변경하지 않습니다.
-
-```powershell
-& ".\scripts\run_mock_backend.ps1"
-```
-
-mock 데이터는 Backend 프로세스를 재시작하면 초기화됩니다.
-mock 전용 코드는 `backend/app/routers/mock_api_router.py`에 모아 두었고, 관련 분기에는
-`MOCK ONLY` 주석을 표시했습니다. 실제 Backend 구현으로 교체할 때 해당 파일과 표시된
-mock 블록만 제거하면 됩니다.
-관리자 통계 화면은 종료된 게임만 분석하며, 종료 게임이 없을 때는 빈 통계를 오류로
-표시하지 않고 안내 문구를 보여줍니다.
-
-관리자 mock 화면을 확인하려면 관리자 Frontend의 local storage에 생성된 UUID를
-`ADMIN_USER_IDS`에 등록한 뒤 Backend를 재시작합니다. UUID는 관리자 화면의 브라우저
-개발자 도구에서 `ai_mafia_admin_user_id_v1` 값을 확인할 수 있습니다.
-
-```powershell
-$env:BACKEND_DATA_MODE = "mock"
-$env:ADMIN_USER_IDS = "브라우저에서_확인한_UUID"
-& ".\.venv\Scripts\python.exe" -m uvicorn backend.app.main:app --port 8000
-```
-
 `frontend_user`와 `frontend_admin`은 Backend만 HTTP로 호출합니다. Frontend가 DB,
 Redis, MCP 서버에 직접 연결하거나 MCP 서버끼리 서로의 내부 모듈을 import하지
 않습니다. MCP 섹터가 DB·Redis 실행 환경을 운영해도 `mcp_server/mafia_game`
