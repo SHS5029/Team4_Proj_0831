@@ -43,13 +43,15 @@ class _Client:
 
 
 def _create_app(client):
-    """실제 dispatcher와 같은 경로 분기로 자동 rerun의 도착 화면을 확인한다."""
+    """생성 성공 뒤 역할 공개 경로로 바로 전환되는지 확인한다."""
 
     import streamlit as st
     from frontend_user.app_pages import creation_complete_page, game_create_page
 
     if st.session_state.get("navigation.page", "create") == "create":
         game_create_page.render(client)
+    elif st.session_state["navigation.page"] == "game":
+        st.write("역할 공개 화면으로 이동")
     else:
         creation_complete_page.render(st.session_state["game.create_pending"])
 
@@ -130,16 +132,15 @@ def test_home_game_list_load_starts_without_fresh_data_or_error(monkeypatch) -> 
 
 
 @pytest.mark.parametrize("count", [6, 7, 8, 9])
-def test_create_success_reruns_to_complete_without_another_click(count):
+def test_create_success_moves_to_role_reveal_without_another_click(count):
     client = _Client()
     app = AppTest.from_function(_create_app, args=(client,)).run()
     app.button(key=f"game.player_count.{count}").click().run()
     app.button(key="game.create_submit").click().run()
 
     assert not app.exception
-    assert app.session_state["navigation.page"] == "creation_complete"
-    assert "게임이 만들어졌어요" in _html(app)
-    assert f"참가자 {count}" in _html(app)
+    assert app.session_state["navigation.page"] == "game"
+    assert "역할 공개 화면으로 이동" in _html(app)
     assert len(client.created) == 1
     app.run()
     assert len(client.created) == 1
@@ -215,7 +216,7 @@ def test_unknown_create_keeps_body_and_key_until_same_request_retry():
     assert not app.exception
     assert client.created[0] == client.created[1]
     assert client.created[1]["player_count"] == 8
-    assert "게임이 만들어졌어요" in _html(app)
+    assert "역할 공개 화면으로 이동" in _html(app)
 
 
 @pytest.mark.parametrize("snapshot", [None, {"data": None}, {"data": {"players": []}}])

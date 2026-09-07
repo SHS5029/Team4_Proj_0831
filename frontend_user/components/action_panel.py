@@ -24,11 +24,14 @@ ACTION_ATTENTION_COMPONENT = st.components.v2.component(
 ACTION_PANEL_CSS = """
 <style>
 [class*="st-key-discussion-action-panel"] {
-  margin-top: .9rem; padding: .85rem !important; border: 1px solid #8eb6ff !important;
+  margin-top: .9rem; padding: .95rem !important; border: 1px solid #8eb6ff !important;
   border-radius: .75rem !important;
   background: linear-gradient(135deg, #f9fbff, #eef4ff) !important;
+  box-shadow: 0 .7rem 1.8rem rgba(20, 42, 81, .10);
 }
-[class*="st-key-discussion-action-panel"] textarea { min-height: 6.2rem; border-color: #afc4e8; }
+[class*="st-key-discussion-action-panel"] textarea {
+  min-height: 7.3rem; border-color: #8eb6ff; background: #fff !important;
+}
 [class*="st-key-night-action-panel"] {
   padding: 1.15rem !important; border: 1px solid #203a60 !important;
   border-radius: .8rem !important; color: #f3f7ff !important;
@@ -177,31 +180,24 @@ def _render_discussion(*, game_id: str, snapshot: dict[str, Any]) -> None:
     pending = _pending_for_window(game_id=game_id, window=window)
 
     with st.container(key="discussion-action-panel", border=True):
-        _render_turn_status(snapshot=snapshot)
         _render_pending_feedback(pending=pending)
         if not my_turn or not ({"SPEAK", "PASS"} & legal):
-            speaker = _current_speaker(snapshot=snapshot, player_id=window.get("turn_player_id"))
             if window.get("has_submitted"):
-                st.info("1분당 최대 7회 발언에 도달했거나 토론이 마감되었습니다." if window.get("deadline_at") else "발언이 제출되었습니다. 다음 차례를 기다려 주세요.")
-            elif speaker:
-                st.info(f"현재 {speaker}님의 발언 차례입니다.")
+                st.info("발언이 제출되었습니다. 다음 차례를 기다려 주세요.")
             else:
                 st.info("다른 플레이어의 발언을 기다리고 있습니다.")
             return
 
         locked = _is_locked(window=window, pending=pending)
-        turn_col, guide_col = st.columns([1, 4])
-        turn_col.markdown("**자유 토론**" if window.get("deadline_at") else "**내 차례**")
-        guide_col.write("1분 45초 동안 자유롭게 토론하세요. 플레이어별 1분에 최대 7회 발언할 수 있습니다." if window.get("deadline_at") else "공개된 정보를 바탕으로 의견을 말해 주세요.")
-        message_key = f"form.message.{game_id}" if window.get("deadline_at") else f"form.message.{window.get('window_id', 'current')}"
+        message_key = f"form.message.{window.get('window_id', 'current')}"
         message = st.text_area(
             "발언 내용",
             max_chars=200,
+            height=146,
             disabled=locked,
             key=message_key,
             placeholder="이곳에 발언을 입력하세요. (최대 200자)",
         )
-        st.caption(f"{len(message)} / 200")
         speak_col, pass_col = st.columns([1.2, 1])
         if speak_col.button(
             "💬 발언하기",
@@ -224,14 +220,13 @@ def _render_discussion(*, game_id: str, snapshot: dict[str, Any]) -> None:
 
 
 def _render_night_action(*, game_id: str, snapshot: dict[str, Any]) -> None:
-    """역할은 안내에만 사용하고 Backend가 허용한 밤 대상만 선택지로 제공한다."""
+    """역할별 밤 행동을 서버가 허용한 대상 안에서만 선택하게 한다."""
 
-    game = snapshot.get("game") if isinstance(snapshot.get("game"), dict) else {}
     me = snapshot.get("me") if isinstance(snapshot.get("me"), dict) else {}
     window = _window(snapshot)
     pending = _pending_for_window(game_id=game_id, window=window)
     role = str(me.get("role", "CITIZEN"))
-    title, guidance, submit_label = {
+    title, _, submit_label = {
         "MAFIA": (
             "공격할 플레이어를 선택해 주세요",
             "자신을 제외한 생존자 한 명을 공격할 수 있습니다.",
@@ -248,16 +243,24 @@ def _render_night_action(*, game_id: str, snapshot: dict[str, Any]) -> None:
             "보호 제출",
         ),
     }.get(role, ("밤이 되었습니다", "모두 조용히 행동을 선택하고 있습니다.", "행동 제출"))
+    role_label = {
+        "MAFIA": "마피아",
+        "DETECTIVE": "탐정",
+        "DOCTOR": "의사",
+        "CITIZEN": "시민",
+    }.get(role, "확인 중")
 
     with st.container(key="night-action-panel", border=True):
-        header_col, timer_col = st.columns([2, 1])
-        header_col.markdown(f"### 🌙 밤 {game.get('round', 1)} · 행동 선택")
-        timer_col.markdown(f"### ⏱ {_countdown_text(snapshot)}")
-        _render_countdown_warning(snapshot)
-        _render_turn_status(snapshot=snapshot)
+        st.markdown("### 🌙 밤 행동")
         st.divider()
-        st.markdown(f"## {title}")
-        st.caption(guidance)
+        time_label, time_value = st.columns([1, 1])
+        time_label.markdown("**남은 시간**")
+        time_value.markdown(f"## {_countdown_text(snapshot)}")
+        st.caption("제한 시간 내에 행동을 선택하고 제출하세요.")
+        st.markdown(f"**내 역할: {role_label}**")
+        st.divider()
+        st.markdown("#### 행동 선택")
+        st.caption(title)
         _render_pending_feedback(pending=pending)
 
         legal = set(snapshot.get("legal_actions", []))
@@ -318,15 +321,15 @@ def _render_vote_action(*, game_id: str, snapshot: dict[str, Any]) -> None:
     }.get(phase, "투표")
 
     with st.container(key="vote-action-panel", border=True):
-        title_col, timer_col = st.columns([2, 1])
-        title_col.markdown(f"### ☀️ 낮 {game.get('day_number', 1)}일차 · {phase_label}")
-        timer_col.markdown(f"### ⏱ {_countdown_text(snapshot)}")
-        _render_countdown_warning(snapshot)
-        _render_turn_status(snapshot=snapshot)
-        _render_vote_summary(snapshot=snapshot, phase_label=phase_label)
+        st.markdown(f"### ⚑ {phase_label}")
+        st.divider()
+        time_label, time_value = st.columns([1, 1])
+        time_label.markdown("**남은 시간**")
+        time_value.markdown(f"## {_countdown_text(snapshot)}")
+        st.caption("⚠ 제한 시간 내에 투표를 완료하세요.")
         st.divider()
         if phase == "FINAL_ACCUSATION":
-            st.subheader("최종 판정할 플레이어를 지목해 주세요")
+            st.markdown("#### 최종 판정할 플레이어를 지목해 주세요")
             st.warning(
                 "이번 투표는 마지막 판정 투표입니다. 마피아를 찾으면 시민이 승리하고, "
                 "시민을 선택하면 마피아가 승리합니다."
@@ -336,8 +339,7 @@ def _render_vote_action(*, game_id: str, snapshot: dict[str, Any]) -> None:
             )
             submit_label = "최종 지목 제출  →"
         else:
-            st.subheader("처형할 플레이어를 선택해 주세요")
-            st.caption("Backend가 확정한 생존 후보 중 한 명에게 투표합니다.")
+            st.markdown("#### 투표할 대상을 선택하세요.")
             submit_label = "투표 제출  →"
         _render_pending_feedback(pending=pending)
         if "SUBMIT_VOTE" not in set(snapshot.get("legal_actions", [])) or not targets:
@@ -377,7 +379,7 @@ def _render_vote_action(*, game_id: str, snapshot: dict[str, Any]) -> None:
                 command_type="SUBMIT_VOTE",
                 target_player_id=target_id,
             )
-        st.caption("🔒 첫 제출 후에는 선택을 변경할 수 없습니다.")
+        st.info("🔒 개별 투표는 공개되지 않으며, 모두 투표를 종료한 뒤 결과가 공개됩니다.")
 
 
 def _action_status(snapshot: dict[str, Any]) -> tuple[str, str, str | None] | None:
@@ -422,13 +424,12 @@ def _render_action_status(*, snapshot: dict[str, Any]) -> None:
     status = _action_status(snapshot)
     if status is None:
         return
-    label, countdown, warning = status
+    label, countdown, _ = status
     with st.container(key="current-action-status", border=True):
         st.markdown(
             '<div class="current-action-status-line">'
-            f'<span><strong>지금 할 일</strong> · {escape(label)}</span>'
-            '<span class="current-action-status-time" aria-hidden="true">'
-            f"⏱ {escape(countdown)}</span>"
+            f'<span><strong>지금 할 일</strong> · {escape(label)} · '
+            f'<strong>남은 시간 {escape(countdown)}</strong></span>'
             "</div>",
             unsafe_allow_html=True,
         )
@@ -488,8 +489,11 @@ def _render_vote_summary(*, snapshot: dict[str, Any], phase_label: str) -> None:
         st.markdown("**공개 타임라인 요약**")
         if latest_night:
             st.write(latest_night)
-        st.write(f"☀️ 낮 {game.get('day_number', 1)}일차: 토론 종료")
-        st.write(f"☀️ 낮 {game.get('day_number', 1)}일차: {phase_label} 진행 중")
+        else:
+            # 투표 단계라 해도 첫날 또는 공개 이벤트 복원 직후에는 확정된 밤 결과가
+            # 아직 없을 수 있다. 빈 카드로 보이지 않게 하되, Front가 사망자나 밤
+            # 결과를 추측해서 만들어 내지 않도록 사실 그대로 안내한다.
+            st.caption("현재 표시할 공개 밤 결과가 없습니다.")
 
 
 def _queue_command(
@@ -702,16 +706,10 @@ def _render_turn_status(*, snapshot: dict[str, Any]) -> None:
     legal = set(snapshot.get("legal_actions", []))
     kind = str(window.get("kind", ""))
     if kind == "SPEECH":
-        if window.get("deadline_at") is not None:
-            st.caption("자유 토론 · 플레이어별 1분에 최대 7회 발언")
-            return
-        speaker = _current_speaker(snapshot=snapshot, player_id=window.get("turn_player_id"))
-        if speaker:
-            st.caption(f"현재 발언 차례: {speaker}")
         if window.get("has_submitted") and window.get("turn_player_id") == me.get("player_id"):
             st.caption("내 행동: 발언 제출 완료 · 다음 차례를 기다리는 중")
         elif window.get("turn_player_id") == me.get("player_id"):
-            st.caption("내 행동: 지금 발언하거나 PASS할 차례입니다.")
+            st.caption("내 행동: 확인한 사건 정보를 바탕으로 의견을 말해주세요.")
         return
     if kind == "NIGHT":
         if "SUBMIT_NIGHT_ACTION" in legal:
