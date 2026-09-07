@@ -1,11 +1,10 @@
 """루트 ``.env``를 읽어 검증된 애플리케이션 설정을 만드는 모듈.
 
-``DATABASE_URL``은 사용자명, 비밀번호, 호스트, 포트와 연결 옵션의 원본이다.
-다만 URL에 들어 있던 데이터베이스 경로는 그대로 신뢰하지 않고 프로젝트의
-``database_name``으로 교체한다. 기본값이 ``Team4_Proj``이므로 공유 개발용
-URL이 다른 데이터베이스를 가리키더라도 이 프로젝트가 실수로 그 DB를 쓰지
-않는다. URL을 문자열 치환하지 않고 표준 URL 파서로 분해·재조립해 인코딩된
-자격 증명을 손상시키거나 비밀값을 디코딩하는 일을 피한다.
+``TEAM_DATABASE_URL``은 실제 원격 PostgreSQL 연결의 우선 설정이며,
+``DATABASE_URL``은 로컬 테스트용 fallback이다. 원격 URL이 선택되면 URL에 포함된
+database path를 그대로 사용하고, 로컬 fallback일 때만 ``database_name``으로
+경로를 교체한다. URL을 문자열 치환하지 않고 표준 URL 파서로 분해·재조립해
+인코딩된 자격 증명을 손상시키거나 비밀값을 디코딩하는 일을 피한다.
 """
 
 from __future__ import annotations
@@ -32,25 +31,28 @@ class Settings:
     """인증 영속성 계층이 사용하는 검증 완료 설정.
 
     ``database_url``은 비밀번호를 포함할 수 있으므로 데이터 클래스 ``repr``에서
-    제외한다. ``database_name``은 원본 URL의 경로 대신 사용할 대상 DB이며,
-    별도 설정이 없으면 반드시 ``Team4_Proj``를 사용한다.
+    제외한다. ``preserve_database_path``가 거짓이면 ``database_name``을 URL 경로로
+    사용하고, 원격 ``TEAM_DATABASE_URL``에서 읽은 설정이면 원격 URL의 경로를
+    보존한다.
     """
 
     database_url: str = field(repr=False)
     database_name: str = "Team4_Proj"
+    preserve_database_path: bool = False
     app_env: str = "development"
-    # 내부 Engine 서명과 MCP bootstrap 서명은 서로 다른 키를 사용한다.
-    # 두 키를 하나로 합치면 한 경계가 유출될 때 다른 경계까지 함께 무너진다.
-    engine_internal_api_secret: str = field(default="", repr=False)
-    mcp_server_auth_secret: str = field(default="", repr=False)
-    engine_internal_api_max_age_seconds: int = 60
     redis_url: str = field(default="redis://127.0.0.1:6379/0", repr=False)
+    mcp_server_url: str = "http://127.0.0.1:8100"
+    cors_allowed_origins: tuple[str, ...] = (
+        "http://127.0.0.1:8501",
+        "http://127.0.0.1:8502",
+        "http://localhost:8501",
+        "http://localhost:8502",
+    )
     # 게임 seed와 snapshot 암호화 키는 .env에 직접 넣지 않는다. .env에는
     # 저장소 밖의 keyring 파일 위치와 현재 사용할 key ID만 기록한다.
     game_state_keyring_file: str = field(default="", repr=False)
     game_state_active_key_id: str = ""
     llm_provider: str = "dummy"
-    mafia_mcp_url: str = "http://127.0.0.1:8010/mcp"
     # 관리자 API는 이 목록에 있는 UUID v4만 읽기 권한을 갖는다. 형식 검증은
     # AdminService가 fail-closed로 수행하므로 잘못된 설정이 일부 관리자만
     # 남기는 상태로 시작되지 않는다.
@@ -97,12 +99,16 @@ class Settings:
             raise ValueError("DATABASE_NAME must not be empty")
         if any(character in self.database_name for character in ("/", "\x00")):
             raise ValueError("DATABASE_NAME contains an invalid character")
-        if not 1 <= self.engine_internal_api_max_age_seconds <= 3_600:
-            raise ValueError(
-                "ENGINE_INTERNAL_API_MAX_AGE_SECONDS must be between 1 and 3600"
-            )
         if not self.redis_url.strip():
             raise ValueError("REDIS_URL must not be empty")
+        if not self.mcp_server_url.strip():
+            raise ValueError("MCP_SERVER_URL must not be empty")
+        normalized_origins = tuple(origin.strip().rstrip("/") for origin in self.cors_allowed_origins if origin.strip())
+        if not normalized_origins or any(
+            urlsplit(origin).scheme not in {"http", "https"} or not urlsplit(origin).netloc
+            for origin in normalized_origins
+        ):
+            raise ValueError("CORS_ALLOWED_ORIGINS must contain absolute origins")
         keyring_file = self.game_state_keyring_file.strip()
         active_key_id = self.game_state_active_key_id.strip()
         # 아직 DB 게임 저장 기능을 사용하지 않는 개발 환경은 두 설정을 모두
@@ -116,8 +122,6 @@ class Settings:
             raise ValueError("GAME_STATE_ACTIVE_KEY_ID must be 64 characters or fewer")
         if self.llm_provider.strip().lower() not in {"dummy", "local", "openai", "gemini"}:
             raise ValueError("LLM_PROVIDER is not supported")
-        if not self.mafia_mcp_url.strip():
-            raise ValueError("MAFIA_MCP_URL must not be empty")
         if not self.local_llm_base_url.strip() or not self.local_llm_model.strip():
             raise ValueError("LOCAL_LLM_BASE_URL and LOCAL_LLM_MODEL must not be empty")
         if self.llm_provider == "openai" and (
@@ -141,21 +145,12 @@ class Settings:
         # 한 번만 저장한다. 이후 요청 처리 중 설정이 바뀌지 않는다.
         object.__setattr__(self, "database_url", raw_url)
         object.__setattr__(self, "database_name", self.database_name.strip())
-        object.__setattr__(
-            self,
-            "engine_internal_api_secret",
-            self.engine_internal_api_secret.strip(),
-        )
-        object.__setattr__(
-            self,
-            "mcp_server_auth_secret",
-            self.mcp_server_auth_secret.strip(),
-        )
         object.__setattr__(self, "redis_url", self.redis_url.strip())
+        object.__setattr__(self, "mcp_server_url", self.mcp_server_url.strip().rstrip("/"))
+        object.__setattr__(self, "cors_allowed_origins", normalized_origins)
         object.__setattr__(self, "game_state_keyring_file", keyring_file)
         object.__setattr__(self, "game_state_active_key_id", active_key_id)
         object.__setattr__(self, "llm_provider", self.llm_provider.strip().lower())
-        object.__setattr__(self, "mafia_mcp_url", self.mafia_mcp_url.strip().rstrip("/"))
         object.__setattr__(self, "local_llm_base_url", self.local_llm_base_url.strip().rstrip("/"))
         object.__setattr__(self, "local_llm_model", self.local_llm_model.strip())
         object.__setattr__(self, "openai_api_key", self.openai_api_key.strip())
@@ -164,26 +159,8 @@ class Settings:
         object.__setattr__(self, "gemini_model", self.gemini_model.strip())
 
     @property
-    def validated_engine_internal_api_secret(self) -> bytes:
-        """Engine HMAC에 사용할 별도 비밀값을 검증해 바이트로 반환한다."""
-
-        secret = self.engine_internal_api_secret
-        if len(secret) < 32 or secret.upper().startswith("REPLACE_"):
-            raise RuntimeError("Engine internal API signing is not configured")
-        return secret.encode("utf-8")
-
-    @property
-    def validated_mcp_server_auth_secret(self) -> bytes:
-        """MCP bootstrap token 서명용 키를 검증해 바이트로 반환한다."""
-
-        secret = self.mcp_server_auth_secret
-        if len(secret) < 32 or secret.upper().startswith("REPLACE_"):
-            raise RuntimeError("MCP bootstrap signing is not configured")
-        return secret.encode("utf-8")
-
-    @property
     def effective_database_url(self) -> str:
-        """연결 정보는 유지하고 DB 경로만 대상 ``database_name``으로 바꾼다.
+        """연결 정보와 필요 시 원격 DB 경로를 보존한 유효 URL을 반환한다.
 
         ``urlsplit``과 ``urlunsplit``을 사용하므로 인코딩된 사용자명/비밀번호,
         호스트, 포트, 쿼리 연결 옵션과 fragment를 원형대로 보존한다. DB 이름은
@@ -192,8 +169,10 @@ class Settings:
         """
 
         parsed = urlsplit(self.database_url)
-        # 원본 URL이 /agent_db처럼 다른 경로를 갖더라도 폐기하고, 검증된
-        # 프로젝트 DB 이름으로 단일 path를 새로 만든다.
+        if self.preserve_database_path:
+            return self.database_url
+        # 로컬 fallback URL이 다른 경로를 갖더라도 검증된 프로젝트 DB 이름으로
+        # 단일 path를 새로 만들어 테스트 대상이 흔들리지 않게 한다.
         database_path = f"/{quote(self.database_name, safe='')}"
         return urlunsplit(
             (parsed.scheme, parsed.netloc, database_path, parsed.query, parsed.fragment)
@@ -209,21 +188,36 @@ class Settings:
         """
 
         load_dotenv(env_file or PROJECT_ROOT / ".env", override=False)
+        team_database_url = os.getenv("TEAM_DATABASE_URL", "").strip()
+        database_url = team_database_url or os.getenv("DATABASE_URL", "")
+        if team_database_url:
+            # 원격 DSN의 database path는 운영 대상의 일부이므로 DATABASE_NAME이나
+            # 로컬 기본값으로 덮어쓰지 않는다. path가 없으면 PostgreSQL이 기본 DB를
+            # 선택하게 두지 않고 설정 오류로 즉시 거부한다.
+            parsed_team_url = urlsplit(team_database_url)
+            remote_database_name = parsed_team_url.path.lstrip("/")
+            if not remote_database_name:
+                raise ValueError("TEAM_DATABASE_URL must include a database path")
+            configured_database_name = remote_database_name
+        else:
+            configured_database_name = os.getenv("DATABASE_NAME", "Team4_Proj")
         return cls(
-            database_url=os.getenv("DATABASE_URL", ""),
-            database_name=os.getenv("DATABASE_NAME", "Team4_Proj"),
+            database_url=database_url,
+            database_name=configured_database_name,
+            preserve_database_path=bool(team_database_url),
             app_env=os.getenv("APP_ENV", "development"),
-            engine_internal_api_secret=os.getenv("ENGINE_INTERNAL_API_SECRET", ""),
-            mcp_server_auth_secret=os.getenv("MCP_SERVER_AUTH_SECRET", ""),
-            engine_internal_api_max_age_seconds=_read_positive_int(
-                os.getenv("ENGINE_INTERNAL_API_MAX_AGE_SECONDS", "60"),
-                name="ENGINE_INTERNAL_API_MAX_AGE_SECONDS",
-            ),
             redis_url=os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0"),
+            mcp_server_url=os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8100"),
+            cors_allowed_origins=tuple(
+                item.strip()
+                for item in os.getenv(
+                    "CORS_ALLOWED_ORIGINS",
+                    "http://127.0.0.1:8501,http://127.0.0.1:8502,http://localhost:8501,http://localhost:8502",
+                ).split(",")
+            ),
             game_state_keyring_file=os.getenv("GAME_STATE_KEYRING_FILE", ""),
             game_state_active_key_id=os.getenv("GAME_STATE_ACTIVE_KEY_ID", ""),
             llm_provider=os.getenv("LLM_PROVIDER", "dummy"),
-            mafia_mcp_url=os.getenv("MAFIA_MCP_URL", "http://127.0.0.1:8010/mcp"),
             admin_user_ids=tuple(
                 item.strip() for item in os.getenv("ADMIN_USER_IDS", "").split(",")
             ),

@@ -55,11 +55,22 @@ panel에만 표시합니다.
 `WU-F5`에서는 browser `fetch` streaming SSE를 주 연결로 사용하고, 연결이 없거나
 envelope 검증에 실패하면 동일 cursor의 `/sync` polling으로 전환합니다. operation은
 `(game_id, front_sequence, operation_index)`로 deduplicate하며 gap·unknown·잘못된
-snapshot은 부분 적용하지 않습니다.
+snapshot은 부분 적용하지 않습니다. Backend가 반환하는 sequence별 중첩
+`operations` batch는 Front가 sequence와 operation index를 보존해 원자적으로 펼친 뒤
+적용합니다. SSE stream 종료 시에는 마지막 수신 `last_sequence`부터 1초 간격으로
+재연결하고, 실제 데이터인 `envelope`만 Streamlit component state에 등록해 수신 즉시
+화면 rerun을 유도합니다. 연결 상태는 component 내부에서 관리해 상태 표시만으로
+전체 화면 rerun이 반복되지 않게 하며, 현재 cursor의 no-op DELTA도 Streamlit에
+전달하지 않습니다. Backend `/events`는 연결을 유지하고 변경 batch만 push하므로
+정상 연결 중에는 Front polling이 발생하지 않습니다.
+게임 command 생성부는 stale snapshot을 근거로 행동을 차단하지 않고 입력 형식만
+정규화하며, 최신 phase·turn·window·대상 검증은 Backend 응답으로 처리합니다.
 
 F5 연동 시 Backend 팀은 `/events`와 `/sync`에 동일한 `front_sequence`와 operation
 index를 제공하고, `Last-Event-ID` 재연결·CORS header·보존 범위 밖 SNAPSHOT 응답을
-지원해야 합니다. Front는 gap이나 schema 오류를 자체 보정하지 않습니다.
+지원해야 합니다. Front는 gap이나 schema 오류를 부분 적용하지 않고 authoritative
+snapshot을 재조회합니다. Backend의 활성 timed window는 `remaining_ms`를 제공해야
+하며, lifecycle command에는 `window_id`를 보내지 않습니다.
 
 `WU-F6`에서는 인간 player가 사망하면 action widget을 제거하고 관전 안내와 공개
 timeline만 표시합니다. `FAST_FORWARD`와 `SAVE_AND_EXIT`은 Backend의

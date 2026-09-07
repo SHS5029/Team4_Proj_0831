@@ -109,6 +109,7 @@ def _render_discussion(*, game_id: str, snapshot: dict[str, Any]) -> None:
     pending = _pending_for_window(game_id=game_id, window=window)
 
     with st.container(key="discussion-action-panel", border=True):
+        _render_turn_status(snapshot=snapshot)
         _render_pending_feedback(pending=pending)
         if not my_turn or not ({"SPEAK", "PASS"} & legal):
             speaker = _current_speaker(snapshot=snapshot, player_id=window.get("turn_player_id"))
@@ -185,6 +186,7 @@ def _render_night_action(*, game_id: str, snapshot: dict[str, Any]) -> None:
         header_col.markdown(f"### 🌙 밤 {game.get('round', 1)} · 행동 선택")
         remaining = _remaining_text(window.get("remaining_ms"))
         timer_col.markdown(f"### ⏱ {remaining}" if remaining else "### ⏱ 대기 중")
+        _render_turn_status(snapshot=snapshot)
         st.divider()
         st.markdown(f"## {title}")
         st.caption(guidance)
@@ -250,6 +252,7 @@ def _render_vote_action(*, game_id: str, snapshot: dict[str, Any]) -> None:
         title_col.markdown(f"### ☀️ 낮 {game.get('day_number', 1)}일차 · {phase_label}")
         remaining = _remaining_text(window.get("remaining_ms"))
         timer_col.markdown(f"### ⏱ {remaining}" if remaining else "### ⏱ 대기 중")
+        _render_turn_status(snapshot=snapshot)
         _render_vote_summary(snapshot=snapshot, phase_label=phase_label)
         st.divider()
         st.subheader("처형할 플레이어를 선택해 주세요")
@@ -466,6 +469,45 @@ def _current_speaker(*, snapshot: dict[str, Any], player_id: Any) -> str | None:
         if isinstance(player, dict) and player.get("player_id") == player_id:
             return str(player.get("display_name", "플레이어"))
     return None
+
+
+def _render_turn_status(*, snapshot: dict[str, Any]) -> None:
+    """현재 window와 본인 projection으로 차례·제출 상태를 표시한다.
+
+    낮 발언은 Backend가 제공한 turn_player_id를 이름으로 변환한다. 밤 행동과
+    투표는 여러 플레이어가 동시에 제출하므로 다른 사람의 개별 선택은 노출하지
+    않고, 본인의 제출 필요 여부와 현재 단계의 진행 방식만 안내한다.
+    """
+
+    game = snapshot.get("game") if isinstance(snapshot.get("game"), dict) else {}
+    window = _window(snapshot)
+    me = snapshot.get("me") if isinstance(snapshot.get("me"), dict) else {}
+    legal = set(snapshot.get("legal_actions", []))
+    kind = str(window.get("kind", ""))
+    if kind == "SPEECH":
+        speaker = _current_speaker(snapshot=snapshot, player_id=window.get("turn_player_id"))
+        if speaker:
+            st.caption(f"현재 발언 차례: {speaker}")
+        if window.get("has_submitted") and window.get("turn_player_id") == me.get("player_id"):
+            st.caption("내 행동: 발언 제출 완료 · 다음 차례를 기다리는 중")
+        elif window.get("turn_player_id") == me.get("player_id"):
+            st.caption("내 행동: 지금 발언하거나 PASS할 차례입니다.")
+        return
+    if kind == "NIGHT":
+        if "SUBMIT_NIGHT_ACTION" in legal:
+            st.caption("밤 행동: 내 선택을 제출해야 합니다.")
+        elif window.get("has_submitted"):
+            st.caption("밤 행동: 내 선택 제출 완료 · 다른 플레이어의 선택을 기다리는 중")
+        else:
+            st.caption("밤 행동: 역할별 선택을 모으는 중입니다.")
+        return
+    if kind in {"VOTE", "REVOTE", "FINAL_VOTE"}:
+        if "SUBMIT_VOTE" in legal:
+            st.caption(f"{game.get('day_number', 1)}일차 투표: 내 투표를 제출해야 합니다.")
+        elif window.get("has_submitted"):
+            st.caption("투표: 내 투표 제출 완료 · 다른 플레이어의 투표를 기다리는 중")
+        else:
+            st.caption("투표: 모든 생존자가 동시에 투표하는 단계입니다.")
 
 
 def _remaining_text(value: Any) -> str | None:

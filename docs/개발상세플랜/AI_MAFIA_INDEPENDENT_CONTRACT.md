@@ -14,6 +14,15 @@ Resource의 상세 `data` schema는 API 명세 8.2절과 그 절이 명시적으
 이 문서는 게임 규칙, DB schema, 화면 설계, 테스트 시나리오 또는 구현 순서를
 중복해서 정의하지 않는다. 아래 형식에 없는 사항은 해당 정본을 기준으로 한다.
 
+## 현재 MVP FastMCP 연결 기준
+
+현재 MCP 연결은 FastMCP 기반의 얇은 컨텍스트 adapter로 구현한다. MCP는 Resource·
+Prompt·Tool 표면을 제공하고, Tool 요청도 Backend에 전달만 한다. Backend가 인증·권한·
+phase·role·target·상태 변경·DB·Redis·LLM을 담당한다. MCP 내부 HMAC·bootstrap token·
+session registry·idle timeout·DELETE cleanup은 현재 연결 범위가 아니며, 이 문서의 기존
+Engine HMAC과 MCP session 상세는 후속 운영 프로파일로 분리한다. 현재 디렉터리 구조는
+`mcp_server/mafia_game` 아래를 유지한다.
+
 ## 1. 공통 표기
 
 | 항목 | 공통 형식 |

@@ -121,8 +121,13 @@ backend/
 │  │  ├─ orchestrator.py
 │  │  ├─ game_engine.py
 │  │  ├─ state_machine.py
-│  │  ├─ rng.py
 │  │  ├─ projections.py
+│  │  └─ fallback.py
+│  ├─ game_engine/
+│  │  ├─ engine.py
+│  │  ├─ phases/
+│  │  ├─ rules/
+│  │  ├─ rng.py
 │  │  └─ fallback.py
 │  ├─ infrastructure/
 │  │  ├─ postgres.py
@@ -201,7 +206,7 @@ engine은 FastAPI·PostgreSQL·Redis·LLM을 직접 호출하지 않는다. rout
 | B1 | core/config.py, identity_router.py, identity_service.py, user_repository.py, main.py | UUID-only 사용자 context와 ownership |
 | B2 | migrations/003_create_mystery_v1_schema.sql, migrations/004_seed_scenarios_and_personas.sql, infrastructure/migrations.py | 19개 table·constraint·seed |
 | B3 | infrastructure/postgres.py, infrastructure/transaction.py, infrastructure/redis/*, repositories/* | row lock·receipt·outbox·Redis |
-| B4 | models/game_state.py, models/enums.py, agent/game_engine.py, state_machine.py, rng.py, fallback.py | 순수 규칙 엔진·결정적 RNG |
+| B4 | models/game_state.py, models/enums.py, game_engine/engine.py, game_engine/phases/, game_engine/rules/, game_engine/rng.py, game_engine/fallback.py | 순수 규칙 엔진·결정적 RNG |
 | B6 | agent/orchestrator.py, projections.py, mcp/client.py, llm_provider/*, agent_repository.py | Agent job·capability·proposal·fallback |
 | B7 | scaffold_mcp_router.py, security/internal_request.py, sync_service.py, event_repository.py, outbox_repository.py | HMAC·nonce·Engine API·SSE |
 | B5 | scaffold_game_router.py, scaffold_game_service.py, command_service.py, window_service.py, sync_service.py, schemas/* | 공개 game·command·sync·feedback |
@@ -421,7 +426,7 @@ game_id uuid NOT NULL REFERENCES games(id) ON DELETE CASCADE
 window_kind varchar(24) NOT NULL            -- SPEECH / NIGHT / VOTE / REVOTE / FINAL_VOTE
 phase varchar(32) NOT NULL
 round smallint NOT NULL                     -- 0~5
-cycle smallint NOT NULL                     -- 1 또는 추가 발언 2
+cycle smallint NOT NULL                     -- 현재 MVP에서는 1
 turn_player_id uuid NULL
 opened_state_version bigint NOT NULL
 status varchar(16) NOT NULL                 -- OPEN / PAUSED / RESOLVING / RESOLVED / CANCELLED
@@ -667,7 +672,7 @@ Backend CSPRNG seed에서 결정적 RNG를 만들고 결과를 저장한다. 인
 - 낮 발언은 생존자 좌석순으로 SPEAK 또는 PASS를 한 번씩 처리한다.
 - 발언은 정규화 후 1~200자다.
 - 첫날은 투표하지 않는다.
-- 첫날 전원이 PASS하면 고정 질문 cycle을 한 번 추가한다.
+- 생존자 전원이 발언 또는 PASS를 제출하면 다음 phase로 전환한다.
 - 밤은 20초, 투표는 30초다.
 - 마피아는 자기 자신을 공격할 수 없고, 탐정은 자기 자신을 조사할 수 없다.
 - 의사는 자기 자신을 보호할 수 있다.

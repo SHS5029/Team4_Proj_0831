@@ -73,6 +73,181 @@ class PostgresActionRepository:
         )
         return cursor.fetchone()
 
+    def list_ai_speech_turns(self, cursor: Any) -> list[dict[str, Any]]:
+        """서버 재시작 후에도 처리할 수 있는 열린 AI 발언 차례를 조회한다."""
+
+        cursor.execute(
+            """
+            SELECT games.id AS game_id, games.owner_user_id,
+                   action_window.id AS window_id,
+                   action_window.turn_player_id,
+                   games.state_version
+            FROM public.games AS games
+            JOIN public.action_windows AS action_window
+              ON action_window.game_id = games.id
+             AND action_window.status = 'OPEN'
+             AND action_window.window_kind = 'SPEECH'
+            JOIN public.game_players AS player
+              ON player.game_id = games.id
+             AND player.id = action_window.turn_player_id
+             AND player.kind = 'AI'
+            WHERE games.status = 'IN_PROGRESS'
+            ORDER BY action_window.opened_at, games.id
+            """
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def list_ai_night_turns(self, cursor: Any) -> list[dict[str, Any]]:
+        """required 밤 역할이 모두 AI인 게임의 actor 목록을 조회한다."""
+
+        cursor.execute(
+            """
+            SELECT games.id AS game_id, games.owner_user_id,
+                   action_window.id AS window_id, games.state_version,
+                   player.id AS player_id
+            FROM public.games AS games
+            JOIN public.action_windows AS action_window
+              ON action_window.game_id = games.id
+             AND action_window.status = 'OPEN'
+             AND action_window.window_kind = 'NIGHT'
+            JOIN public.game_players AS player
+              ON player.game_id = games.id
+             AND player.kind = 'AI'
+             AND player.role IN ('MAFIA', 'DETECTIVE', 'DOCTOR')
+             AND player.alive = TRUE
+            WHERE games.status = 'IN_PROGRESS'
+              AND (player.role <> 'MAFIA' OR NOT EXISTS (
+                  SELECT 1 FROM public.game_players AS earlier_mafia
+                  WHERE earlier_mafia.game_id = games.id
+                    AND earlier_mafia.role = 'MAFIA'
+                    AND earlier_mafia.alive = TRUE
+                    AND earlier_mafia.seat < player.seat
+              ))
+              AND NOT EXISTS (
+                  SELECT 1 FROM public.action_submissions AS existing
+                  WHERE existing.window_id = action_window.id
+                    AND existing.actor_player_id = player.id
+              )
+              AND (
+                  NOT EXISTS (
+                      SELECT 1 FROM public.game_players AS human_required
+                      WHERE human_required.game_id = games.id
+                        AND human_required.kind = 'HUMAN'
+                        AND human_required.role IN ('MAFIA', 'DETECTIVE', 'DOCTOR')
+                        AND human_required.alive = TRUE
+                  )
+                  OR EXISTS (
+                      SELECT 1 FROM public.action_submissions AS human_action
+                      JOIN public.game_players AS human_actor
+                        ON human_actor.id = human_action.actor_player_id
+                       AND human_actor.game_id = games.id
+                      WHERE human_action.window_id = action_window.id
+                        AND human_actor.kind = 'HUMAN'
+                  )
+              )
+            ORDER BY action_window.opened_at, games.id, player.seat
+            """
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def list_expired_night_windows(self, cursor: Any, *, now: Any) -> list[dict[str, Any]]:
+        """deadline이 지난 열린 밤 window를 자동 해소 worker에 전달한다.
+
+        인간 탐정·의사·마피아가 무응답이어도 정본의 결정적 자동 선택 규칙으로
+        밤을 종료해야 한다. 이 조회는 아직 OPEN이고 deadline이 지난 게임만
+        반환해 worker가 이미 해소된 window를 중복 처리하지 않도록 한다.
+        """
+
+        cursor.execute(
+            """
+            SELECT games.id AS game_id, games.owner_user_id,
+                   action_window.id AS window_id, games.state_version
+            FROM public.games AS games
+            JOIN public.action_windows AS action_window
+              ON action_window.game_id = games.id
+             AND action_window.status = 'OPEN'
+             AND action_window.window_kind = 'NIGHT'
+             AND action_window.deadline_at <= %s
+            WHERE games.status = 'IN_PROGRESS'
+            ORDER BY action_window.deadline_at, games.id
+            """,
+            (now,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def list_ai_vote_turns(self, cursor: Any) -> list[dict[str, Any]]:
+        """현재 투표 window에서 아직 표를 내지 않은 AI actor를 조회한다.
+
+        인간이 생존한 게임은 인간 표가 먼저 원장에 기록된 경우에만 AI 표를
+        깨운다. 인간 표가 없는 상태에서 AI가 먼저 진행하면 투표가 조기 해소될
+        수 있으므로 이 조건을 조회 계층에서 함께 보장한다.
+        """
+
+        cursor.execute(
+            """
+            SELECT games.id AS game_id, games.owner_user_id,
+                   action_window.id AS window_id, action_window.phase,
+                   games.state_version,
+                   player.id AS player_id
+            FROM public.games AS games
+            JOIN public.action_windows AS action_window
+              ON action_window.game_id = games.id
+             AND action_window.status = 'OPEN'
+             AND action_window.window_kind IN ('VOTE', 'REVOTE', 'FINAL_VOTE')
+            JOIN public.game_players AS player
+              ON player.game_id = games.id
+             AND player.kind = 'AI'
+             AND player.alive = TRUE
+            JOIN public.game_players AS human
+              ON human.game_id = games.id
+             AND human.kind = 'HUMAN'
+            WHERE games.status = 'IN_PROGRESS'
+              AND NOT EXISTS (
+                  SELECT 1 FROM public.action_submissions AS existing
+                  WHERE existing.window_id = action_window.id
+                    AND existing.actor_player_id = player.id
+              )
+              AND (
+                  human.alive = FALSE
+                  OR (
+                      action_window.window_kind <> 'FINAL_VOTE'
+                      AND EXISTS (
+                          SELECT 1 FROM public.action_submissions AS human_vote
+                          WHERE human_vote.window_id = action_window.id
+                            AND human_vote.actor_player_id = human.id
+                            AND human_vote.action_type = 'VOTE'
+                      )
+                  )
+              )
+              AND (action_window.window_kind <> 'FINAL_VOTE' OR human.alive = FALSE)
+            ORDER BY action_window.opened_at, games.id, player.seat
+            """
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def list_window_action_submissions(self, cursor: Any, *, window_id: UUID) -> list[dict[str, Any]]:
+        """현재 action window의 확정 행동을 엔진 상태 복원용으로 읽는다."""
+
+        cursor.execute(
+            """
+            SELECT actor_player_id, action_type, target_player_id
+            FROM public.action_submissions
+            WHERE window_id = %s
+            ORDER BY submitted_at, id
+            """,
+            (window_id,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def list_window_vote_submissions(self, cursor: Any, *, window_id: UUID) -> list[dict[str, Any]]:
+        """현재 투표 window의 확정 표를 엔진 상태 복원용으로 읽는다."""
+
+        return [
+            row
+            for row in self.list_window_action_submissions(cursor, window_id=window_id)
+            if row["action_type"] == "VOTE"
+        ]
+
     def list_discussion_submissions(
         self,
         cursor: Any,
@@ -94,16 +269,16 @@ class PostgresActionRepository:
             """
             SELECT submission.actor_player_id, submission.action_type, submission.message
             FROM public.action_submissions AS submission
-            JOIN public.action_windows AS window
-              ON window.id = submission.window_id
-             AND window.game_id = submission.game_id
+            JOIN public.action_windows AS action_window
+              ON action_window.id = submission.window_id
+             AND action_window.game_id = submission.game_id
             JOIN public.game_players AS player
               ON player.id = submission.actor_player_id
              AND player.game_id = submission.game_id
             WHERE submission.game_id = %s
-              AND window.phase = %s
-              AND window.round = %s
-              AND window.cycle = %s
+              AND action_window.phase = %s
+              AND action_window.round = %s
+              AND action_window.cycle = %s
               AND submission.action_type IN ('SPEAK', 'PASS')
             ORDER BY player.seat, submission.submitted_at, submission.id
             """,

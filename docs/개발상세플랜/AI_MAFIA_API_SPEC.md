@@ -10,6 +10,11 @@
 
 **HTTP prefix:** `/api/v1`
 
+> **현재 MCP 구현 참고 (2026-09-05):** Backend의 현재 최소 연결은 별도 공개 `/api/v1`
+> MCP API가 아니라 `/internal/mcp/context`, `/internal/mcp/prompts/{name}`와
+> `/internal/mcp/actions` synthetic endpoint만 제공한다. 이 문서의 Engine·MCP
+> 확장 계약은 실제 게임 규칙과 함께 후속 구현할 때 적용한다.
+
 이 문서는 일반 사용자 Front, 관리자 Front, Backend와 Mafia Game MCP 사이의 API
 정본이다. 구현 완료 시 FastAPI가 생성하는 `/openapi.json`과 이 문서의 path, enum,
 필수 field와 오류 코드가 일치해야 한다. 별도 수기 OpenAPI YAML은 관리하지 않는다.
@@ -736,8 +741,8 @@ operation payload 계약:
 `PublicEvent`와 각 `data` object는 표에 적힌 field만 갖는 폐쇄형 union이다.
 `GAME_BEGAN.message`는 마스터플랜 3.4절의 고정 시작 문구다. player 관련 ID는 같은
 game의 공개 player UUID다. `PLAYER_SPOKE.message`는 공백 정규화 뒤 1~200자,
-`TURN_OPENED.cycle`은 1~2이고 nullable `prompt`가 있으면 마스터플랜 3.4절의 전원
-`PASS` 고정 질문이다. `NIGHT_RESOLVED`와 `VOTE_RESOLVED.round`는 1~5,
+`TURN_OPENED.cycle`은 현재 MVP에서 1이며 nullable `prompt`는 사용하지 않는다.
+`NIGHT_RESOLVED`와 `VOTE_RESOLVED.round`는 1~5,
 저장·재개 event의 `round`는 0~5다. `NIGHT_RESOLVED.killed_player_id`는 UUID 또는
 `null`, `PLAYER_EXECUTED.revealed_role`은 2.1절 `Role`이다.
 `VOTE_RESOLVED.phase`는 `DAY_VOTE`, `REVOTE`, `FINAL_ACCUSATION` 중 하나다.
@@ -938,6 +943,13 @@ LLM token·비용·timeout·예산 metric은 제공하지 않는다.
 
 ## 8. Backend 내부 Engine API
 
+> **현재 MVP FastMCP 연결 기준:** 아래 8.1~9절의 Engine HMAC·bootstrap token·MCP
+> session 상세는 전체 운영 보안을 위한 후속 프로파일이다. 현재 FastMCP 전환에서는
+> MCP가 Resource·Prompt·Tool 컨텍스트를 Backend adapter로 전달하고, 인증·권한·게임
+> 상태 판정은 Backend가 담당한다. 현재 작업의 최소 HTTP adapter 계약은
+> 현재 실제 코드 상태는 `docs/AI_MAFIA_CURRENT_CODE_STATUS.md`에 기록한다. 아래 상세 프로파일을
+> 현재 FastMCP WU에 새로 추가하지 않는다.
+
 MCP runtime만 호출하는 별도 private network endpoint다. 일반 Front와 브라우저에
 route와 secret을 노출하지 않는다.
 
@@ -1115,7 +1127,7 @@ Resource에 넣지 않는다.
 |---|---|
 | `window_id` | UUID, envelope의 `window_id`와 같음 |
 | `window_kind` | `SPEECH`, `NIGHT`, `VOTE`, `REVOTE`, `FINAL_VOTE` |
-| `cycle` | 정수 1~2; `SPEECH`의 추가 순환만 2 |
+| `cycle` | 정수 1; 현재 MVP의 `SPEECH` 추가 순환은 사용하지 않음 |
 | `opened_state_version` | 1 이상의 정수 |
 | `server_time` | 응답 생성 시각 |
 | `deadline_at` | `SPEECH`이면 `null`, 나머지는 UTC RFC 3339 시각 |
@@ -1210,7 +1222,7 @@ header hash가 세션 개설 토큰 claim·DB hash와 모두 같아야 한다. t
 재사용·만료·capability 불일치는 fail-closed한다. MCP는 이 성공 뒤에만 session을
 활성화한다.
 
-### 8.4 `POST /internal/v1/agent-proposals`
+### 8.4 `POST /internal/v1/agent-proposals` (full proposal contract)
 
 Request:
 
@@ -1249,6 +1261,43 @@ Response `200`:
 MCP Tool 성공은 게임 행동의 무조건 성공이 아니라 Backend가 proposal을 검증·반영한
 결과다. 만료·폐기·phase·version·subject·audience 불일치를 외부에서 구분하지 않고
 `403 CAPABILITY_DENIED`로 거부한다. 상세 분류는 비밀 없는 내부 운영 log에만 남긴다.
+
+### 8.5 `POST /internal/v1/agent-action` (MVP thin adapter contract)
+
+최소 MCP 연결에서는 MCP가 full proposal의 내부 식별자를 조립하지 않는다. 인증된
+Backend session·capability가 game, agent, window와 현재 state version을 결정하고,
+MCP는 아래 행동 입력만 전달한다. 이 endpoint도 8.1의 Engine HMAC과
+`X-Agent-Capability` header 검증을 동일하게 적용한다.
+
+Request:
+
+```json
+{
+  "action": "PASS",
+  "target_player_id": null,
+  "message": null
+}
+```
+
+`action`은 `PASS`, `SPEAK`, `VOTE`, `NIGHT_ACTION` 중 하나이며, `target_player_id`와
+`message`는 행동 종류에 따라 nullable이다. 추가 field는 거부한다. Backend는 인증된
+session·capability와 현재 game state를 사용해 phase, role, 대상, deadline, 중복 요청을
+재검증하고 authoritative engine을 호출한다. MCP는 이 검증을 복제하지 않는다.
+
+Response `200`:
+
+```json
+{
+  "action": "PASS",
+  "status": "ACCEPTED",
+  "state_version": 13
+}
+```
+
+실행 거부, 만료, 잘못된 대상과 상태 충돌의 외부 분류는 Backend 공통 오류 계약을
+따르며, MCP는 오류 원문이나 내부 상태를 추가하지 않는다. 기존 8.4 full proposal
+endpoint는 Backend·Agent Manager가 직접 사용하는 확장 경로로 유지하고, 최소 MCP
+운영 연결은 8.5 endpoint를 사용한다.
 
 ## 9. Mafia Game MCP 계약
 

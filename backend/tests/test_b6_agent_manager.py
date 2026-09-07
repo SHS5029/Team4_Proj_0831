@@ -8,6 +8,7 @@ import pytest
 from backend.app.agent.orchestrator import AgentJobSpec, AgentOrchestrator
 from backend.app.agent.projections import build_context
 from backend.app.llm_provider.base import LLMResponse
+from backend.app.llm_provider.dummy import DummyProvider
 from backend.app.llm_provider.schemas import NormalizedAgentProposal
 from backend.app.mcp.client import FakeAgentContextClient
 from backend.app.models.enums import GamePhase, PlayerKind, PlayerRole
@@ -94,6 +95,104 @@ async def test_orchestrator_accepts_valid_proposal_and_closes_capability():
     )
     assert repository.revoked == ["a" * 64]
     assert context_client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_connects_fake_context_to_dummy_agent_provider():
+    """실제 외부 서버 없이 Context 조회부터 Dummy proposal 완료까지 연결한다."""
+
+    repository = FakeRepository()
+    context_client = FakeAgentContextClient(
+        {"data": {"public_events": [], "valid_targets": []}}
+    )
+
+    result = await AgentOrchestrator(
+        repository,
+        DummyProvider(),
+        context_client,
+        clock=lambda: NOW,
+    ).run(AgentJobSpec(GAME_ID, PLAYER_ID, WINDOW_ID, "SPEECH", "DAY_DISCUSSION", 3))
+
+    assert result.status == "SUCCEEDED"
+    assert result.proposal == NormalizedAgentProposal(type="PASS")
+    assert [scope for _, scope in context_client.calls] == ["public"]
+    assert repository.completed[0]["status"] == "SUCCEEDED"
+    assert repository.completed[0]["normalized_proposal"] == {
+        "type": "PASS",
+        "target_player_id": None,
+        "message": None,
+        "public_rationale": None,
+    }
+    assert context_client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_target_action_converts_dummy_pass_to_first_valid_target():
+    """밤·투표 작업은 PASS 대신 Context의 첫 합법 대상에 고정한다."""
+
+    repository = FakeRepository()
+    target = UUID(int=77)
+    context_client = FakeAgentContextClient(
+        {"data": {"valid_targets": [{"player_id": str(target)}]}}
+    )
+
+    result = await AgentOrchestrator(
+        repository,
+        DummyProvider(),
+        context_client,
+        clock=lambda: NOW,
+    ).run(AgentJobSpec(GAME_ID, PLAYER_ID, WINDOW_ID, "NIGHT_ACTION", "NIGHT_ACTION", 3))
+
+    assert result.status == "SUCCEEDED"
+    assert result.proposal == NormalizedAgentProposal(
+        type="NIGHT_ACTION", target_player_id=target
+    )
+
+
+@pytest.mark.asyncio
+async def test_target_action_reads_valid_targets_from_canonical_action_window():
+    """실제 MCP snapshot의 action_window 대상도 사용할 수 있는지 검증한다."""
+
+    repository = FakeRepository()
+    target = UUID(int=78)
+    context_client = FakeAgentContextClient(
+        {"action_window": {"valid_targets": [{"player_id": str(target)}]}}
+    )
+
+    result = await AgentOrchestrator(
+        repository,
+        DummyProvider(),
+        context_client,
+        clock=lambda: NOW,
+    ).run(AgentJobSpec(GAME_ID, PLAYER_ID, WINDOW_ID, "NIGHT_ACTION", "NIGHT_ACTION", 3))
+
+    assert result.proposal == NormalizedAgentProposal(
+        type="NIGHT_ACTION", target_player_id=target
+    )
+
+
+@pytest.mark.asyncio
+async def test_target_action_fallback_reads_canonical_action_window():
+    """MCP·LLM 오류 fallback에서도 실제 snapshot의 합법 대상을 사용한다."""
+
+    class BrokenProvider:
+        async def generate(self, request):
+            raise RuntimeError("synthetic provider failure")
+
+    target = UUID(int=79)
+    result = await AgentOrchestrator(
+        FakeRepository(),
+        BrokenProvider(),
+        FakeAgentContextClient(
+            {"action_window": {"valid_targets": [{"player_id": str(target)}]}}
+        ),
+        clock=lambda: NOW,
+    ).run(AgentJobSpec(GAME_ID, PLAYER_ID, WINDOW_ID, "NIGHT_ACTION", "NIGHT_ACTION", 3))
+
+    assert result.status == "FALLBACK"
+    assert result.proposal == NormalizedAgentProposal(
+        type="NIGHT_ACTION", target_player_id=target
+    )
 
 
 @pytest.mark.asyncio

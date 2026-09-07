@@ -42,7 +42,7 @@ result = engine.apply(state, command)
 ```
 
 결과는 DB를 직접 변경하지 않고 `next_state`, `events`, `errors`, `state_version`을
-반환한다. 우선 기존 `state_machine.py`, `rng.py`, `fallback.py`를 활용해 분리하고,
+반환한다. 우선 기존 `state_machine.py`, `game_engine/rng.py`, `fallback.py`를 활용해 분리하고,
 추가 디렉터리가 필요해질 때만 정본 문서와 합의 후 도입한다.
 
 ## 4. Application Service 분리

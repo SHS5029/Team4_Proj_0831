@@ -38,3 +38,42 @@ def test_snapshot_mode_replaces_authoritative_state() -> None:
     updated, mode = apply_envelope(snapshot=_snapshot(), envelope={"data": {"game_id": GAME_ID, "mode": "SNAPSHOT", "snapshot": replacement}})
     assert mode == "SNAPSHOT"
     assert updated == replacement
+
+
+def test_nested_sequence_batches_apply_phase_transition_atomically() -> None:
+    """Backend의 sequence별 중첩 operation이 최신 phase까지 반영되는지 확인한다."""
+
+    envelope = {
+        "data": {
+            "game_id": GAME_ID,
+            "mode": "DELTA",
+            "state_version": 14,
+            "last_sequence": 44,
+            "operations": [{
+                "front_sequence": 43,
+                "state_version": 13,
+                "operations": [{
+                    "operation_index": 0,
+                    "type": "SET_GAME_STATE",
+                    "payload": {
+                        "phase": "NIGHT_ACTION",
+                        "state_version": 13,
+                    },
+                }],
+            }, {
+                "front_sequence": 44,
+                "state_version": 14,
+                "operations": [{
+                    "operation_index": 0,
+                    "type": "SET_ACTION_WINDOW",
+                    "payload": {"kind": "NIGHT", "valid_targets": []},
+                }],
+            }],
+        },
+    }
+    updated, mode = apply_envelope(snapshot=_snapshot(), envelope=envelope)
+
+    assert mode == "DELTA"
+    assert updated["game"]["phase"] == "NIGHT_ACTION"
+    assert updated["game"]["last_sequence"] == 44
+    assert updated["action_window"]["kind"] == "NIGHT"

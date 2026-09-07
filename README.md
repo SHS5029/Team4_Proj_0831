@@ -21,14 +21,14 @@
 ## 현재 구현 범위
 
 - UUID-only 사용자 Frontend의 홈·게임 진행·관전·서버 확정 결과·게임별 피드백 화면과 Backend 공개 API client
+- `POST /api/v1/feedback`의 PostgreSQL 영속 저장, 멱등 재생, 일반·게임별 피드백 검증
 - 브라우저 UUID v4 생성·보관과 `X-User-Id` 기반 사용자 구분
 - FastAPI 공개 게임 API와 UUID별 게임 소유권 확인
 - Frontend API client의 `/health`·`/ready` 상태 확인과 공개 API header·오류 계약 테스트
 - Backend 소유 PostgreSQL migration 실행 코드(MCP 섹터가 실제 실행)
 - 독립 관리자 Streamlit 앱과 후속 MCP 서버 예약 구조(`mcp_server/mcp_2`)
-- `WU-M2` Mafia Game MCP의 stateful `/mcp` initialize, 일회성 MCP 세션 개설
-  토큰(bootstrap token) 검증·Engine
-  consume, 30초 idle/DELETE session 정리
+- FastMCP 기반 `/mcp`와 최소 Resource·Prompt·Tool 등록부
+- FastMCP 등록부에서 Backend synthetic context·prompt·action endpoint로 전달하는 HTTP adapter
 
 개발 섹터 역할은 코드 소유권과 실행 환경 책임을 분리합니다. Backend 섹터는
 DB schema·migration SQL·repository와 Redis client·lock 코드를 작성하고, MCP
@@ -36,15 +36,108 @@ DB schema·migration SQL·repository와 Redis client·lock 코드를 작성하�
 계정·권한 준비,
 migration 실행과 health 확인을 담당합니다. 실제 Backend 프로세스는 DB·Redis에
 직접 연결하며 MCP 서버를 데이터 프록시로 사용하지 않습니다.
-Backend의 영속 `event_outbox`와 Redis fan-out은 Backend 소유이며, MCP의
-`WU-M5`는 별도 영속 outbox 없이 구조화 감사 로그와 redaction만 검증합니다.
+기존 `event_outbox`와 agent 관련 테이블·암호화 컬럼은 DB/migration 호환을 위해
+보존합니다. 신규 MVP 실행 경로의 게임 추적은 `game_events`와 `receipts`를
+사용하고, MCP는 FastMCP 표준 protocol session만 사용합니다.
 
-LLM Agent loop, MCP Tool·Resource, 관리자 업무 기능과 canonical game의 Redis 연결은
-아직 구현하지 않았습니다. WU-M2 서버는 세션 개설 토큰 검증 뒤 빈 MCP capability
-표면만 열며
-Resource는 WU-M3, Tool은 WU-M4에서 추가합니다. 기존 LLM Provider adapter는 연결돼
+LLM Agent loop, 관리자 업무 기능과 canonical game의 Redis 연결은 아직 구현하지
+않았습니다. FastMCP는 실제 Backend 게임 snapshot과 command를 호출하는 최소
+Resource·Prompt·Tool 등록부를 제공합니다. 실제 Agent turn orchestration은 후속 정의합니다. 기존 LLM Provider adapter는 연결돼
 있지만 앱 수준의 LLM timeout 설정, token 상한·사용량, 비용·예산과 관련 KPI는 새 MVP
 범위에서 제외합니다.
+
+게임 흐름용 `DeterministicGameAgent`는 DB reservation이나 lease 없이 Backend가
+제공한 context를 deterministic Fake Provider에 전달하고, 검증된 action만 Backend
+경계로 반환합니다.
+
+PostgreSQL에서는 `PostgresAgentDiscussionService`가 deterministic AI PASS를 인간과
+동일한 GameEngine 검증·transaction으로 기록합니다. AI 원장의 source 값은 기존
+스키마 계약에 맞춘 `AGENT`입니다.
+
+Frontend sync는 Backend `game_events`의 operation `type`을 적용하며, DB·Redis를
+직접 호출하지 않습니다.
+
+인간 SPEAK/PASS와 행동 command는 자신의 제출만 PostgreSQL에 기록하고 즉시
+반환합니다. 중앙 `AiProgressWorker`가 열린 AI window를 비동기로 회복하며,
+LLM·MCP 실패 시에만 같은 command 경계의 deterministic fallback을 사용합니다.
+
+PostgreSQL snapshot은 생성 직후뿐 아니라 `DAY_DISCUSSION` 진행 상태도 복원합니다.
+새로고침 시 현재 `action_windows`와 토론 제출 원장을 다시 읽어 실제 window ID와
+인간 legal action을 반환하므로, 같은 게임을 이어서 테스트할 수 있습니다.
+밤 행동과 투표 command도 PostgreSQL action service를 통해 GameEngine과
+`action_submissions`·`game_events`에 연결되어 있습니다. 투표는 인간 표를 먼저
+원장에 기록하고 생존 AI 표를 이어서 수집한 뒤, 모든 생존자 표가 모였을 때만
+해소합니다. 현재 열린 투표 원장은 snapshot·worker 재시작 시에도 복원합니다.
+인간 시민의 밤은 별도 입력 없이 Backend가 자동 해소해 다음 낮으로 전환합니다.
+실제 PostgreSQL smoke에서 밤 행동과 다음날 투표 command 왕복을 확인했으며,
+재투표·승패 규칙과 종료 snapshot의 PostgreSQL smoke도 확인했습니다. Local LLM을
+사용한 전체 런 검증 중 인간 생존 DAY_VOTE에서 AI 투표가 대기되지 않던 결함을
+수정했으며, 전체 런 재검증은 다음 통합 테스트 단계입니다.
+사망한 인간의 `FAST_FORWARD` command도 PostgreSQL action service에 연결했습니다.
+`SAVE_AND_EXIT`와 `RESUME`의 실제 PostgreSQL 왕복도 smoke로 확인했습니다.
+Backend는 서버 시작 시 중앙 `AiProgressWorker`를 실행해 열린 AI speech·night·vote
+window를 비동기로 회복합니다. phase 전환은 마지막 필수 actor 제출을 처리하는
+동기 PostgreSQL transaction에서만 수행합니다. 테스트 앱에서는 수동 command와의
+경쟁을 막기 위해 `enable_background_worker=False`를 사용할 수 있습니다. worker 장애는
+민감한 payload·식별자·긴 예외 원문을 제외하고 조회·Agent 실행·fallback 단계, 오류
+종류·발생 위치(`파일:줄:함수`)와 최대 240자의 원인 문구만 Backend 로그에 남깁니다.
+최종 토론 snapshot도 현재 speech 제출 원장과 함께 복원됩니다.
+PostgreSQL sync의 공개 event와 action window payload도 Frontend 정본 구조로 변환됩니다.
+worker는 한 게임의 진행 오류가 다른 게임의 AI 진행을 막지 않도록 격리합니다.
+순수 규칙 엔진은 기존 `GameEngine` facade를 유지하면서 플레이어 검증·사망 처리·
+표준 승패·토론 입력·밤 역할 판정·투표 집계·replay 분기를
+`backend/app/game_engine/` 모듈로 이동했습니다. 실제 `GameEngine`, deterministic
+fallback, phase 전이 구현은 해당 package가 소유하고, 기존
+`backend/app/agent/game_engine.py`, `fallback.py`, `state_machine.py`는 import
+기존 `agent/game_engine.py`, `fallback.py`, `state_machine.py`, `agent/rules/`는
+모든 호출부를 새 정본으로 전환한 뒤 제거했습니다.
+게임 API runtime은 router 전역 변수가 아니라 앱별 `app.state.game_runtime`에
+주입되며, 테스트 앱과 운영 앱의 상태가 서로 공유되지 않습니다. PostgreSQL 실행
+계층의 phase별 다음 행동 순서는
+`backend/app/services/game/turn_order_service.py`가, 행동 제한 시간과 deadline은
+`backend/app/services/game/action_timer_service.py`가 각각 담당하도록 분리하는
+구조를 사용합니다. `window_service.py`는 두 결과를 기존 `ActionWindowInsert`로
+조합하는 얇은 adapter로만 유지합니다. DB/API의 기존 `action_windows` 명칭은 저장
+계약 호환을 위해 유지합니다. 현재 실제 구현 상태와 실행 경로는
+[AI_MAFIA_CURRENT_CODE_STATUS.md](docs/AI_MAFIA_CURRENT_CODE_STATUS.md)에 기록합니다.
+AI worker의 시작·종료는 FastAPI lifespan에서 앱별 runtime과 함께 관리합니다.
+중앙 worker는 runtime facade의 AI 차례 조회·실행 메서드만 호출하며 PostgreSQL
+transaction이나 Repository를 직접 소유하지 않습니다.
+게임 실행 command의 공개 조합 경계는 `command_service.py`와
+`lifecycle_service.py`, 실제 transaction은
+`action_command.py`, `discussion_command.py`, `agent_discussion.py`, runtime 조합은
+`postgres_runtime.py`가 담당합니다. 생성 transaction은
+`services/game/creation_service.py`, 게임 목록·snapshot 조회와 순수 공개 projection은
+`services/game/game_read_service.py`, DB row 변환은
+`services/game/game_read_service.py`가 함께 담당합니다. event 조회·sync envelope와
+event row의 Front operation 변환은 `services/game/event_sync_service.py`에 둡니다.
+기존 `snapshot_service.py`와 `sync_service.py`는 전환 기간에만 호환 re-export로
+유지할 수 있습니다. 별도 projection 파일은 만들지 않습니다.
+`event_outbox`는 PostgreSQL event의 전달 원본으로 transaction에서 enqueue하며,
+`services/outbox_service.py`의 publisher가 Redis fan-out을 담당합니다. 현재
+publisher worker 자동 기동은 연결하지 않고, Redis 장애 시 DB 원본과 재처리 경계를
+유지합니다.
+MCP registry와 관리자 API 계약 테스트는 게임 실행 runtime과 분리된 synthetic
+adapter를 사용하며, 순수 게임 흐름은 PostgreSQL 정본 경로로 전환하는 중입니다.
+완료 게임 결과 projection은 `services/game/result_service.py`가 담당합니다. sync 조회와
+snapshot 변환은 새 모듈로 이동했으며, 생성 seed·시나리오·persona·단서 조합은
+`creation_service.py`, BEGIN_GAME·SAVE_AND_EXIT·RESUME transaction orchestration은
+`lifecycle_service.py`가 담당합니다. 기존 API 호환을 위한 facade 클래스는
+`game_service.py`에 유지합니다.
+`FINAL_DISCUSSION` snapshot에서 발언용 `legal_actions`와 `SPEECH` window가 누락되어
+마지막 토론이 멈추던 문제도 수정했으며, 서버를 종료한 상태의 PostgreSQL 전체 흐름
+smoke 4개가 통과했습니다.
+또한 밤 공격 후 메모리 상태만 변경되고 `game_players.alive`에 저장되지 않던 문제를
+수정해, 마피아 공격 결과가 다음 snapshot에도 유지되도록 했습니다.
+Frontend SSE bridge는 실제 변경이 있는 `envelope`만 Streamlit component state로
+등록해 화면을 rerun합니다. 현재 cursor를 그대로 돌려주는 no-op 응답은 폐기하며,
+응답 stream이 종료되어도 마지막 `last_sequence`부터 자동 재연결해 phase 전환을
+반영합니다. Backend `/events`는 연결을 유지하면서 변경 batch만 push하고 15초
+간격 heartbeat만 보내므로, 변경 없는 stream 데이터가 페이지를 반복 rerun하지 않습니다.
+Backend 중앙 AI worker는 만료된 밤 window도 조회해 인간 역할의 무응답을 정본의
+결정적 자동 선택으로 해소하고 다음 낮 단계까지 진행합니다.
+게임 command Front guard는 입력 형식만 정규화하고, 현재 phase·turn·window·대상
+허용 여부는 Backend가 최신 transaction에서 최종 확인합니다.
 
 ## 개발상세플랜 정본 (2026-09-03)
 
@@ -63,9 +156,7 @@ agent 한 세션을 마스터플랜의 WU 한 개 이하로 제한합니다.
 | [AI_MAFIA_FRONTEND_BACKEND_HANDOFF.md](docs/개발상세플랜/AI_MAFIA_FRONTEND_BACKEND_HANDOFF.md) | Frontend–Backend 공개 API, SSE·CORS, 오류·private 경계와 공동 완료 조건 요약 |
 | [AI_MAFIA_INDEPENDENT_CONTRACT.md](docs/개발상세플랜/AI_MAFIA_INDEPENDENT_CONTRACT.md) | 세 섹터가 독립 구현할 때 공통으로 고정할 최소 연결 형식과 경계 |
 | [AI_MAFIA_GAME_ENGINE_STRATEGY_DRAFT.md](docs/개발상세플랜/AI_MAFIA_GAME_ENGINE_STRATEGY_DRAFT.md) | 게임 엔진·Agent Manager 모듈화 전략 임시 초안 |
-| [AI_MAFIA_BACKEND_DB_REDIS_CONNECTION_PLAN.md](docs/temp/AI_MAFIA_BACKEND_DB_REDIS_CONNECTION_PLAN.md) | Backend–PostgreSQL·Redis 실제 연결과 transaction·outbox 검증 계획 |
-| [AI_MAFIA_INTEGRATION_MVP_PLAN.md](docs/temp/AI_MAFIA_INTEGRATION_MVP_PLAN.md) | 로그인 제거와 Frontend–Backend–DB–Redis–MCP–LLM 연결 중심의 축소 MVP 계획 |
-| [AI_MAFIA_FRONTEND_BACKEND_CONNECTION_PLAN.md](docs/temp/AI_MAFIA_FRONTEND_BACKEND_CONNECTION_PLAN.md) | Frontend–Backend 공개 API 연결만 수행하는 소단위 구현 계획 |
+| [AI_MAFIA_CURRENT_CODE_STATUS.md](docs/AI_MAFIA_CURRENT_CODE_STATUS.md) | 현재 실제 코드 구조, 게임 흐름, 공개 API, 설정, 검증 결과와 제약 |
 
 다섯 MCP Resource의 상세 `data` schema는 API 명세 8.2절과 그 절이 명시적으로
 참조하는 API 공통 모델만 정본이며 MCP 서버 설계서에는 URI·Engine scope 매핑과
@@ -100,8 +191,7 @@ Front, Backend, MCP·Data 담당자는 정본 문서의 예시와 필드·enum·
 `mystery-v1`·`scenario-v1`로 확정했습니다.
 
 - 전체 6~9명, 탐정·의사·시민과 서로 정체를 모르는 마피아
-- 첫날 낮은 좌석순 기본 1회 발언 후 무투표로 밤에 진입하되, 전원이 `PASS`하면
-  고정 질문과 추가 발언 순환을 정확히 한 번 진행
+- 첫날 낮은 좌석순 기본 1회 발언 후 무투표로 밤에 진입
 - 텍스트 토론은 200자 이하의 턴 방식, 밤 행동은 20초·투표는 30초의
   Backend 권위 deadline
 - 다섯 개 시나리오와 플레이어별 알리바이·관찰 정보를 검증된 seed 기반
@@ -131,12 +221,24 @@ Front·MCP 계약을 차례로 완료한 뒤 사용할 수 있습니다. 규칙 
 │   ├── app/routers/                  # health·공개 게임·내부 Engine endpoint
 │   ├── app/schemas/                  # 요청·응답 validation 계약
 │   ├── app/services/                 # UUID 사용자·게임 유스케이스
+│   │   └── game/                     # 게임 업무 Service·Repository 조합·공용 계약
+│   │       ├── postgres_helpers.py   # PostgreSQL 상태 복원·replay 공통 helper
+│   │       ├── service_errors.py     # 엔진 오류·API 오류 변환
+│   │       ├── runtime_factory.py    # 게임 runtime·Agent adapter composition root
+│   │       ├── postgres_runtime.py   # router·worker가 호출하는 PostgreSQL facade
+│   │       ├── turn_order_service.py # 다음 행동 주체·순서·cycle 계산
+│   │       ├── action_timer_service.py # 행동 deadline·잔여 시간 계산
+│   │       ├── window_service.py     # phase별 action window 조합·검증
+│   │       ├── actor_context.py      # HUMAN·AGENT 공통 행동 주체 계약
+│   │       ├── game_read_service.py  # 게임 목록·snapshot 조회와 row 변환
+│   │       ├── event_sync_service.py # event 변환·sync envelope 조합
 │   ├── app/models/identity.py        # UUID 내부 사용자 모델
-│   ├── app/repositories/             # PostgreSQL 사용자 저장소
+│   ├── app/repositories/             # PostgreSQL CRUD·row 변환 저장소
 │   ├── app/infrastructure/           # migration·PostgreSQL·내부 HMAC 구현
-│   ├── app/agent/                    # 아직 loop가 없는 Agent 정책·orchestrator 골격
+│   ├── app/agent/                    # Agent 정책·projection·orchestration (DB·Engine 런타임 import 없음)
+│   ├── app/game_engine/               # 순수 게임 규칙·phase·결정적 RNG 정본 package (현재 phase가 행동 실행 포함)
 │   ├── app/llm_provider/             # 현재 LLM Provider adapter
-│   ├── app/mcp/                      # 현재 scaffold MCP client·registry
+│   ├── app/mcp/                      # Backend Agent용 MCP context client·registry
 │   ├── migrations/                   # Backend 작성 SQL migration(MCP 실행)
 │   ├── tests/
 │   └── README.md
@@ -156,8 +258,8 @@ Front·MCP 계약을 차례로 완료한 뒤 사용할 수 있습니다. 규칙 
 ├── frontend_admin/                   # 관리자 독립 앱의 최소 실행 골격
 ├── mcp_server/
 │   ├── pyproject.toml, uv.lock        # Python 3.12·MCP SDK 1.29.1 독립 실행 환경
-│   ├── mafia_game/                   # WU-M2 세션 개설 인증·session MCP runtime
-│   ├── tests/                        # fake Engine·SDK-level WU-M2 계약 테스트
+│   ├── mafia_game/                   # 최소 FastMCP 등록부·Backend HTTP adapter
+│   ├── tests/                        # 등록·adapter·ASGI 왕복 테스트
 │   └── mcp_2/                        # 후속 MCP 독립 예약 패키지
 ├── docs/
 │   └── 개발상세플랜/
@@ -195,34 +297,20 @@ PowerShell 가상환경 자동 전환을 제공합니다. PowerShell 7에서 발
 전달합니다. 홈·게임·피드백 화면은 화면 정본의 상태 표현과 반응형·접근성 스타일을
 공유하며, 게임 상태와 결과의 원본은 계속 Backend snapshot입니다.
 
-Backend의 현재 게임 API는 canonical `mystery-v1` 계약을 사용하고, 기존 `scaffold-v1`
-요청은 호환 경로로 처리합니다. in-memory mock repository를 주입한 실행에서는
-`GET /api/v1/games`가 같은 Backend 프로세스에서 생성한 게임만 UUID 소유자별 목록으로 반환하며,
-게임이 없으면 오류가 아닌 `200`과 빈 `items`를 반환합니다.
-mock 게임의 좌석은 화면 표시용으로 민수·철수·영희·태경·지효·성주·환석·유빈·태웅·지혜·지토
-preset 이름을 사용하지만,
-API 식별자와 소유권 검사는 계속 UUID를 사용합니다.
-
-PostgreSQL 없이 화면을 확인할 때는 Backend를 mock 모드로 실행합니다. 기존 개발용
-Backend 포트 `8000`을 그대로 사용하므로 Frontend의 주소를 바꿀 필요가 없습니다.
-
-```powershell
-$env:BACKEND_DATA_MODE = "mock"
-& ".\.venv\Scripts\python.exe" -m uvicorn backend.app.main:app --port 8000
-```
-
-mock 데이터는 Backend 프로세스를 재시작하면 초기화됩니다.
+Backend의 현재 게임 API는 canonical `mystery-v1` 계약을 사용하고, Backend에 남아 있는
+기존 migration 이력의 `scaffold_*` schema는 보존하지만 runtime에서는 사용하지 않습니다.
+Frontend의 Scaffold 전용 실행 경로와 client는 제거되었으며, Backend의 게임 API는
+PostgreSQL 정본 runtime만 사용합니다. 따라서 화면 확인과 API 테스트 전에 PostgreSQL
+migration과 연결 환경을 준비해야 합니다.
 관리자 통계 화면은 종료된 게임만 분석하며, 종료 게임이 없을 때는 빈 통계를 오류로
 표시하지 않고 안내 문구를 보여줍니다.
 
-관리자 mock 화면을 확인하려면 관리자 Frontend의 local storage에 생성된 UUID를
+관리자 화면을 확인하려면 관리자 Frontend의 local storage에 생성된 UUID를
 `ADMIN_USER_IDS`에 등록한 뒤 Backend를 재시작합니다. UUID는 관리자 화면의 브라우저
 개발자 도구에서 `ai_mafia_admin_user_id_v1` 값을 확인할 수 있습니다.
 
 ```powershell
-$env:BACKEND_DATA_MODE = "mock"
 $env:ADMIN_USER_IDS = "브라우저에서_확인한_UUID"
-& ".\.venv\Scripts\python.exe" -m uvicorn backend.app.main:app --port 8000
 ```
 
 `frontend_user`와 `frontend_admin`은 Backend만 HTTP로 호출합니다. Frontend가 DB,
@@ -277,45 +365,69 @@ DATABASE_MIGRATION_URL=postgresql://migration_user:change-me@localhost:5432/Team
 DATABASE_NAME=Team4_Proj
 ```
 
-- `DATABASE_URL`에는 Backend runtime이 사용할 DML 최소 권한 계정을 설정합니다.
+- `TEAM_DATABASE_URL`에는 실제 원격 PostgreSQL의 DML 최소 권한 계정을 설정합니다.
+  `TEAM_DATABASE_URL`이 없을 때만 `DATABASE_URL`을 로컬 테스트 fallback으로 사용합니다.
+- `TEAM_DATABASE_URL`이 설정되면 URL의 database path를 보존하며, 원격 검증 대상은
+  `DATABASE_NAME`으로 덮어쓰지 않습니다.
 - `DATABASE_MIGRATION_URL`은 목표 migration runner가 사용할 DDL 계정입니다. 현재
   runner는 아직 이 이름을 읽지 않으므로 아래 migration 절의 격리 주입 절차를
   따릅니다. Backend runtime 프로세스에는 전달하지 않습니다.
 - 앱은 URL의 원래 DB 경로 대신 `DATABASE_NAME`을 사용하며 기본값은 `Team4_Proj`입니다.
-- 현재 scaffold는 `.env.example`의 `REDIS_URL`, `LLM_PROVIDER`, 선택 Provider 설정과
-  `MAFIA_MCP_URL`을 이미 읽습니다. game state keyring, `MCP_SERVER_AUTH_SECRET`,
-  `ENGINE_INTERNAL_API_SECRET`, `ADMIN_USER_IDS`와 `ENGINE_API_URL`은 Backend canonical
-  WU에서 연결할 목표 설정입니다. WU-M2 MCP runtime은 뒤의 세 MCP 관련 값 중
-  `MCP_SERVER_AUTH_SECRET`, `ENGINE_INTERNAL_API_SECRET`, `ENGINE_API_URL`만 process
-  환경에서 직접 읽습니다. 실제 키 값은 승인된 비밀 저장소나 로컬의 권한 제한
-  파일에만 보관합니다.
-- 현재 Backend MCP client의 코드 기본값은 아직 `8010/mcp`이고 `game_ping`,
-  `game_get_context`, `game_submit_proposal` placeholder Tool을 호출합니다. 목표값
-  `8100/mcp`, 다섯 Resource·네 Tool과 세션 개설 토큰·capability 연결은 `WU-B6`·`WU-B7`·
-  `WU-M6` 범위이며 현재 구현 완료로 간주하지 않습니다.
-  `GAME_STATE_KEYRING_FILE`은 저장소 밖의 권한 제한 JSON을 가리키고
-  `GAME_STATE_ACTIVE_KEY_ID`는 신규 seed·snapshot 암호화 key를 선택합니다.
-  `MCP_SERVER_AUTH_SECRET`은 Backend→MCP 세션 개설 토큰 서명,
-  `ENGINE_INTERNAL_API_SECRET`은 MCP→Backend 내부 경계용입니다. 운영 MCP 연결은
-  검증된 TLS를 사용합니다.
-- 앱 수준의 LLM timeout, token 상한·사용량, 비용·예산 설정은 MVP에서 사용하지
+- 최소 FastMCP process는 `BACKEND_API_URL`, `MCP_LISTEN_HOST`, `MCP_LISTEN_PORT`만
+  읽습니다. 기본 Backend 주소는 `http://127.0.0.1:8000`, MCP 주소는
+  `http://127.0.0.1:8100/mcp`입니다. 현재 연결은 loopback 개발용이며 인증·TLS·운영
+  보안은 이 최소 전환 범위에 포함하지 않습니다.
+- Backend 중앙 AI worker는 `MCP_SERVER_URL`로 FastMCP 서버 주소를 주입받아
+  context 조회와 Agent action 전달에 사용합니다. MCP가 중지되거나 LLM 호출이
+  실패하면 현재 AI speech window는 기존 규칙 기반 PASS fallback으로 종료됩니다.
+- LLM Provider 설정은 `config.py`에서 선택값, Local 모델 주소·이름, timeout과 출력
+  token 상한을 검증합니다. 현재 3번 연결 작업은 Dummy Provider와 Local Provider의
+  최소 호출 계약을 대상으로 하며, OpenAI·Gemini 실제 호출은 선택 Provider 작업으로
+  남겨 둡니다. Agent Runtime은 Fake Context와 Dummy Provider로 proposal 완료 흐름을
+  검증할 수 있습니다. 앱 수준의 token 사용량·비용·예산 설정은 MVP에서 사용하지
   않습니다. 중단된 Agent worker는 조정 불가능한 고정 lease와 fencing token으로
-  회수하며 LLM·MCP 호출 동안 PostgreSQL transaction이나 Redis game lock을 보유하지
-  않습니다.
-- 현재 `config.py`와 scaffold proposal에는 legacy timeout, token 상한과 비용 단가
-  기본값이 남아 있습니다. 이 동작은 target MVP 기능이 아니며 `WU-B6`에서 설정 field와
-  함께 제거합니다.
-- `MAFIA_MCP_URL`은 `/mcp`를 포함한 전체 endpoint이며 Backend client가 경로를
-  다시 붙이지 않습니다.
-- `MCP_REQUIRE_TLS=false`는 loopback 개발 기본값뿐입니다. 운영은 `true`와 검증된
-  CA 경로를 강제합니다.
+  회수하며, 만료·실패한 동일 AI job은 다음 예약 시 lease를 재사용해 재시도할 수
+  있습니다. LLM·MCP 호출 동안 PostgreSQL transaction이나 Redis
+  game lock을 보유하지 않습니다.
+- Local Provider는 OpenAI 호환 `/chat/completions` 형식과 JSON 응답을 사용합니다.
+  게임 proposal 요청에서는 `think=false`를 사용해 불필요한 reasoning 출력을 끕니다.
+  밤 행동·투표에서 Provider가 잘못 `PASS`를 반환하면 MCP turn context의 첫 합법
+  대상으로 보정하며, 합법 대상이 없을 때만 안전하게 실패 처리합니다.
+  실제 Local endpoint가 실행되지 않은 환경에서는 유료 API 없이 fake transport로
+  성공·timeout·잘못된 응답 처리를 검증합니다. Ollama 호환 서버에는
+  `response_format=json_object`를 요청하고 Backend가 최종 proposal schema를 검증합니다.
+- FastMCP 전환은 `mcp_server/mafia_game/main.py`의 독립 composition 경계에서 실행되며,
+  최소 Resource·Prompt·AI 행동 요청 Tool 등록과 initialize·호출·Backend 오류 왕복을
+  `mcp_server/tests/test_fastmcp_roundtrip.py`에서 ASGI fixture로 검증합니다.
+- 기존 custom bootstrap·HMAC·nonce·session registry runtime은 제거되었으며, MCP protocol
+  session은 FastMCP SDK 경계에서만 관리합니다.
+- FastMCP 계획은 Resource·Prompt·Tool 컨텍스트 제공에 집중하며, Tool의 행동 판정과
+  상태 변경은 Backend가 담당합니다. MCP 내부 HMAC·bootstrap·session 상태 머신은
+  FastMCP 전환 범위에서 제외합니다.
+- 기존 FastMCP 전환안은 보관용이며, 현재 FastMCP WU는
+  `AI_MAFIA_MCP_FASTMCP_MINIMAL_CONNECTION_PLAN.md`의 최소
+  연결 기준을 우선합니다.
+- MCP 테스트는 등록부·adapter·ASGI 왕복을 대상으로 하며 Backend 회귀 테스트와 함께
+  실행합니다.
+- 현재 MVP 동기화는 PostgreSQL `game_events` polling을 정본으로 사용하며, 기존
+  `event_outbox`는 migration·호환 구조로 보존합니다. legacy timeout, token 상한과
+  비용 단가는 신규 실행 경로에서 사용하지 않는 방향으로 정리 중입니다.
+- 기존 DB 게임 흐름 smoke test는 `py -m pytest backend/tests/test_postgres_game_flow.py -q`로
+  실행합니다. 테스트는 고유 UUID와 실행 ID를 사용하고 종료 시 생성한 사용자·게임·Redis
+  키만 정리합니다.
+- 최소 FastMCP는 `BACKEND_API_URL`을 Backend base URL로 사용하고 `/internal/mcp/*`
+  경로를 호출합니다. MCP endpoint는 `MCP_LISTEN_HOST`와 `MCP_LISTEN_PORT`로 정합니다.
+- Backend는 `CORS_ALLOWED_ORIGINS`에 등록된 Front origin에만 SSE fetch preflight와
+  동기화 header를 허용합니다. 활성 밤·투표 window의 `remaining_ms`는 저장된
+  `deadline_at`을 기준으로 매 snapshot마다 계산하며, sync cursor 불일치 시 전체
+  snapshot으로 복구합니다.
 
 | 환경 소비자 | 허용하는 AI 마피아 관련 키 | 주입 금지 |
 |---|---|---|
 | Front 서버 | Backend URL | DB·Redis·LLM·MCP/Engine secret |
-| Backend runtime | `DATABASE_URL`, `DATABASE_NAME`, `REDIS_URL`, game state keyring, LLM Provider·model·key, `MAFIA_MCP_URL`, `MCP_REQUIRE_TLS`, `MCP_TLS_CA_FILE`, `MCP_SERVER_AUTH_SECRET`, `ENGINE_INTERNAL_API_SECRET`, `ADMIN_USER_IDS` | `DATABASE_MIGRATION_URL` |
+| Backend runtime | `DATABASE_URL`, `DATABASE_NAME`, `REDIS_URL`, game state keyring, LLM Provider·model·key, `ADMIN_USER_IDS`, `MCP_SERVER_URL`, `CORS_ALLOWED_ORIGINS` | `DATABASE_MIGRATION_URL`, MCP runtime 전용 설정 |
 | migration 실행 프로세스 | `DATABASE_MIGRATION_URL`, `DATABASE_NAME` | runtime·LLM·MCP secret |
-| MCP runtime | `MCP_SERVER_AUTH_SECRET`, `ENGINE_INTERNAL_API_SECRET`, `ENGINE_API_URL`와 비밀이 아닌 listen/TLS 설정 | DB·Redis·LLM 자격증명 |
+| MCP runtime | `BACKEND_API_URL`, `MCP_LISTEN_HOST`, `MCP_LISTEN_PORT` | DB·Redis·LLM·인증 secret |
 
 로컬에서도 실 자격증명을 채운 공용 루트 `.env`를 Backend와 MCP가 함께 읽게 하지
 않습니다. migration 자격증명은 migration 명령 프로세스에만 일시 주입하고, MCP
@@ -385,10 +497,8 @@ uv run uvicorn backend.app.main:app --reload --port 8000
 
 `http://127.0.0.1:8000/health`의 정상 응답은 `{"status":"ok"}`입니다.
 
-Mafia Game MCP는 별도 프로젝트 환경을 동기화하고 MCP 전용 process 환경에 서로 다른
-32자 이상 secret과 Engine base URL을 주입한 뒤 실행합니다. 공용 루트 `.env`를 자동
-로딩하지 않으며 WU-M2의 평문 listen은 loopback만 허용합니다. 아래 명령은 저장소
-루트에서 실행합니다.
+Mafia Game MCP는 Backend를 먼저 실행한 뒤 최소 FastMCP process로 실행합니다. 아래
+명령은 저장소 루트에서 실행하며, 개발 환경에서는 loopback 연결만 사용합니다.
 
 ```bash
 uv sync --project mcp_server --locked --dev
@@ -396,10 +506,9 @@ uv run --project mcp_server --directory mcp_server --locked python -m mafia_game
 ```
 
 기본 endpoint는 `http://127.0.0.1:8100/mcp`입니다. `/health`나 다른 공개 endpoint는
-WU-M2에 없고, 현재 Resource·Tool 및 legacy alias도 등록하지 않습니다. 실제 Backend의
-세션 개설 토큰 발급·consume endpoint가 아직 없으면 아래 package 테스트의 fake
-Engine으로
-독립 계약만 검증할 수 있습니다.
+추가하지 않습니다. FastMCP composition에는 실제 게임 context를 읽고 Backend
+command를 호출하는 Resource·Prompt·AI 행동 요청 Tool이 등록됩니다. 게임 판정과
+상태 변경은 Backend/GameEngine이 수행합니다.
 
 일반 사용자 앱은 별도 터미널에서 실행합니다.
 
@@ -416,6 +525,13 @@ Windows에서 `uv`를 사용하지 않는 경우 프로젝트 가상환경의 Py
 
 브라우저에서 [http://localhost:8501](http://localhost:8501)을 엽니다. Backend
 설정이 없거나 연결되지 않으면 고정된 연결 오류 안내를 표시합니다.
+
+최소 MCP 왕복 검증은 Backend와 FastMCP를 각각 subprocess로 실행해 수행합니다.
+
+```powershell
+$env:PYTHONPATH = "mcp_server"
+uv run --project mcp_server --locked pytest -q mcp_server/tests/test_process_backend_roundtrip.py
+```
 
 관리자 앱은 업무 기능 없이 독립 실행 경계만 확인할 수 있습니다.
 
@@ -482,8 +598,9 @@ uv run ruff check .
 - `ADMIN_USER_IDS`는 강한 인증이 아니므로 관리자 앱도 loopback·사설망에서만 사용합니다.
 - 현재 관리자 앱에는 인증·권한과 업무 기능이 없으며 준비 화면만 표시합니다.
 - 현재 Mafia Game MCP에는 `/mcp` 실행 서버와 세션 개설 토큰 consume용 Engine HTTP
-  adapter가
-  있으며 Resource·Tool과 DB·Redis 접근은 아직 없습니다.
+  adapter가 있으며 FastMCP 독립 composition 경계에 최소 Resource·Prompt·AI 행동 요청
+  Tool 등록부와
+  ASGI 왕복 fixture가 있습니다. MCP runtime은 여전히 DB·Redis에 직접 접근하지 않습니다.
 
 비밀값 노출이 의심되면 값을 다시 출력하지 말고 즉시 폐기·재발급한 뒤 Git 이력과
 외부 로그를 별도로 점검하세요.

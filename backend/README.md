@@ -33,18 +33,21 @@ Health endpoint는 `GET http://127.0.0.1:8000/health`이며 정상 응답은
 uv run python -m backend.app.infrastructure.migrations
 ```
 
-현재 migration은 `001`·`002` legacy/scaffold 기반, `003` canonical `mystery-v1`
-schema, `004` 최소 정적 콘텐츠 순서로 실행됩니다. `004`는 시나리오 5개와 시나리오별
+현재 migration은 역사적으로 보존된 `001`·`002` legacy schema, `003` canonical
+`mystery-v1` schema, `004` 최소 정적 콘텐츠 순서로 실행됩니다. `004`는 시나리오 5개와 시나리오별
 알리바이·관찰 각 9개, 활성 persona 한 개를 고정 key로 멱등 등록합니다.
 
-현재 `mcp_server/mafia_game`에는 실행 가능한 서버 entrypoint가 없습니다. 따라서 MCP
-연결 endpoint는 호환 서버를 별도로 준비한 경우에만 확인할 수 있고, canonical MCP
-서버 실행 명령은 `WU-M2`에서 entrypoint를 구현한 뒤 이 문서에 추가합니다.
+현재 Backend는 `mystery-v1` 공개 게임 API와 최소 FastMCP 연결용 내부 endpoint를
+제공합니다. Swagger는 `http://127.0.0.1:8000/docs`에서 확인할 수 있으며, FastMCP
+runtime은 Backend의 `/internal/mcp/context`, `/internal/mcp/prompts/{name}`와
+`/internal/mcp/actions`를 호출합니다. 게임 상태의 최종 판정과 저장은 Backend가
+소유합니다.
 
-현재 게임 smoke API는 `X-User-Id`와 `ruleset_version=scaffold-v1`을 사용합니다. Swagger는
-`http://127.0.0.1:8000/docs`, MCP 연결 확인은
-`GET http://127.0.0.1:8000/api/v1/mcp/health`입니다. canonical `mystery-v1`은
-[공통 마스터플랜](../docs/개발상세플랜/AI_MAFIA_MASTER_PLAN.md)의 후속 WU입니다.
+`POST /api/v1/feedback`은 `public.feedback`에 저장됩니다. `GENERAL` 피드백은
+게임 없이 제출할 수 있고, `GAME` 피드백은 요청 사용자의 `COMPLETED` 게임에만
+허용됩니다. `Idempotency-Key` 재요청은 같은 결과를 replay하며, 같은 게임에 대한
+두 번째 `GAME` 피드백은 거부됩니다. 실제 사용 전 `003_create_mystery_v1_schema.sql`
+이 적용되어 있어야 합니다.
 
 ## LLM Provider
 

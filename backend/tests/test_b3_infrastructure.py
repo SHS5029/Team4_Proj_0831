@@ -12,7 +12,7 @@ from uuid import UUID
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app.agent.game_engine import GameEngine
+from backend.app.game_engine.engine import GameEngine
 from backend.app.core.config import Settings
 from backend.app.core.errors import ApiError
 from backend.app.infrastructure.redis.cache import RedisPublicCache
@@ -27,6 +27,7 @@ from backend.app.infrastructure.transaction import (
 from backend.app.main import create_app
 from backend.app.models.enums import PlayerKind
 from backend.app.repositories.event_repository import PostgresEventRepository
+from backend.app.repositories.agent_repository import PostgresAgentRepository
 from backend.app.repositories.game_repository import (
     EncryptedGameSeed,
     GameStateKeyring,
@@ -285,6 +286,36 @@ class FakeConnection:
 
         del args, kwargs
         return self._cursor
+
+
+class _DirectContext:
+    """저장소의 수동 context 종료 호출을 검증하는 얇은 대역이다."""
+
+    def __init__(self, value: object) -> None:
+        self.value = value
+        self.exit_args: tuple[object, ...] | None = None
+
+    def __exit__(self, *args: object) -> bool:
+        self.exit_args = args
+        if hasattr(self.value, "__exit__"):
+            return bool(self.value.__exit__(*args))
+        return False
+
+
+def test_agent_repository_closes_successful_transaction_without_none_type_error() -> None:
+    """Agent 저장소의 정상 종료가 NoneType을 예외로 전달하지 않는지 검증한다."""
+
+    connection = FakeConnection()
+    cursor = connection.cursor()
+    connection_context = _DirectContext(connection)
+    cursor_context = _DirectContext(cursor)
+
+    PostgresAgentRepository._close_connection_cursor(
+        (connection_context, cursor_context, cursor)
+    )
+
+    assert connection.committed is True
+    assert connection.rolled_back is False
 
 
 class FakeRedis:

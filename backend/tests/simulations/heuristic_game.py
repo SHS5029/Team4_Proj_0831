@@ -10,8 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from backend.app.agent.game_engine import GameEngine
-from backend.app.agent.rng import DeterministicRng
+from backend.app.game_engine.engine import GameEngine
+from backend.app.game_engine.rng import DeterministicRng
 from backend.app.models.enums import (
     GamePhase,
     GameStatus,
