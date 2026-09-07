@@ -69,6 +69,14 @@ SETUP_CSS = """
 def render(client: ApiClient) -> None:
     """인원 선택을 검증하고 생성 POST를 rerun 이후 한 번만 실행한다."""
 
+    # 성공 직후에는 완료 경로로 바로 이동하므로, 생성 화면에 남은 성공 값은
+    # 이전 게임에서 돌아온 상태다. 결과가 불명확한 요청은 같은 key 재시도를 위해 보존한다.
+    previous = st.session_state.get("game.create_pending")
+    if isinstance(previous, dict) and previous.get("status") == "SUCCEEDED":
+        st.session_state.pop("game.create_pending", None)
+        st.session_state.pop("game.game_id", None)
+        st.session_state.pop("game.latest_snapshot", None)
+
     # POST body·idempotency key·pending 상태는 기존 계약을 유지하고, 이 함수에서는
     # 화면 표현만 설정 화면 형태로 조율한다. 사용자가 시나리오·역할·persona를
     # 직접 선택하는 입력은 추가하지 않는다.
@@ -88,7 +96,9 @@ def render(client: ApiClient) -> None:
     )
 
     pending = st.session_state.get("game.create_pending")
-    in_flight = isinstance(pending, dict) and pending.get("status") == "IN_FLIGHT"
+    in_flight = isinstance(pending, dict) and pending.get("status") in {
+        "PENDING_TO_RENDER", "IN_FLIGHT", "RETRYABLE_UNKNOWN",
+    }
     selected = _render_player_choices(in_flight=in_flight)
     st.markdown(
         '<section class="setup-rules"><div class="setup-rule-book">📘</div><div>'
@@ -136,6 +146,8 @@ def render(client: ApiClient) -> None:
         st.session_state["game.create_pending"] = {**pending, "status": "SUCCEEDED", "game_id": data["game_id"], "snapshot": snapshot}
         st.session_state["game.latest_snapshot"] = snapshot
         st.session_state["game.game_id"] = data["game_id"]
+        # 성공 상태를 생성 화면에서 다시 소비하지 않고 다음 rerun의 경로를 확정한다.
+        st.session_state["navigation.page"] = "creation_complete"
     except ApiResponseError as error:
         status = "RETRYABLE_UNKNOWN" if error.status_code >= 500 else "REJECTED"
         st.session_state["game.create_pending"] = {**pending, "status": status, "code": error.code}
@@ -175,6 +187,7 @@ def _render_terminal(pending: dict[str, object]) -> None:
     status = pending.get("status")
     if status == "SUCCEEDED":
         st.session_state["navigation.page"] = "creation_complete"
+        st.rerun()
     elif status == "RETRYABLE_UNKNOWN":
         st.warning("결과를 확인하지 못했어요. 같은 요청으로 다시 확인할 수 있습니다.")
         if st.button("같은 요청 다시 시도", key="game.create_retry"):

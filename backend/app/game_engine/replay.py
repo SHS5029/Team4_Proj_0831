@@ -39,6 +39,7 @@ def apply_operation(engine, state: GameState, operation: EngineOperation) -> Non
         if operation.target_id is None:
             raise RuleViolation("TARGET_REQUIRED")
         engine.submit_final_accusation(state, operation.actor_id, operation.target_id)
+    elif command == "RESOLVE_FINAL_ACCUSATION":
+        engine.resolve_final_accusation(state, force=True)
     else:
         raise RuleViolation("REPLAY_COMMAND_INVALID")
-

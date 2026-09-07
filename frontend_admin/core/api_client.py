@@ -10,6 +10,9 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 from uuid import UUID, uuid4
 
+from frontend_admin.core.auth import parse_admin_uuid
+from frontend_admin.core.models import ADMIN_PHASES, ADMIN_STATUSES
+
 HttpTransport = Callable[[Request, float], tuple[int, bytes]]
 
 
@@ -29,7 +32,9 @@ class AdminApiClient:
     # 접근시키고, 관리자 endpoint에는 mutation·강제 종료 기능을 추가하지 않는다.
 
     def __init__(self, *, user_id: str | UUID, api_url: str = "http://127.0.0.1:8000", transport: HttpTransport | None = None):
-        self.user_id = UUID(str(user_id))
+        self.user_id = parse_admin_uuid(str(user_id))
+        if self.user_id is None:
+            raise ValueError("관리자 식별자는 UUID v4여야 합니다.")
         self.api_url = api_url.rstrip("/")
         self._transport = transport or _send
 
@@ -51,6 +56,10 @@ class AdminApiClient:
 
         if not 1 <= limit <= 100:
             raise ValueError("관리자 게임 목록 limit은 1부터 100까지여야 합니다.")
+        if status is not None and status not in ADMIN_STATUSES:
+            raise ValueError("관리자 게임 상태 필터가 올바르지 않습니다.")
+        if phase is not None and phase not in ADMIN_PHASES:
+            raise ValueError("관리자 게임 단계 필터가 올바르지 않습니다.")
         query = [f"limit={limit}"]
         if status:
             query.append(f"status={status}")
@@ -85,6 +94,8 @@ class AdminApiClient:
             error = payload.get("error")
             code = error.get("code") if isinstance(error, dict) else payload.get("code")
             raise AdminApiError(status, code if isinstance(code, str) else "ADMIN_ACCESS_DENIED")
+        if status != 200:
+            raise AdminApiError(503, "INVALID_RESPONSE")
         return payload
 
 

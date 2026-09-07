@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from typing import Any
-from uuid import uuid4
 
 import streamlit as st
 
-from frontend_user.core.api_client import ApiClient, ApiResponseError, ApiUnavailableError
+from frontend_user.app_pages.game_page import (
+    _process_shell_pending, _render_shell_command, render_saved_control,
+)
 from frontend_user.core.view_models import own_private_view, public_players
 
 
@@ -81,7 +82,7 @@ ROLE_REVEAL_CSS = """
 }
 [class*="st-key-role-begin"] button {
   min-height: 3.35rem; border: 0 !important; border-radius: .65rem !important;
-  color: #fff !important; background: linear-gradient(135deg, #2d74f5, #1f5ee5) !important;
+  color: #fff !important; background: linear-gradient(135deg, #245fd6, #1f5ee5) !important;
   font-size: 1rem !important; font-weight: 750 !important;
 }
 .role-scenario {
@@ -141,16 +142,14 @@ def render(snapshot: dict[str, Any]) -> None:
 
     scenario = snapshot.get("scenario", {})
     game = snapshot.get("game", {})
+    client = st.session_state["game.client"]
+    game_id = str(game.get("game_id"))
+    _process_shell_pending(client=client, game_id=game_id)
     me = own_private_view(snapshot)
     role_name, role_icon, role_text = ROLE_PRESENTATION.get(
         me.get("role"),
         ("역할 확인 중", "❔", "역할 정보를 확인하는 중입니다."),
     )
-    pending = st.session_state.get("game.begin_pending")
-    locked = isinstance(pending, dict) and pending.get("status") in {
-        "PENDING_TO_RENDER",
-        "IN_FLIGHT",
-    }
 
     with st.container(key="role-reveal-card", border=True):
         st.markdown('<div class="role-pill">🎭 &nbsp; 역할 공개</div>', unsafe_allow_html=True)
@@ -181,79 +180,11 @@ def render(snapshot: dict[str, Any]) -> None:
             unsafe_allow_html=True,
         )
 
-        if "BEGIN_GAME" in snapshot.get("legal_actions", []):
-            client = st.session_state["game.client"]
-            game_id = str(game.get("game_id"))
-            with st.container(key="role-begin"):
-                if st.button(
-                    "게임 시작  ›",
-                    type="primary",
-                    key="game.begin",
-                    disabled=locked,
-                    use_container_width=True,
-                ):
-                    st.session_state["game.begin_pending"] = {
-                        "status": "PENDING_TO_RENDER",
-                        "game_id": game_id,
-                        "expected_state_version": int(game.get("state_version", 0)),
-                        "idempotency_key": str(uuid4()),
-                    }
-                    st.rerun()
-            _process_begin_game(client=client, snapshot=snapshot, game_id=game_id)
-
-
-def _process_begin_game(*, client: ApiClient, snapshot: dict[str, Any], game_id: str) -> None:
-    """BEGIN_GAME을 한 번 제출하고 성공하면 최신 snapshot 기준으로 이동한다."""
-
-    pending = st.session_state.get("game.begin_pending")
-    if not isinstance(pending, dict) or pending.get("game_id") != game_id:
-        return
-    if pending.get("status") == "PENDING_TO_RENDER":
-        pending["status"] = "IN_FLIGHT"
-        st.session_state["game.begin_pending"] = pending
-        st.rerun()
-    if pending.get("status") == "IN_FLIGHT":
-        st.info("게임을 시작하고 있어요.")
-        try:
-            response = client.submit_command(
-                game_id=game_id,
-                command={
-                    "type": "BEGIN_GAME",
-                    "expected_state_version": pending["expected_state_version"],
-                },
-                idempotency_key=pending["idempotency_key"],
-            )
-            st.session_state["game.begin_pending"] = {
-                **pending,
-                "status": "SUCCEEDED",
-                "response": response,
-            }
-            st.session_state["navigation.page"] = "game"
-            st.rerun()
-        except ApiResponseError as error:
-            st.session_state["game.begin_pending"] = {
-                **pending,
-                "status": "REJECTED",
-                "code": error.code,
-            }
-        except (ApiUnavailableError, ValueError) as error:
-            st.session_state["game.begin_pending"] = {
-                **pending,
-                "status": "RETRYABLE_UNKNOWN",
-                "code": getattr(error, "code", "DEPENDENCY_UNAVAILABLE"),
-            }
-        st.rerun()
-    _render_begin_terminal(pending)
-
-
-def _render_begin_terminal(pending: dict[str, Any]) -> None:
-    """게임 시작의 거부·결과 불명 상태를 구분해 재시도 범위를 제한한다."""
-
-    status = pending.get("status")
-    if status == "RETRYABLE_UNKNOWN":
-        st.warning("게임 시작 결과를 확인하지 못했어요. 같은 요청으로 다시 확인할 수 있습니다.")
-        if st.button("게임 시작 다시 확인", key="game.begin_retry", use_container_width=True):
-            st.session_state["game.begin_pending"] = {**pending, "status": "IN_FLIGHT"}
-            st.rerun()
-    elif status == "REJECTED":
-        st.error("현재 상태에서는 게임을 시작할 수 없어요. 최신 게임 상태를 다시 확인해 주세요.")
+        with st.container(key="role-begin"):
+            _render_shell_command(client=client, game_id=game_id, snapshot=snapshot, command_type="BEGIN_GAME")
+        if game.get("status") == "SAVED":
+            render_saved_control(client=client, snapshot=snapshot)
+        else:
+            pending = st.session_state.get("game.resume_pending")
+            if isinstance(pending, dict) and pending.get("game_id") == game_id:
+                _render_shell_command(client=client, game_id=game_id, snapshot=snapshot, command_type="RESUME")

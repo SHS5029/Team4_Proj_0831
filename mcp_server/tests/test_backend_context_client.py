@@ -12,6 +12,10 @@ from mafia_game.integrations.engine_http import (
     MinimalBackendContextClient,
 )
 
+GAME_ID = "00000000-0000-4000-8000-000000000001"
+USER_ID = "00000000-0000-4000-8000-000000000002"
+PLAYER_ID = "00000000-0000-4000-8000-000000000003"
+
 
 @pytest.mark.anyio
 async def test_minimal_adapter_forwards_resource_prompt_and_action() -> None:
@@ -66,5 +70,112 @@ async def test_minimal_adapter_rejects_backend_error() -> None:
     adapter = MinimalBackendContextClient("http://127.0.0.1:8000", client=client)
 
     with pytest.raises(BackendContextError):
-        await adapter.read_resource("mafia://context/current/invalid/invalid")
+        await adapter.read_resource(f"mafia://context/current/{GAME_ID}/{USER_ID}")
     await client.aclose()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("scope", ["public", "me", "turn", "persona", "gm-guide"])
+async def test_scoped_resource_forwards_query_without_reprojecting(scope: str) -> None:
+    requests: list[httpx.Request] = []
+    payload = {"scope": scope, "subject_id": PLAYER_ID, "data": {"fixture": scope}}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=payload)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = MinimalBackendContextClient("http://127.0.0.1:8000", client=client)
+        result = await adapter.read_resource(
+            f"mafia://context/scoped/{GAME_ID}/{USER_ID}/{PLAYER_ID}/{scope}"
+        )
+
+    assert result == payload
+    assert len(requests) == 1
+    assert requests[0].url.path == "/internal/mcp/context"
+    assert dict(requests[0].url.params) == {
+        "game_id": GAME_ID, "user_id": USER_ID, "player_id": PLAYER_ID, "scope": scope,
+    }
+
+
+@pytest.mark.anyio
+async def test_current_resource_requests_only_public_without_actor() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert dict(request.url.params) == {
+            "game_id": GAME_ID, "user_id": USER_ID, "scope": "public",
+        }
+        return httpx.Response(200, json={"scope": "public"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = MinimalBackendContextClient("http://127.0.0.1:8000", client=client)
+        assert await adapter.read_resource(
+            f"mafia://context/current/{GAME_ID}/{USER_ID}"
+        ) == {"scope": "public"}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("uri", [
+    f"mafia://context/current/invalid/{USER_ID}",
+    f"mafia://context/current/{GAME_ID}/invalid",
+    f"mafia://context/current/{GAME_ID.replace('-', '')}/{USER_ID}",
+    f"mafia://context/scoped/invalid/{USER_ID}/{PLAYER_ID}/me",
+    f"mafia://context/scoped/{GAME_ID}/invalid/{PLAYER_ID}/me",
+    f"mafia://context/scoped/{GAME_ID}/{USER_ID}/invalid/me",
+    f"mafia://context/scoped/{GAME_ID}/{USER_ID}/{PLAYER_ID}/unknown",
+    f"mafia://context/scoped/{GAME_ID}/{USER_ID}/{PLAYER_ID}/ME",
+    f"mafia://context/scoped/{GAME_ID}/{USER_ID}/{PLAYER_ID}/%6de",
+    f"mafia://context/scoped/{GAME_ID}/{USER_ID}/{PLAYER_ID}/me?scope=public",
+    f"mafia://context/scoped/{GAME_ID}/{USER_ID}/{PLAYER_ID}/me#fragment",
+    f"mafia://context/scoped/{GAME_ID}/{USER_ID}/{PLAYER_ID}/me/extra",
+    f"mafia://context/current/{GAME_ID}/{USER_ID}?player_id={PLAYER_ID}",
+    f"mafia://context/other/{GAME_ID}/{USER_ID}",
+])
+async def test_invalid_resource_is_rejected_before_http(uri: str) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = MinimalBackendContextClient("http://127.0.0.1:8000", client=client)
+        with pytest.raises(BackendContextError):
+            await adapter.read_resource(uri)
+    assert requests == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("arguments, expected", [
+    ({"game_id": "", "user_id": ""}, {}),
+    ({"game_id": GAME_ID, "user_id": ""}, {"game_id": GAME_ID}),
+    ({"game_id": "", "user_id": USER_ID}, {"user_id": USER_ID}),
+    ({"game_id": GAME_ID, "user_id": USER_ID}, {"game_id": GAME_ID, "user_id": USER_ID}),
+])
+async def test_optional_prompt_empty_uuid_is_omitted(arguments, expected) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert dict(request.url.params) == expected
+        return httpx.Response(200, json={"prompt": "fixture instruction"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = MinimalBackendContextClient("http://127.0.0.1:8000", client=client)
+        assert await adapter.get_prompt("agent_instruction", arguments) == "fixture instruction"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("payload", [
+    {"accepted": False},
+    {"accepted": "false"},
+    {"accepted": "true"},
+    {"accepted": 1},
+    {"status": "accepted"},
+    {"error": "Error executing tool submit_action"},
+    {"accepted": True, "error": "synthetic failure"},
+    "Error executing tool submit_action",
+])
+async def test_action_http_200_requires_explicit_acceptance(payload) -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload))
+    ) as client:
+        adapter = MinimalBackendContextClient("http://127.0.0.1:8000", client=client)
+        with pytest.raises(BackendContextError):
+            await adapter.submit_action(action="PASS")

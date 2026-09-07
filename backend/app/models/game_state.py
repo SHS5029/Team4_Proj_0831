@@ -86,6 +86,8 @@ class GameState:
     speech_had_content: bool = False
     night_actions: dict[UUID, NightAction] = field(default_factory=dict)
     votes: dict[UUID, Vote] = field(default_factory=dict)
+    # 첫 투표의 최다 득표자만 보관한다. 저장 계층은 재투표 window 후보에서 복원한다.
+    revote_candidates: set[UUID] = field(default_factory=set)
     final_accusation_target: UUID | None = None
     last_detective_result: dict[UUID, bool] = field(default_factory=dict)
     remaining_ms_on_save: int | None = None
@@ -93,6 +95,8 @@ class GameState:
     winner: Faction | None = None
     win_reason: WinReason | None = None
     operations: list[EngineOperation] = field(default_factory=list)
+    # 인간 사망 여부와 별개의 명시적 설정이다. 영속 저장·복원과 변경 명령은 B5가 담당한다.
+    fast_forward_enabled: bool = False
 
     @property
     def alive_players(self) -> list[PlayerState]:

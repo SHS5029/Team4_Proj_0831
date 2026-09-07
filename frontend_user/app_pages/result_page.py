@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import re
+from datetime import datetime
+from html import escape
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 
@@ -12,7 +16,7 @@ RESULT_PAGE_CSS = """
   --result-blue: #2468ed;
   --result-dark: #071426;
   --result-ink: #172033;
-  --result-muted: #65728b;
+  --result-muted: #52617a;
   --result-border: #d9e2ef;
   --result-green: #16864d;
 }
@@ -70,8 +74,31 @@ RESULT_PAGE_CSS = """
 [class*="st-key-result-night-"],
 [class*="st-key-result-vote-"] {
   margin-bottom: .55rem; padding: .7rem .8rem !important;
-  border: 1px solid #e0e7f1 !important; border-radius: .6rem !important;
-  background: #f9fbfe !important;
+  border: 1px solid #c8d4e5 !important; border-radius: .6rem !important;
+  color: var(--result-ink) !important; background: #f0f4fa !important;
+}
+/* 밝은 결과 카드 안의 st.text·metric은 다크 테마의 독립 전경색을 상속하지 않는다.
+   승리 배너·상태 배지까지 덮지 않도록 결과 카드의 텍스트 요소에만 적용한다. */
+:is(.st-key-result-summary, .st-key-result-records, [class*="st-key-result-player-"])
+  :is([data-testid="stText"], [data-testid="stText"] *,
+      [data-testid="stMetricLabel"], [data-testid="stMetricValue"],
+      [data-testid="stMetricLabel"] *, [data-testid="stMetricValue"] *) {
+  color: var(--result-ink) !important;
+  -webkit-text-fill-color: var(--result-ink) !important;
+  opacity: 1 !important;
+}
+.st-key-result-records [data-testid="stMarkdownContainer"],
+.st-key-result-records [data-testid="stMarkdownContainer"] :is(p, li, strong, div, h4) {
+  color: var(--result-ink) !important;
+  -webkit-text-fill-color: var(--result-ink) !important;
+}
+:is(.st-key-result-summary, .st-key-result-records, [class*="st-key-result-player-"])
+  [data-testid="stCaptionContainer"],
+:is(.st-key-result-summary, .st-key-result-records, [class*="st-key-result-player-"])
+  [data-testid="stCaptionContainer"] * {
+  color: var(--result-muted) !important;
+  -webkit-text-fill-color: var(--result-muted) !important;
+  opacity: 1 !important;
 }
 [class*="st-key-result-actions"] { margin-top: 1rem; }
 [class*="st-key-result-actions"] [data-testid="stButton"] button {
@@ -103,6 +130,20 @@ WIN_REASON_LABELS = {
     "MAFIA_PARITY": "마피아와 시민 수 동률",
     "FINAL_MAFIA_SELECTED": "최종 지목으로 마피아 발견",
     "FINAL_NON_MAFIA_SELECTED": "최종 지목 실패",
+}
+
+PUBLIC_EVENT_FIELDS = {
+    "GAME_BEGAN": {"message"},
+    "TURN_OPENED": {"player_id", "cycle", "prompt"},
+    "PLAYER_SPOKE": {"player_id", "message"},
+    "PLAYER_PASSED": {"player_id"},
+    "NIGHT_RESOLVED": {"round", "killed_player_id"},
+    "VOTE_RESOLVED": {"round", "phase", "counts", "tied", "needs_revote"},
+    "PLAYER_EXECUTED": {"player_id", "revealed_role"},
+    "FAST_FORWARD_ENABLED": {"enabled"},
+    "GAME_SAVED": {"phase", "round"},
+    "GAME_RESUMED": {"phase", "round"},
+    "GAME_ENDED": {"winner", "win_reason"},
 }
 
 
@@ -137,12 +178,12 @@ def render(snapshot: dict[str, Any]) -> None:
         with st.container(key="result-hero", border=True):
             st.markdown(f"# {winner_title}")
             st.markdown(f"### {winner_caption}")
-            st.caption(str(scenario.get("title", "AI 마피아 게임")))
+            st.text(str(scenario.get("title", "AI 마피아 게임")))
     with summary_col:
         _render_summary(game=game, result=result)
 
     _render_players(result=result)
-    _render_records(result=result)
+    _render_records(result=result, public_events=snapshot.get("public_events"))
     _render_actions(show_feedback=True)
 
 
@@ -157,12 +198,10 @@ def _render_summary(*, game: dict[str, Any], result: dict[str, Any]) -> None:
         round_col, survivor_col, vote_col = st.columns(3)
         round_col.metric("🚩 진행 라운드", round_count)
         survivor_col.metric("👥 생존자", survivor_count)
-        vote_col.metric("🗳️ 결정 단계", _decisive_label(game=game, result=result))
+        vote_col.metric("🗳️ 마지막 투표", _last_vote_label(result=result))
         st.divider()
         st.success("이 결과는 서버에서 확인되었습니다.")
-        finished_at = result.get("finished_at")
-        if isinstance(finished_at, str):
-            st.caption(f"완료 시간: {_display_timestamp(finished_at)}")
+        st.caption(f"완료 시간: {_display_timestamp(result.get('finished_at'))}")
         reason = WIN_REASON_LABELS.get(str(result.get("win_reason")), "게임 종료 조건 충족")
         st.caption(f"종료 이유: {reason}")
 
@@ -187,7 +226,10 @@ def _render_players(*, result: dict[str, Any]) -> None:
             with columns[offset]:
                 with st.container(key=f"result-player-{index}", border=True):
                     st.markdown(f"### {role_icon}")
-                    st.markdown(f"**{str(player.get('display_name', '플레이어'))}**")
+                    st.markdown(
+                        f"<strong>{escape(str(player.get('display_name', '플레이어')))}</strong>",
+                        unsafe_allow_html=True,
+                    )
                     st.write(f"{role_marker} {role_name}")
                     status, detail = _player_status(player)
                     if status == "생존":
@@ -198,13 +240,15 @@ def _render_players(*, result: dict[str, Any]) -> None:
                         st.caption(detail)
 
 
-def _render_records(*, result: dict[str, Any]) -> None:
+def _render_records(*, result: dict[str, Any], public_events: Any = None) -> None:
     """result의 밤·투표 확정값을 이름으로 변환해 접을 수 있는 기록으로 표시한다."""
 
     players = _objects(result.get("players"))
     player_names = {
-        str(player.get("player_id")): str(player.get("display_name", "플레이어"))
+        player["player_id"]: player["display_name"]
         for player in players
+        if isinstance(player.get("player_id"), str)
+        and isinstance(player.get("display_name"), str) and player["display_name"].strip()
     }
     with st.container(key="result-records", border=True):
         with st.expander("▣ 게임 기록 보기", expanded=True):
@@ -225,42 +269,172 @@ def _render_records(*, result: dict[str, Any]) -> None:
                 for index, vote in enumerate(votes):
                     with st.container(key=f"result-vote-{index}", border=True):
                         _render_vote_record(vote=vote, player_names=player_names)
-            event_ids = result.get("public_event_ids")
-            if isinstance(event_ids, list):
-                st.caption(f"서버에서 확정된 공개 이벤트: {len(event_ids)}건")
+            _render_public_records(result=result, events=public_events, player_names=player_names)
+
+
+def _render_public_records(*, result: dict[str, Any], events: Any, player_names: dict[str, str]) -> None:
+    """종료 결과에 연결된 공개 사건만 서버 순서대로 표시하고 private·trace는 읽지 않는다."""
+
+    st.markdown("#### 공개 사건·발언")
+    identifiers = result.get("public_event_ids")
+    allowed = {value for value in identifiers if isinstance(value, str)} if isinstance(identifiers, list) else set()
+    seen = set()
+    for event in _objects(events):
+        identifier = event.get("event_id")
+        if not isinstance(identifier, str) or identifier not in allowed or identifier in seen:
+            continue
+        timestamp = _display_timestamp(event.get("created_at"))
+        text = _public_event_text(event, player_names)
+        if timestamp == "확인할 수 없음" or text is None:
+            continue
+        # 발언의 HTML·Markdown을 실행하지 않는다. 기록 순서는 시간 문자열이 아니라
+        # Backend가 전달한 배열 순서이며 같은 event ID는 한 번만 표시한다.
+        st.markdown(f'<div style="white-space:pre-wrap">{escape(text)}</div>', unsafe_allow_html=True)
+        st.caption(timestamp)
+        seen.add(identifier)
+    if not seen:
+        st.caption("표시할 공개 사건·발언 기록이 없습니다.")
+
+
+def _public_event_text(event: dict[str, Any], player_names: dict[str, str]) -> str | None:
+    """PublicEvent의 폐쇄형 data만 문장으로 바꾸며 미지원·개인 필드가 섞이면 거부한다."""
+
+    kind, data = event.get("event_type"), event.get("data")
+    if not isinstance(kind, str) or kind not in PUBLIC_EVENT_FIELDS or not isinstance(data, dict):
+        return None
+    if set(data) != PUBLIC_EVENT_FIELDS[kind]:
+        return None
+    name = _player_name(data.get("player_id"), player_names)
+    if "player_id" in data and not name:
+        return None
+    if "round" in data and _record_round(data["round"]) == "기록 없음":
+        return None
+    if kind in {"GAME_BEGAN", "PLAYER_SPOKE"}:
+        message = data["message"]
+        if not isinstance(message, str) or not 1 <= len(message.strip()) <= 200:
+            return None
+        return f"{name}: {message}" if kind == "PLAYER_SPOKE" else f"게임 시작: {message}"
+    if kind == "TURN_OPENED":
+        if type(data["cycle"]) is not int or data["cycle"] not in {1, 2}:
+            return None
+        prompt = data["prompt"]
+        if prompt is not None and (not isinstance(prompt, str) or not 1 <= len(prompt) <= 200):
+            return None
+        return f"{name}의 발언 차례 · {data['cycle']}번째 순환" + (f" · {prompt}" if prompt else "")
+    if kind == "PLAYER_PASSED":
+        return f"{name}이 발언을 넘겼습니다."
+    if kind == "NIGHT_RESOLVED":
+        target = _record_target(data, "killed_player_id", player_names)
+        if data["round"] == 0 or target == "기록 확인 불가":
+            return None
+        return f"밤 {data['round']} 결과 · 사망자: {target}"
+    if kind == "VOTE_RESOLVED":
+        phase = data["phase"]
+        if not isinstance(phase, str) or phase not in {"DAY_VOTE", "REVOTE", "FINAL_ACCUSATION"}:
+            return None
+        if data["round"] == 0 or type(data["tied"]) is not bool or type(data["needs_revote"]) is not bool:
+            return None
+        counts = _count_labels(data["counts"], player_names)
+        if not counts or len(counts) != len(data["counts"]):
+            return None
+        outcome = " · 재투표 예정" if data["needs_revote"] else " · 동률" if data["tied"] else ""
+        return f"라운드 {data['round']} {_phase_label(phase)} · {', '.join(counts)}{outcome}"
+    if kind == "PLAYER_EXECUTED":
+        role = data["revealed_role"]
+        if not isinstance(role, str) or role not in ROLE_PRESENTATION:
+            return None
+        return f"{name} 처형 · 공개 역할: {ROLE_PRESENTATION[role][0]}"
+    if kind == "FAST_FORWARD_ENABLED":
+        return "관전 빠른 진행이 활성화되었습니다." if data["enabled"] is True else None
+    if kind in {"GAME_SAVED", "GAME_RESUMED"}:
+        if not isinstance(data["phase"], str):
+            return None
+        action = "저장" if kind == "GAME_SAVED" else "재개"
+        return f"게임 {action} · 라운드 {data['round']} · {_phase_label(data['phase'])}"
+    if kind == "GAME_ENDED":
+        if not isinstance(data["winner"], str) or data["winner"] not in WINNER_PRESENTATION:
+            return None
+        if not isinstance(data["win_reason"], str) or data["win_reason"] not in WIN_REASON_LABELS:
+            return None
+        return "게임이 종료되었습니다. 승리 진영과 종료 이유는 위의 최종 결과를 확인해 주세요."
+    return None
 
 
 def _render_night_record(*, night: dict[str, Any], player_names: dict[str, str]) -> None:
-    """밤 결과에서 공개가 확정된 최종 대상과 사망자만 요약한다."""
+    """종료 원장의 선택과 확정 결과를 표시하며 누락값을 무행동으로 추정하지 않는다."""
 
-    st.markdown(f"**🌙 밤 {night.get('round', '-')}**")
-    attack_name = _player_name(night.get("resolved_attack_target_player_id"), player_names)
-    protect_name = _player_name(night.get("protect_player_id"), player_names)
-    killed_name = _player_name(night.get("killed_player_id"), player_names)
-    st.write(f"공격 대상: {attack_name or '없음'}")
-    st.write(f"보호 대상: {protect_name or '없음'}")
-    st.write(f"사망자: {killed_name or '없음'}")
-    investigations = night.get("investigations")
-    if isinstance(investigations, list):
-        st.caption(f"확정된 조사 기록: {len(investigations)}건")
+    st.markdown(f"**🌙 밤 {_record_round(night.get('round'))}**")
+    for field, label in (
+        ("resolved_attack_target_player_id", "공격 대상"),
+        ("protect_player_id", "보호 대상"), ("killed_player_id", "사망자"),
+    ):
+        st.text(f"{label}: {_record_target(night, field, player_names)}")
+    _render_choices(night.get("attack_choices"), label="공격", player_names=player_names)
+    _render_choices(night.get("investigations"), label="조사", player_names=player_names)
 
 
 def _render_vote_record(*, vote: dict[str, Any], player_names: dict[str, str]) -> None:
-    """투표 결과의 단계·집계·탈락자만 표시하고 Front에서 결과를 재판정하지 않는다."""
+    """개별 투표와 확정 집계를 구분하고 동률·최종 지목 대상을 재판정하지 않는다."""
 
     phase = _phase_label(str(vote.get("phase", "")))
-    st.markdown(f"**☀️ {phase} · 라운드 {vote.get('round', '-')}**")
-    eliminated_name = _player_name(vote.get("eliminated_player_id"), player_names)
-    st.write(f"탈락자: {eliminated_name or '없음'}")
-    counts = vote.get("counts")
-    if isinstance(counts, list):
-        for count in counts:
-            if not isinstance(count, dict):
+    st.markdown(f"**☀️ {phase} · 라운드 {_record_round(vote.get('round'))}**")
+    st.text(f"탈락자: {_record_target(vote, 'eliminated_player_id', player_names)}")
+    counts = _count_labels(vote.get("counts"), player_names)
+    if counts:
+        for label in counts:
+            st.text(label)
+    else:
+        st.caption("확정된 득표 기록이 없습니다.")
+    _render_choices(vote.get("ballots"), label="투표", player_names=player_names)
+
+
+def _render_choices(value: Any, *, label: str, player_names: dict[str, str]) -> None:
+    """종료 공개 선택의 actor·target·boolean만 읽고 내부 추론 필드는 사용하지 않는다."""
+
+    rendered = 0
+    for choice in _objects(value):
+        actor = _player_name(choice.get("actor_player_id"), player_names)
+        target = _player_name(choice.get("target_player_id"), player_names)
+        if not actor or not target or type(choice.get("is_auto")) is not bool:
+            continue
+        outcome = ""
+        if label == "조사":
+            if type(choice.get("is_mafia")) is not bool:
                 continue
-            target_name = _player_name(count.get("target_player_id"), player_names)
-            vote_count = count.get("vote_count")
-            if target_name and isinstance(vote_count, int):
-                st.caption(f"{target_name}: {vote_count}표")
+            outcome = " · 마피아" if choice["is_mafia"] else " · 마피아가 아닙니다"
+        selection = "자동 선택" if choice["is_auto"] else "직접 선택"
+        st.text(f"{label}: {actor} → {target}{outcome} · {selection}")
+        rendered += 1
+    if not rendered:
+        st.caption(f"개별 {label} 기록이 없습니다.")
+
+
+def _count_labels(value: Any, player_names: dict[str, str]) -> list[str]:
+    """후보별 확정 득표만 표시하며 bool·음수·알 수 없는 참가자는 건너뛴다."""
+
+    labels = []
+    for count in _objects(value):
+        name = _player_name(count.get("target_player_id"), player_names)
+        votes = count.get("vote_count")
+        if name and type(votes) is int and 0 <= votes <= len(player_names):
+            labels.append(f"{name}: {votes}표")
+    return labels
+
+
+def _record_round(value: Any) -> str:
+    """표시용 round도 계약 범위의 정수만 허용해 잘못된 원문을 출력하지 않는다."""
+
+    return str(value) if type(value) is int and 0 <= value <= 5 else "기록 없음"
+
+
+def _record_target(record: dict[str, Any], field: str, player_names: dict[str, str]) -> str:
+    """명시적 null과 누락·알 수 없는 식별자를 구별해 없는 결과를 만들지 않는다."""
+
+    if field not in record:
+        return "기록 없음"
+    if record[field] is None:
+        return "없음"
+    return _player_name(record[field], player_names) or "기록 확인 불가"
 
 
 def _render_actions(*, show_feedback: bool) -> None:
@@ -286,6 +460,12 @@ def _render_actions(*, show_feedback: bool) -> None:
         ):
             st.session_state["navigation.page"] = "create"
             st.session_state.pop("game.game_id", None)
+            st.session_state.pop("game.latest_snapshot", None)
+            # 이전 생성 성공 receipt가 새 설정을 건너뛰지 않게 제거한다. 결과 불명
+            # 요청의 key와 body는 중복 생성 방지를 위해 F2 재시도 흐름에 그대로 넘긴다.
+            previous = st.session_state.get("game.create_pending")
+            if isinstance(previous, dict) and previous.get("status") == "SUCCEEDED":
+                st.session_state.pop("game.create_pending", None)
             st.rerun()
         if columns[next_index + 1].button(
             "⌂ 홈으로",
@@ -302,7 +482,7 @@ def _render_failed(*, scenario: dict[str, Any]) -> None:
     """FAILED 상태에서는 전체 역할이나 미확정 결과를 공개하지 않는다."""
 
     st.error("게임을 완료하지 못했어요.")
-    st.subheader(str(scenario.get("title", "게임 결과")))
+    st.text(str(scenario.get("title", "게임 결과")))
     st.info("마지막으로 확인된 공개 상태만 표시합니다. 게임 결과를 복구할 수 없습니다.")
     _render_actions(show_feedback=False)
 
@@ -334,14 +514,15 @@ def _round_count(*, game: dict[str, Any], result: dict[str, Any]) -> int:
     return max((value for value in rounds if isinstance(value, int)), default=0)
 
 
-def _decisive_label(*, game: dict[str, Any], result: dict[str, Any]) -> str:
-    """마지막 확정 투표 단계 또는 Backend 종료 이유를 결정 단계로 표시한다."""
+def _last_vote_label(*, result: dict[str, Any]) -> str:
+    """마지막 투표 자체의 기록만 표시하며 게임 종료 시점이나 원인으로 해석하지 않는다."""
 
     votes = _objects(result.get("votes"))
     if votes:
-        phase = _phase_label(str(votes[-1].get("phase", "")))
-        return f"낮 {game.get('day_number', '-')}일차 · {phase}"
-    return WIN_REASON_LABELS.get(str(result.get("win_reason")), "종료 조건")
+        vote = votes[-1]
+        phase = _phase_label(str(vote.get("phase", "")))
+        return f"라운드 {_record_round(vote.get('round'))} · {phase}"
+    return "기록 없음"
 
 
 def _phase_label(phase: str) -> str:
@@ -358,9 +539,9 @@ def _phase_label(phase: str) -> str:
 def _player_name(player_id: Any, player_names: dict[str, str]) -> str | None:
     """result player 식별자가 있을 때만 공개 이름으로 변환한다."""
 
-    if player_id is None:
+    if not isinstance(player_id, str):
         return None
-    return player_names.get(str(player_id))
+    return player_names.get(player_id)
 
 
 def _objects(value: Any) -> list[dict[str, Any]]:
@@ -369,7 +550,18 @@ def _objects(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
 
-def _display_timestamp(value: str) -> str:
-    """RFC 3339 문자열을 값 손실 없이 읽기 쉬운 표시로만 변환한다."""
+def _display_timestamp(value: Any) -> str:
+    """시간대가 명시된 RFC 3339만 서울 시각으로 표시하고 무효값은 되출력하지 않는다."""
 
-    return value.replace("T", " ").removesuffix("Z")
+    # datetime의 관대한 ISO 파서에 맡기기 전에 시간대·초·offset 범위를 확인한다.
+    # 화면 시각은 표시 전용이며 종료 판정이나 서버 deadline을 변경하지 않는다.
+    if not isinstance(value, str) or not re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)",
+        value,
+    ):
+        return "확인할 수 없음"
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return moment.astimezone(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S KST")
+    except (ValueError, OverflowError):
+        return "확인할 수 없음"

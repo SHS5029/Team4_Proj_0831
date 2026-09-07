@@ -103,9 +103,23 @@ def test_postgres_create_begin_and_sync_with_test_run_id() -> None:
             )
             assert synced.status_code == 200, synced.text
             sync_data = synced.json()["data"]
-            assert sync_data["mode"] == "DELTA"
-            assert sync_data["operations"]
-            assert sync_data["operations"][0]["operations"]
+            assert sync_data["game_id"] == game_id
+            assert sync_data["state_version"] == resumed_data["game"]["state_version"]
+            assert sync_data["last_sequence"] == resumed_data["game"]["last_sequence"]
+            if sync_data["mode"] == "DELTA":
+                assert sync_data["snapshot"] is None
+                assert sync_data["operations"]
+                assert sync_data["operations"][0]["operations"]
+                assert sync_data["operations"][-1]["state_version"] == sync_data["state_version"]
+                assert sync_data["operations"][-1]["front_sequence"] == sync_data["last_sequence"]
+            else:
+                # 검증할 수 없는 과거 batch는 현재 snapshot으로 복구하되 내용도 대조한다.
+                assert sync_data["mode"] == "SNAPSHOT"
+                assert sync_data["operations"] == []
+                synchronized = sync_data["snapshot"]
+                for key in ("game", "scenario", "players", "me", "public_events", "result"):
+                    assert synchronized[key] == resumed_data[key]
+                assert synchronized["action_window"]["window_id"] == resumed_data["action_window"]["window_id"]
     finally:
         _cleanup_postgres_test_data(settings, user_id=user_id)
         _cleanup_redis_test_namespace(settings, test_run_id=test_run_id)
@@ -166,8 +180,8 @@ def test_postgres_action_flow_keeps_ai_window_after_human_submission() -> None:
         _cleanup_redis_test_namespace(settings, test_run_id=test_run_id)
 
 
-def test_postgres_fast_forward_restores_ended_snapshot() -> None:
-    """사망 상태를 테스트 DB에 재현해 FAST_FORWARD와 종료 snapshot을 확인한다."""
+def test_postgres_fast_forward_persists_selection_before_worker_progress() -> None:
+    """빠른 진행은 선택만 저장하며 worker가 꺼진 동안 phase와 결과는 유지된다."""
 
     settings: Settings = get_settings()
     test_run_id = uuid4().hex
@@ -204,19 +218,35 @@ def test_postgres_fast_forward_restores_ended_snapshot() -> None:
                     )
             current = client.get(f"/api/v1/games/{game_id}", headers=headers)
             assert current.status_code == 200, current.text
-            current_version = current.json()["data"]["game"]["state_version"]
+            before_forward = current.json()["data"]
+            current_version = before_forward["game"]["state_version"]
+            assert before_forward["me"]["spectator"] is True
+            assert before_forward["game"]["fast_forward_enabled"] is False
+            assert "FAST_FORWARD" in before_forward["legal_actions"]
             forwarded = client.post(
                 f"/api/v1/games/{game_id}/commands",
                 headers={**headers, "Idempotency-Key": str(uuid4())},
                 json={"type": "FAST_FORWARD", "expected_state_version": current_version},
             )
             assert forwarded.status_code == 200, forwarded.text
-            ended = client.get(f"/api/v1/games/{game_id}", headers=headers)
-            assert ended.status_code == 200, ended.text
-            ended_data = ended.json()["data"]
-            assert ended_data["game"]["status"] == "COMPLETED"
-            assert ended_data["game"]["phase"] == "ENDED"
-            assert ended_data["result"] is not None
+            selected = client.get(f"/api/v1/games/{game_id}", headers=headers)
+            assert selected.status_code == 200, selected.text
+            selected_data = selected.json()["data"]
+            assert selected_data["game"]["status"] == "IN_PROGRESS"
+            assert selected_data["game"]["phase"] == before_forward["game"]["phase"]
+            assert selected_data["game"]["round"] == before_forward["game"]["round"]
+            assert selected_data["game"]["state_version"] == current_version + 1
+            assert selected_data["game"]["fast_forward_enabled"] is True
+            assert selected_data["players"] == before_forward["players"]
+            assert selected_data["result"] is None
+            assert "FAST_FORWARD" not in selected_data["legal_actions"]
+            assert "SAVE_AND_EXIT" in selected_data["legal_actions"]
+            assert selected_data["action_window"]["window_id"] == before_forward["action_window"]["window_id"]
+            assert selected_data["action_window"]["deadline_at"] == before_forward["action_window"]["deadline_at"]
+            with psycopg.connect(settings.effective_database_url) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT fast_forward_enabled FROM public.games WHERE id = %s", (game_id,))
+                    assert cursor.fetchone() == (True,)
     finally:
         _cleanup_postgres_test_data(settings, user_id=user_id)
         _cleanup_redis_test_namespace(settings, test_run_id=test_run_id)

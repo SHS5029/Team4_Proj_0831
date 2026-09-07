@@ -157,12 +157,7 @@ class GameEngine:
 
     @staticmethod
     def _required_night_actors(state: GameState) -> list[PlayerState]:
-        """밤 해소에 필요한 대표 제출자를 반환한다.
-
-        마피아가 여러 명이어도 진영 공격은 첫 번째 유효 제출 하나면 충분하다.
-        나머지 마피아의 미제출 때문에 창이 영원히 끝나지 않도록 대표 마피아만
-        required 목록에 넣고, force 해소 때도 같은 규칙을 사용한다.
-        """
+        """마감 전 해소에는 모든 생존 마피아·탐정·의사의 제출을 요구한다."""
 
         return required_actors(state)
 
@@ -216,11 +211,18 @@ class GameEngine:
         return state
 
     def submit_final_accusation(self, state: GameState, actor_id: UUID | None, target_id: UUID) -> GameState:
-        """최종 고발 대상을 확정하고 고발 결과로 게임을 끝낸다."""
+        """최종 지목을 누적하고 생존자 전원 제출 뒤 다수결로 판정한다."""
 
         actor = self._alive_actor(state, actor_id)
         final_accusation_phase.submit(state, actor.player_id, target_id)
         self._record(state, "FINAL_ACCUSATION", actor.player_id, target_id=target_id)
+        return state
+
+    def resolve_final_accusation(self, state: GameState, *, force: bool = False) -> GameState:
+        """최종 지목을 해소하며 마감 후에는 미제출자의 유효 표만 자동 보충한다."""
+
+        final_accusation_phase.resolve(state, force=force)
+        self._record(state, "RESOLVE_FINAL_ACCUSATION")
         return state
 
     def save(self, state: GameState, remaining_ms: int | None) -> GameState:
@@ -284,9 +286,7 @@ class GameEngine:
             elif state.phase is GamePhase.FINAL_DISCUSSION:
                 self.advance_final_discussion(state)
             elif state.phase is GamePhase.FINAL_ACCUSATION:
-                actor = state.alive_players[0]
-                target = next(player for player in state.alive_players if player.player_id != actor.player_id)
-                self.submit_final_accusation(state, actor.player_id, target.player_id)
+                self.resolve_final_accusation(state, force=True)
             else:
                 raise RuleViolation("FAST_FORWARD_PHASE_INVALID")
         raise RuleViolation("FAST_FORWARD_STEP_LIMIT")

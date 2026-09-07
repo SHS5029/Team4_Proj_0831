@@ -18,14 +18,10 @@ def next_speech_actor(state: GameState) -> PlayerState | None:
 
 
 def speech_cycle(state: GameState) -> int:
-    """현재 토론 window의 순환 번호를 반환한다.
+    """둘째 날 이후 전원 PASS의 추가 순환만 cycle 2로 복원한다."""
 
-    MVP에서는 첫날을 포함해 생존자별 발언 순환을 한 번만 연다. 기존 DB의
-    ``cycle`` 컬럼은 호환성을 위해 유지하지만 신규 window는 항상 1이다.
-    """
+    return 2 if state.phase is GamePhase.DAY_DISCUSSION and state.day_number >= 2 and state.speech_question_cycle_used else 1
 
-    del state
-    return 1
 
 
 __all__ = ["next_speech_actor", "speech_cycle"]

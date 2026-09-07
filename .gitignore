@@ -33,3 +33,13 @@ pnpm-debug.log*
 .vscode/
 tests/*
 tests/
+# 게임 운영 진행 로그와 순환 백업은 실행 산출물이며 저장소에 포함하지 않는다.
+backend/logs/
+
+# 승인된 신규 회귀 파일만 기존 tests 제외 규칙에서 다시 추적한다.
+!backend/tests/
+backend/tests/*
+!backend/tests/test_agent_activity.py
+!frontend_user/tests/
+frontend_user/tests/*
+!frontend_user/tests/test_identity_f1.py

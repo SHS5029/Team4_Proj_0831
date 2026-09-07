@@ -37,4 +37,5 @@ def build_agent_orchestrator(
         repository=repository,
         provider=get_llm_provider(settings),
         context_client=context_client,
+        max_output_tokens=settings.llm_max_output_tokens,
     )

@@ -82,6 +82,61 @@ cleanup은 현재 FastMCP 전환 범위에서 제외하며, 기존 상세 M2~M8 
 - API key, prompt 원문, 비공개 컨텍스트, raw model response와 내부 chain-of-thought는
   저장하거나 로그에 남기지 않는다.
 
+### 1.3.1 AI 진행 표시와 운영 로그 (2026-09-07)
+
+이번 사용자 요청의 단일 작업 단위는 **WU-B6 발언·투표 장애 수정과 판단 표시 연결**이다.
+Backend의 Provider·proposal 검증·fallback과 기존 Front game shell의 해당 상태 표시,
+관련 테스트·정본·README만 포함한다. 새 파일·DB migration·MCP runtime 변경은 없다.
+기존 섹터 소유권은 유지하며 이번 요청에 명시된 Backend/Front 연결 범위를 함께 수정한다.
+발언은 역할·공개 대화·본인에게 허용된 정보로 질문 또는 주장을 만들도록 요청하고,
+대상 행동은 첫 후보로 조용히 보정하지 않는다. 잘못된 행동·대상은 한 번 교정한 뒤
+실패로 구분하며, fallback은 게임·window·actor별 결정적 선택으로 좌석 편향을 없앤다.
+OpenAI 추론 모델은 낮은 reasoning effort와 최종 JSON을 위한 여유를 사용하고
+미완성·인증·요청 제한·모델 접근 오류를 비밀정보 없는 코드로 구분한다.
+공개 판단 근거는 자유 문자열 대신 API 2.4.1절의 제한된 근거 코드만 표시한다.
+
+후속 요청의 단일 WU-B6 보완은 기존 orchestrator의 역할·페르소나 프롬프트와
+사용자가 함께 요청한 기존 결과 화면의 대비 수정에 한정한다. 새로운 파일,
+Resource schema, DB migration과 역할 판정 규칙은 추가하지 않는다.
+
+대화 이력에 따른 후속 WU-B6 조정은 기존 persona seed의 수치와 이를 해석하는
+프롬프트에 한정한다. 승패·투표 실행 경로는 읽기 전용으로 검토한다. `reasoning_skill`
+0.5와 정보 권한은 유지하고 과거 발언 활용·주장·위험 감수·협력 성향을 보강한다.
+재실행 가능한 기존 seed의 persona 구간과 해당 게임 DB의 등록 preset 5건을 함께
+갱신하며, 원본 parameters 비교 후 같은 transaction에서 content_hash도 갱신한다.
+
+사용자가 추가 요청한 토큰·Redis 보완도 WU-B6의 context 전달 범위에 포함한다.
+기존 `infrastructure/redis/cache.py`에 전체 공개 대화 캐시를 두고 Backend 읽기·Agent
+context에 연결한다. PostgreSQL은 영구 원본이며 비공개 context는 Redis에 쓰지 않는다.
+`LLM_MAX_OUTPUT_TOKENS`를 실제 Agent 요청에 연결하고 기본값을 8192로 상향한다.
+고정 15초 lease와 대사 200자 제한은 유지한다. 새 파일·DB migration은 추가하지 않는다.
+
+후속 병렬 투표 요청은 WU-B6의 투표 scheduler·proposal 적용 경계를 보완한다.
+사용자 제출과 무관하게 투표 window가 열리면 모든 미제출 AI의 판단을 병렬로 시작하고,
+완료된 표부터 각각 저장한다. 한 AI의 실패·지연은 다른 AI의 유효 표를 폐기하지 않는다.
+투표 polling은 발언·밤 LLM 호출과 분리하고 window 변경 시 즉시 깨운다. 미해소 AI 표는
+공개 버전·event를 바꾸지 않는다. 인간의 같은 window 첫 투표로만 증가한 한 버전은
+원장으로 증명한 경우에만 진행 중 AI 판단에 허용한다. 저장·재개·다른 window·마감은
+이 예외에 포함하지 않으며 공개 사용자 command의 strict version 검증도 유지한다.
+사용자가 요청한 조사·해결 기록은 `docs/AI_MAFIA_PARALLEL_VOTE_BUG_REPORT.md`에
+별도 문서로 남긴다. 실행 코드의 파일·디렉터리 구조와 DB schema는 추가하지 않는다.
+
+- Front는 각 AI의 공개 발언 처리 단계와 확정 행동을 짧게 표시한다. 판단 요약은
+  검증된 처리 상태와 행동에서 만든 고정 안내이며 모델의 내부 사고 원문이 아니다.
+- 밤에는 actor별 진행·역할·대상·응답 수를 공개하지 않고 공통 비공개 단계 안내만
+  표시한다. 투표 대상과 개별 표는 종료 전 표시하지 않는다.
+- Backend 터미널과 순환 파일 로그는 같은 순서 번호, 실행 식별자, UTC 시각,
+  game_id, phase, state_version과 허용된 처리 상태를 사용한다. 성공 적용 로그는
+  transaction 성공 반환 뒤 기록하며 실패·대체·중복을 구분한다.
+- 비공개 밤 actor와 대상, prompt, 자유 형식 rationale, 응답 원문, 예외 원문은 로그에
+  넣지 않는다. 임의 외부 문자열 대신 검증된 enum과 고정 한국어 설명을 사용한다.
+- UI용 상태는 게임별 크기가 제한된 프로세스 메모리다. 재시작 후 이전 실행의
+  상태는 복원하지 않으며 확정 공개 이력은 기존 PostgreSQL event에서 복원한다.
+- WU-B6는 `backend/app/agent/activity.py`, `backend/tests/test_agent_activity.py`,
+  기존 core logging·Agent orchestrator·runtime 연결을 소유한다. 로그 출력 경로
+  `backend/logs/game-progress.log`와 순환 파일은 실행 산출물이며 Git에서 제외한다.
+  WU-F3는 기존 game shell에 API 2.4.1절의 상태 표시만 추가한다.
+
 ### 1.4 계약 단순화
 
 - 게임 시작은 생성과 분리한 명시적 `BEGIN_GAME` command다.
@@ -254,6 +309,8 @@ ROLE_REVEAL
 - 모든 생존자는 자신을 제외한 유효 생존자 한 명을 선택한다.
 - 기권과 복수 선택은 허용하지 않으며 첫 유효 제출 후 변경하지 않는다.
 - 일반 투표, 재투표와 최종 지목은 각각 서버 기준 30초다.
+- AI는 window 시작부터 동시에 판단하고 완료된 표를 즉시 개별 제출한다. 인간의
+  첫 표를 기다리지 않으며, 생존자 전원 제출 또는 마감에서만 결과를 해소한다.
 - 마감까지 미제출한 플레이어의 표는 유효 후보 중 결정적으로 자동 선택한다.
 - 진행 중 개별 선택과 현재 득표수는 공개하지 않는다.
 - 해소 후 후보별 최종 득표수와 탈락 결과만 공개한다. 누가 누구에게 투표했는지와
@@ -366,7 +423,40 @@ endpoint를 거치지 않고 Agent Manager가 guide reference, 공개 정보 범
 fencing 조건을 검증한 뒤에만 `PUBLIC` event로 반영한다. 잘못된 구조화 결과는 한 번
 교정할 수 있고 계속 잘못되면 규칙 기반 fallback을 사용한다.
 
+역할 활용 프롬프트는 `me.data.role`을 본인의 실제 역할로 고정한다. 탐정은
+`INVESTIGATION_RESULT`가 있을 때 필요에 따라 탐정임을 밝히고 해당 라운드·대상의
+마피아 여부를 발언할 수 있다. `is_mafia=false`는 의사·탐정·시민 중 특정 직업을
+확정하지 않는다. 의사는 보호 선택을 활용하되 제공되지 않은 보호 성공을 단정하지
+않는다. 시민은 역할 공개와 공개 진술 비교로 협력하며 조사 능력을 주장하지 않는다.
+마피아는 정체를 숨기거나 시민 진영 역할로 위장할 수 있지만 없는 시스템 확정
+조사 결과나 동료 마피아 정보를 인용하지 않는다. 공개 발언의 역할 주장은
+서버 확정 role 변경이나 다른 player의 private 정보 자동 공개를 의미하지 않는다.
+
 ### 5.3 페르소나
+
+매 발언에는 배정된 `speech_style`의 어미·문장 리듬과 `backstory`의 대화 태도를
+반영한다. 숫자 parameters는 참여도·단정 강도·의심·기만 성향·위험 감수·기억 활용·
+감정·협력·길이의 구체적인 표현 지침으로 바꾼다. 신중한 분석가는 유보적 근거 제시,
+토론가는 직접적 질문·반론, 기록자는 앞선 발언 비교, 반응가는 감정적 반응,
+조정자는 의견 연결로 구별한다. 직전 AI의 질문·문장 구조를 반복하지 않으며
+페르소나 소개문을 매번 말하지 않는다. 200자 상한과 같은 추론 능력은 유지한다.
+
+2026-09-07 산장 게임 이력에 따른 조정값은 아래와 같다. 기존 말투·기만·의심·감정·
+발언 길이는 유지하며, 조정하지 않은 수치는 기존 seed 값을 사용한다.
+
+| preset | sociability | assertiveness | memory_recall | risk_tolerance | cooperativeness |
+|---|---:|---:|---:|---:|---:|
+| CAUTIOUS_ANALYST | 0.60 | 0.65 | 0.95 | 0.55 | 0.75 |
+| ACTIVE_DEBATER | 0.90 | 0.90 | 0.90 | 0.70 | 0.65 |
+| OBSERVANT_NOTEKEEPER | 0.65 | 0.70 | 0.98 | 0.55 | 0.75 |
+| EMOTIONAL_REACTOR | 0.70 | 0.75 | 0.90 | 0.65 | 0.70 |
+| COOPERATIVE_MEDIATOR | 0.80 | 0.70 | 0.95 | 0.60 | 0.95 |
+
+이미 모른다고 답한 시각·방향을 반복 요구하지 않으며 정보 부족과 진술 모순을
+구별한다. 조사 주장은 확정 역할이 아니지만, 처형으로 앞선 조사가 맞았음이 확인되면
+신뢰도를 높이고 해당 탐정의 비마피아 보고와 모순되는 의심에는 새 근거를 요구한다.
+개별 투표는 공개 득표 합계로 복원할 수 없으며 본인의 과거 표도 context에 없으면
+만들어 말하지 않는다. 최종 지목은 추가 질문의 기회가 아니라 마지막 선택임을 반영한다.
 
 | 필드 | 범위와 의미 |
 |---|---|
@@ -452,6 +542,11 @@ Browser
 
 `AGENTS.MD`에 따라 coding AI agent 한 세션은 아래 WU 한 개 이하만 수행한다. 한 WU의
 신규 파일이나 책임이 바뀌면 먼저 이 절을 갱신한다.
+
+2026-09-07 수정의 WU-F1 회귀 경계는 `frontend_user/tests/test_identity_f1.py`에
+추가한다. WU-B4는 기존 `backend/app/models/game_state.py`의 순수 상태 필드
+`revote_candidates`(UUID 집합, 기본 빈 집합)를 소유하며 재투표 진입·해소 때만
+관리한다. DB 복원은 WU-B5에서 직전 확정 투표 원장을 기준으로 재구성한다.
 
 ### 8.1 Front
 
@@ -549,7 +644,7 @@ LLM token·비용과 LLM timeout 지표는 MVP 수집 대상이 아니다.
 |---|---|
 | Front | Backend URL, 브라우저 UUID 저장 key 이름 |
 | Backend | `DATABASE_URL`, `DATABASE_NAME`, `REDIS_URL`, `GAME_STATE_KEYRING_FILE`, `GAME_STATE_ACTIVE_KEY_ID`, 선택 Provider·model·API key, `MAFIA_MCP_URL`, `MCP_REQUIRE_TLS`, `MCP_TLS_CA_FILE`, `MCP_SERVER_AUTH_SECRET`, `ENGINE_INTERNAL_API_SECRET`, `ADMIN_USER_IDS` |
-| migration | `DATABASE_MIGRATION_URL`, `DATABASE_NAME` |
+| migration | `DATABASE_MIGRATION_URL`, `DATABASE_NAME`, DB path 비교용 `TEAM_DATABASE_URL`/`DATABASE_URL` |
 | MCP runtime | `MCP_SERVER_AUTH_SECRET`, `ENGINE_INTERNAL_API_SECRET`, `ENGINE_API_URL`, listen·TLS 설정 |
 
 - 실제 비밀값은 문서, 로그와 Git에 넣지 않는다.

@@ -13,11 +13,17 @@
 
 > **현재 구현 기준 (2026-09-05):** 이 설계서의 bootstrap token, HMAC, nonce,
 > custom session registry, Engine consume와 다중 Resource·Tool WU는 아직 구현하지
-> 않는다. 현재 실행 경로는 [AI_MAFIA_MCP_FASTMCP_MINIMAL_CONNECTION_PLAN.md](../temp/AI_MAFIA_MCP_FASTMCP_MINIMAL_CONNECTION_PLAN.md)의
-> 최소 Resource·Prompt·Tool 등록부와 Backend synthetic endpoint뿐이다. 아래의
+> 않는다. 현재 실행 경로는 [API 명세](AI_MAFIA_API_SPEC.md) 상단 최소 프로파일의
+> Resource·Prompt·Tool 등록부와 Backend 내부 endpoint다. 아래의
 > 확장 설계는 후속 합의 전까지 실행 지시로 사용하지 않는다.
 
 ## 1. 목적과 정본 우선순위
+
+2026-09-07 보완은 기존 최소 FastMCP Resource에 AI actor·scope 전달을 추가한다.
+URI와 endpoint 계약은 API 명세의 `현재 FastMCP actor projection 보완` 절을 따른다.
+WU-M3의 기존 resources 등록부와 integrations/engine_http.py가 이를 담당하며
+다섯 data schema를 이 문서에 복제하지 않는다. 별도 인증 registry나 DB 직접 접근을
+추가하는 작업은 아니다.
 
 이 문서는 Mafia Game MCP runtime과 MCP·Data Infrastructure 작업 단위의 구현 구조,
 선행조건, 검증 방법과 완료 증거를 정의한다. 제품 규칙, 저장 계약과 wire schema를
@@ -522,7 +528,7 @@ host의 시작·종료 오류 처리까지 filter를 유지한다. 이 경계는
 |---|---|
 | Backend | `MAFIA_MCP_URL`, `MCP_REQUIRE_TLS`, `MCP_TLS_CA_FILE`, `MCP_SERVER_AUTH_SECRET`, `ENGINE_INTERNAL_API_SECRET` 등 Backend allowlist |
 | MCP runtime | `MCP_SERVER_AUTH_SECRET`, `ENGINE_INTERNAL_API_SECRET`, `ENGINE_API_URL`, 비밀이 아닌 listen·TLS 설정 |
-| migration | `DATABASE_MIGRATION_URL`, `DATABASE_NAME` |
+| migration | `DATABASE_MIGRATION_URL`, `DATABASE_NAME`, DB path 비교용 `TEAM_DATABASE_URL`/`DATABASE_URL` |
 
 - MCP runtime에는 DB·Redis·LLM 자격증명을 주입하지 않는다.
 - 실제 secret, DSN, token과 인증서 개인키를 문서·fixture·log·Git에 넣지 않는다.

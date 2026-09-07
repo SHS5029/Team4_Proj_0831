@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import streamlit as st
 
 from frontend_user.core.sync import SyncEnvelopeError, apply_envelope
+from frontend_user.core.sync_policy import DEFAULT_SYNC_POLICY
 
 ASSET_DIR = Path(__file__).with_name("browser_components") / "sync"
 SYNC_COMPONENT = st.components.v2.component(
@@ -17,27 +19,71 @@ SYNC_COMPONENT = st.components.v2.component(
 )
 
 
-def mount_sse(*, backend_url: str, game_id: str, user_id: UUID, last_sequence: int) -> dict[str, Any] | None:
-    """SSE component에서 완전한 game_sync envelope만 받는다."""
+def mount_sse(*, backend_url: str, game_id: str, user_id: UUID, last_sequence: int,
+              after_state_version: int = 0) -> dict[str, Any] | None:
+    """동일 사용자·게임 scope의 envelope와 제한된 주기의 진행 상태 tick만 받는다."""
 
     # 팀 전달 사항: /events는 native EventSource가 아니라 fetch streaming으로 연결한다.
     # Backend CORS/proxy는 X-User-Id, X-Request-Id, Last-Event-ID를 허용해야 하며,
     # game_id·UUID를 query parameter에 넣어서는 안 된다.
 
+    scope = (backend_url, game_id, str(user_id), st.session_state.get("identity.scope_version"))
+    if st.session_state.get("game.sync_scope") != scope:
+        st.session_state["game.sync_scope"] = scope
+        st.session_state["game.sync_scope_version"] = str(uuid4())
+        st.session_state["game.sync_seen_envelope"] = None
+        st.session_state["game.sync_tick"] = 0
+        st.session_state["game.sync_status"] = "CONNECTING"
+        st.session_state["game.sync_hidden"] = False
+    instance = f"sync-{game_id}-{user_id}"
+    scope_version = st.session_state["game.sync_scope_version"]
+    st.session_state["game.sync_component_failed"] = False
     try:
         result = SYNC_COMPONENT(
-            data={"backend_url": backend_url, "game_id": game_id, "user_id": str(user_id), "last_sequence": last_sequence},
-            # 데이터 envelope만 state로 등록한다. 연결 상태를 state로 등록하면
-            # 연결·재연결마다 전체 Streamlit rerun이 발생해 화면이 로딩 overlay로
-            # 덮이는 문제가 있으므로, 연결 상태는 JS 내부에서만 관리한다.
-            default={"envelope": None},
+            data={"schema_version": 1, "component_instance_id": instance, "scope_version": scope_version,
+                  "backend_url": backend_url, "game_id": game_id, "user_id": str(user_id),
+                  "last_sequence": last_sequence, "after_sequence": last_sequence,
+                  "after_state_version": after_state_version, "policy": asdict(DEFAULT_SYNC_POLICY)},
+            # SSE heartbeat마다 rerun하지 않고 별도 tick을 foreground 2초로 제한한다.
+            # 게임 페이지는 tick 변화 때 snapshot의 agent_activity를 함께 갱신한다.
+            default={"envelope": None, "status_tick": None},
             on_envelope_change=lambda: None,
-            key=f"sync-{game_id}",
+            on_status_tick_change=lambda: None,
+            key=instance,
         )
-        envelope = getattr(result, "envelope", None)
-        return envelope if isinstance(envelope, dict) else None
+        tick = getattr(result, "status_tick", None)
+        if _same_scope(tick, instance=instance, scope_version=scope_version):
+            timestamp = tick.get("tick")
+            if (tick.get("type") == "SYNC_STATUS" and tick.get("status") in {"CONNECTING", "LIVE", "POLLING", "STALE"}
+                    and type(timestamp) is int and timestamp > st.session_state["game.sync_tick"]
+                    and type(tick.get("hidden")) is bool):
+                st.session_state["game.sync_tick"] = timestamp
+                st.session_state["game.sync_status"] = tick["status"]
+                st.session_state["game.sync_hidden"] = tick["hidden"]
+        message = getattr(result, "envelope", None)
+        if not _same_scope(message, instance=instance, scope_version=scope_version):
+            return None
+        event_id = message.get("event_id")
+        if (message.get("type") != "SYNC_ENVELOPE" or not isinstance(event_id, str) or not event_id
+                or event_id == st.session_state.get("game.sync_seen_envelope")):
+            return None
+        st.session_state["game.sync_seen_envelope"] = event_id
+        envelope = message.get("envelope")
+        # 현재 scope의 잘못된 payload는 빈 dict로 reducer에 전달해 기존 GET 복구
+        # 경로를 실행한다. 이전 사용자의 늦은 응답은 위 scope 검사에서 폐기한다.
+        return envelope if isinstance(envelope, dict) else {}
     except Exception:
+        st.session_state["game.sync_component_failed"] = True
+        st.session_state["game.sync_status"] = "POLLING"
         return None
+
+
+def _same_scope(message: Any, *, instance: str, scope_version: str) -> bool:
+    """UUID 교체·게임 이동 뒤 도착한 이전 component 응답의 상태 오염을 막는다."""
+
+    return (isinstance(message, dict) and type(message.get("schema_version")) is int
+            and message["schema_version"] == 1 and message.get("component_instance_id") == instance
+            and message.get("scope_version") == scope_version)
 
 
 def apply_sync(*, snapshot: dict[str, Any], envelope: dict[str, Any] | None) -> dict[str, Any]:

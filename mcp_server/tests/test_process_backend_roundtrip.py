@@ -13,7 +13,6 @@ from uuid import uuid4
 
 import httpx
 import psycopg
-
 from backend.app.core.config import get_settings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -77,11 +76,15 @@ def test_real_backend_and_fastmcp_process_roundtrip() -> None:
             str(backend_port),
         ],
         cwd=PROJECT_ROOT,
-        env=dict(os.environ),
+        env={
+            **os.environ,
+            "LLM_PROVIDER": "dummy",
+            "MCP_SERVER_URL": f"http://127.0.0.1:{mcp_port}",
+        },
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    mcp = subprocess.Popen(
+    mcp = subprocess.Popen(  # noqa: S603 - 테스트가 직접 구성한 로컬 MCP만 실행한다.
         [sys.executable, "-m", "mafia_game"],
         cwd=MCP_ROOT,
         env={
@@ -99,12 +102,18 @@ def test_real_backend_and_fastmcp_process_roundtrip() -> None:
     try:
         _wait_for_http(f"http://127.0.0.1:{backend_port}/health")
         _wait_for_http(f"http://127.0.0.1:{mcp_port}/mcp")
-        with httpx.Client(base_url=f"http://127.0.0.1:{backend_port}", timeout=10) as backend_client:
+        with httpx.Client(
+            base_url=f"http://127.0.0.1:{backend_port}", timeout=10
+        ) as backend_client:
             common_headers = {"X-User-Id": str(user_id)}
             created = backend_client.post(
                 "/api/v1/games",
                 headers={**common_headers, "Idempotency-Key": str(uuid4())},
-                json={"player_count": 6, "ruleset_version": "mystery-v1", "scenario_version": "scenario-v1"},
+                json={
+                    "player_count": 6,
+                    "ruleset_version": "mystery-v1",
+                    "scenario_version": "scenario-v1",
+                },
             )
             assert created.status_code == 201, created.text
             game_id = created.json()["data"]["game_id"]
@@ -117,6 +126,13 @@ def test_real_backend_and_fastmcp_process_roundtrip() -> None:
             snapshot = backend_client.get(f"/api/v1/games/{game_id}", headers=common_headers)
             assert snapshot.status_code == 200, snapshot.text
             game_data = snapshot.json()["data"]
+            # 첫 인간 차례는 중앙 AI worker가 소비할 수 없으므로 PASS 승인 증거가
+            # 다른 process의 AI 진행 속도에 따라 stale 거부로 바뀌지 않아야 한다.
+            human_id = game_data["me"]["player_id"]
+            assert game_data["action_window"]["turn_player_id"] == human_id
+            state_version = game_data["game"]["state_version"]
+            window_id = game_data["action_window"]["window_id"]
+            action_key = str(uuid4())
         initialize_body = {
             "jsonrpc": "2.0",
             "id": "initialize",
@@ -157,7 +173,7 @@ def test_real_backend_and_fastmcp_process_roundtrip() -> None:
                 "prompts/get",
                 {
                     "name": "agent_instruction",
-                    "arguments": {"game_id": game_id, "user_id": str(user_id)},
+                    "arguments": {},
                 },
             )
             action = _jsonrpc(
@@ -172,25 +188,45 @@ def test_real_backend_and_fastmcp_process_roundtrip() -> None:
                         "action": "PASS",
                         "user_id": str(user_id),
                         "game_id": game_id,
-                        "expected_state_version": game_data["game"]["state_version"],
-                        "window_id": game_data["action_window"]["window_id"],
-                        "idempotency_key": str(uuid4()),
+                        "expected_state_version": state_version,
+                        "window_id": window_id,
+                        "idempotency_key": action_key,
                     },
                 },
             )
 
         assert resource.status_code == 200
-        assert game_id in resource.text
+        resource_payload = json.loads(resource.json()["result"]["contents"][0]["text"])
+        assert resource_payload["game_id"] == game_id
+        assert resource_payload["subject_type"] == "GM"
+        assert resource_payload["subject_id"] == game_id
+        assert resource_payload["scope"] == "public"
+        assert resource_payload["state_version"] == state_version
+        assert resource_payload["window_id"] == window_id
+        assert "me" not in resource_payload["data"]
         assert prompt.status_code == 200
-        assert "게임 context" in prompt.text
+        assert "게임 context" in prompt.json()["result"]["messages"][0]["content"]["text"]
         assert action.status_code == 200
         action_result = action.json()["result"]
-        if action_result.get("isError"):
-            # 프로세스 fixture의 중앙 AI worker가 같은 window를 먼저 진행할 수
-            # 있으므로 stale command도 Backend 왕복의 유효한 결과로 인정한다.
-            assert "Error executing tool submit_action" in action.text
-        else:
-            assert json.loads(action_result["content"][0]["text"])["accepted"] is True
+        assert action_result.get("isError") is False
+        accepted = json.loads(action_result["content"][0]["text"])
+        assert accepted["accepted"] is True
+        assert accepted["replayed"] is False
+        receipt = accepted["result"]
+        assert receipt["command_id"] == action_key
+        assert receipt["command_type"] == "PASS"
+        assert receipt["accepted_state_version"] == state_version
+        assert receipt["result_state_version"] == state_version + 1
+        with httpx.Client(base_url=f"http://127.0.0.1:{backend_port}", timeout=10) as client:
+            after = client.get(f"/api/v1/games/{game_id}", headers=common_headers)
+        assert after.status_code == 200
+        after_data = after.json()["data"]
+        assert after_data["game"]["state_version"] >= receipt["result_state_version"]
+        assert after_data["action_window"]["window_id"] != window_id
+        assert any(
+            event["event_type"] == "PLAYER_PASSED" and event["data"]["player_id"] == human_id
+            for event in after_data["public_events"]
+        )
     finally:
         for process in (mcp, backend):
             process.terminate()

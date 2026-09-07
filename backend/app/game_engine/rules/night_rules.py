@@ -25,15 +25,14 @@ def role_action(state: GameState, actor_id) -> NightActionType:
 
 
 def required_actors(state: GameState) -> list[PlayerState]:
-    """밤 해소에 필요한 대표 제출자를 반환한다."""
+    """마감 전 해소에 필요한 모든 생존 역할 행동자를 좌석순으로 반환한다.
 
-    living = state.alive_players
-    actors: list[PlayerState] = []
-    mafia = next((player for player in living if player.role is PlayerRole.MAFIA), None)
-    if mafia:
-        actors.append(mafia)
-    actors.extend(
-        player for player in living if player.role in {PlayerRole.DETECTIVE, PlayerRole.DOCTOR}
-    )
-    return actors
+    마피아 한 명의 응답만으로 창을 닫으면 다른 마피아의 첫 제출 기회가 사라진다.
+    부분 응답과 전원 무응답의 차이는 마감 후 밤 해소에서 따로 처리한다.
+    """
 
+    return [
+        player
+        for player in state.alive_players
+        if player.role in {PlayerRole.MAFIA, PlayerRole.DETECTIVE, PlayerRole.DOCTOR}
+    ]

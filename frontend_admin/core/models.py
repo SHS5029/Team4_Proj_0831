@@ -4,6 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
+# 관리자 목록 API가 허용하는 값만 UI와 요청 검증에서 함께 사용한다.
+ADMIN_STATUSES = ("IN_PROGRESS", "SAVED", "COMPLETED", "FAILED")
+ADMIN_PHASES = (
+    "ROLE_REVEAL", "DAY_DISCUSSION", "NIGHT_ACTION", "DAY_VOTE", "REVOTE",
+    "FINAL_DISCUSSION", "FINAL_ACCUSATION", "ENDED",
+)
+
 PRIVATE_KEYS = {"role", "alibi", "observation", "private_events", "action", "vote", "seed", "agent_context"}
 
 

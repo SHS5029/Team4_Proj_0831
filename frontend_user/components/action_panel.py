@@ -2,13 +2,24 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from html import escape
+from pathlib import Path
+from time import monotonic
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import streamlit as st
 
 from frontend_user.core.api_client import ApiClient, ApiResponseError, ApiUnavailableError
 from frontend_user.core.commands import build_command
+
+ASSET_DIR = Path(__file__).with_name("browser_components") / "action_attention"
+ACTION_ATTENTION_COMPONENT = st.components.v2.component(
+    name="ai_mafia_action_attention",
+    html=(ASSET_DIR / "index.html").read_text(encoding="utf-8"),
+    js=(ASSET_DIR / "index.js").read_text(encoding="utf-8"),
+)
 
 ACTION_PANEL_CSS = """
 <style>
@@ -19,7 +30,7 @@ ACTION_PANEL_CSS = """
 }
 [class*="st-key-discussion-action-panel"] textarea { min-height: 6.2rem; border-color: #afc4e8; }
 [class*="st-key-night-action-panel"] {
-  min-height: 37rem; padding: 1.15rem !important; border: 1px solid #203a60 !important;
+  padding: 1.15rem !important; border: 1px solid #203a60 !important;
   border-radius: .8rem !important; color: #f3f7ff !important;
   background: linear-gradient(145deg, #101f37, #061328 72%) !important;
   box-shadow: 0 1rem 2.5rem rgba(4, 17, 38, .2);
@@ -42,9 +53,21 @@ ACTION_PANEL_CSS = """
   border-color: #2f7cff; box-shadow: inset 0 0 0 1px #2f7cff; background: #152c4d;
 }
 [class*="st-key-vote-action-panel"] {
-  min-height: 37rem; padding: 1.1rem !important; border: 1px solid #d2dceb !important;
-  border-radius: .8rem !important; background: #fff !important;
+  padding: 1.1rem !important; border: 1px solid #d2dceb !important;
+  border-radius: .8rem !important; color: #000 !important; background: #fff !important;
   box-shadow: 0 .5rem 1.5rem rgba(20, 42, 81, .05);
+}
+/* 투표의 밝은 카드에서는 테마와 선택·잠금 상태에 관계없이 문구를 검게 표시한다.
+   제출 버튼의 흰색 글자를 덮지 않도록 읽기 영역과 후보 선택 영역에만 적용한다. */
+.st-key-vote-action-panel :is(h2, h3, h4, [data-testid="stCaptionContainer"],
+  [data-testid="stWidgetLabel"], [data-testid="stRadio"], [data-testid="stText"],
+  .st-key-vote-summary [data-testid="stMarkdownContainer"]),
+.st-key-vote-action-panel :is(h2, h3, h4, [data-testid="stCaptionContainer"],
+  [data-testid="stWidgetLabel"], [data-testid="stRadio"], [data-testid="stText"],
+  .st-key-vote-summary [data-testid="stMarkdownContainer"]) * {
+  color: #000 !important;
+  -webkit-text-fill-color: #000 !important;
+  opacity: 1 !important;
 }
 [class*="st-key-vote-summary"] {
   margin: .75rem 0 1rem; padding: .8rem .9rem !important;
@@ -67,11 +90,36 @@ ACTION_PANEL_CSS = """
 [class*="st-key-vote-action-panel"] [data-testid="stButton"] button {
   min-height: 2.9rem; font-weight: 750;
 }
+[class*="st-key-current-action-status"] {
+  position: fixed; left: 50%; bottom: max(.75rem, env(safe-area-inset-bottom));
+  z-index: 1000; width: min(calc(100vw - 2rem), 760px); transform: translateX(-50%);
+  padding: .7rem .9rem !important; border: 1px solid #79a8ff !important;
+  border-radius: .75rem !important; color: #10203b !important; background: #f8fbff !important;
+  box-shadow: 0 .8rem 2rem rgba(7, 20, 38, .2);
+}
+.current-action-status-line {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+}
+.current-action-status-line strong { color: #174ea6; }
+.current-action-status-time {
+  flex: 0 0 auto; font-variant-numeric: tabular-nums; font-weight: 800;
+}
+.action-sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+[data-testid="stMainBlockContainer"]:has([class*="st-key-current-action-status"]) {
+  padding-bottom: 7rem;
+}
 @media (max-width: 768px) {
   [class*="st-key-night-action-panel"] { min-height: auto; }
   [class*="st-key-night-action-panel"] div[role="radiogroup"] > label { flex-basis: 45%; }
   [class*="st-key-vote-action-panel"] { min-height: auto; }
   [class*="st-key-vote-action-panel"] div[role="radiogroup"] > label { flex-basis: 45%; }
+  [class*="st-key-current-action-status"] {
+    bottom: max(.5rem, env(safe-area-inset-bottom)); width: calc(100vw - 1rem);
+  }
+  .current-action-status-line { align-items: flex-start; gap: .5rem; }
 }
 </style>
 """
@@ -89,14 +137,34 @@ def render(*, client: ApiClient, game_id: str, snapshot: dict[str, Any]) -> None
     st.markdown(ACTION_PANEL_CSS, unsafe_allow_html=True)
     _process_pending(client=client, game_id=game_id, snapshot=snapshot)
 
+    remaining = _countdown_remaining_ms(game_id=game_id, snapshot=snapshot)
+    # 주기 갱신은 행동 패널만 다시 그린다. POST 처리와 게임 조회는 fragment 밖에
+    # 남겨 초당 네트워크 요청이나 결과 불명 command의 자동 재전송을 만들지 않는다.
+    interval = 1 if _timer_is_running(snapshot) and remaining and remaining > 0 else None
+    st.fragment(run_every=interval)(_render_actions)(game_id=game_id, snapshot=snapshot)
+
+
+def _render_actions(*, game_id: str, snapshot: dict[str, Any]) -> None:
+    """표시용 잔여 시간만 복사해 적용하고 원본 서버 snapshot은 변경하지 않는다."""
+
+    remaining = _countdown_remaining_ms(game_id=game_id, snapshot=snapshot)
     game = snapshot.get("game") if isinstance(snapshot.get("game"), dict) else {}
+    window = _window(snapshot)
+    snapshot = {**snapshot, "action_window": {
+        **window, "remaining_ms": remaining,
+        "paused": bool(window.get("paused") or game.get("status") == "SAVED"),
+    }}
     phase = str(game.get("phase", ""))
+    _render_action_status(snapshot=snapshot)
     if phase in DISCUSSION_PHASES:
         _render_discussion(game_id=game_id, snapshot=snapshot)
     elif phase == "NIGHT_ACTION":
         _render_night_action(game_id=game_id, snapshot=snapshot)
     elif phase in VOTE_PHASES:
         _render_vote_action(game_id=game_id, snapshot=snapshot)
+    # 이 component는 화면을 그리지 않는다. 같은 fragment tick에서 임계 경고의
+    # 변경만 live region에 알리고, 새 window일 때만 행동 입력으로 focus를 옮긴다.
+    _mount_action_attention(snapshot=snapshot)
 
 
 def _render_discussion(*, game_id: str, snapshot: dict[str, Any]) -> None:
@@ -184,8 +252,8 @@ def _render_night_action(*, game_id: str, snapshot: dict[str, Any]) -> None:
     with st.container(key="night-action-panel", border=True):
         header_col, timer_col = st.columns([2, 1])
         header_col.markdown(f"### 🌙 밤 {game.get('round', 1)} · 행동 선택")
-        remaining = _remaining_text(window.get("remaining_ms"))
-        timer_col.markdown(f"### ⏱ {remaining}" if remaining else "### ⏱ 대기 중")
+        timer_col.markdown(f"### ⏱ {_countdown_text(snapshot)}")
+        _render_countdown_warning(snapshot)
         _render_turn_status(snapshot=snapshot)
         st.divider()
         st.markdown(f"## {title}")
@@ -193,7 +261,7 @@ def _render_night_action(*, game_id: str, snapshot: dict[str, Any]) -> None:
         _render_pending_feedback(pending=pending)
 
         legal = set(snapshot.get("legal_actions", []))
-        targets = _valid_targets(window)
+        targets = _valid_targets(snapshot=snapshot, command_type="SUBMIT_NIGHT_ACTION")
         if "SUBMIT_NIGHT_ACTION" not in legal or not targets:
             if window.get("has_submitted") or (pending and pending.get("status") == "SUCCEEDED"):
                 st.success("밤 행동을 제출했습니다. 다른 플레이어의 선택을 기다리고 있습니다.")
@@ -209,13 +277,15 @@ def _render_night_action(*, game_id: str, snapshot: dict[str, Any]) -> None:
             str(target["player_id"]): str(target.get("display_name", "플레이어"))
             for target in targets
         }
+        target_key = f"form.night_target.{game_id}.{window.get('window_id', 'current')}"
+        _clear_invalid_selection(key=target_key, options=option_ids)
         target_id = st.radio(
             "대상 선택",
             option_ids,
             index=None,
             format_func=lambda value: names.get(value, "플레이어"),
             disabled=locked,
-            key=f"form.night_target.{window.get('window_id', 'current')}",
+            key=target_key,
         )
         if st.button(
             submit_label,
@@ -239,7 +309,7 @@ def _render_vote_action(*, game_id: str, snapshot: dict[str, Any]) -> None:
     game = snapshot.get("game") if isinstance(snapshot.get("game"), dict) else {}
     window = _window(snapshot)
     pending = _pending_for_window(game_id=game_id, window=window)
-    targets = _valid_targets(window)
+    targets = _valid_targets(snapshot=snapshot, command_type="SUBMIT_VOTE")
     phase = str(game.get("phase", "DAY_VOTE"))
     phase_label = {
         "DAY_VOTE": "투표",
@@ -250,13 +320,25 @@ def _render_vote_action(*, game_id: str, snapshot: dict[str, Any]) -> None:
     with st.container(key="vote-action-panel", border=True):
         title_col, timer_col = st.columns([2, 1])
         title_col.markdown(f"### ☀️ 낮 {game.get('day_number', 1)}일차 · {phase_label}")
-        remaining = _remaining_text(window.get("remaining_ms"))
-        timer_col.markdown(f"### ⏱ {remaining}" if remaining else "### ⏱ 대기 중")
+        timer_col.markdown(f"### ⏱ {_countdown_text(snapshot)}")
+        _render_countdown_warning(snapshot)
         _render_turn_status(snapshot=snapshot)
         _render_vote_summary(snapshot=snapshot, phase_label=phase_label)
         st.divider()
-        st.subheader("처형할 플레이어를 선택해 주세요")
-        st.caption("Backend가 확정한 생존 후보 중 한 명에게 투표합니다.")
+        if phase == "FINAL_ACCUSATION":
+            st.subheader("최종 판정할 플레이어를 지목해 주세요")
+            st.warning(
+                "이번 투표는 마지막 판정 투표입니다. 마피아를 찾으면 시민이 승리하고, "
+                "시민을 선택하면 마피아가 승리합니다."
+            )
+            st.caption(
+                "동률이어도 재투표하지 않으며, 동률 후보 중 한 명을 서버가 결정적으로 선택합니다."
+            )
+            submit_label = "최종 지목 제출  →"
+        else:
+            st.subheader("처형할 플레이어를 선택해 주세요")
+            st.caption("Backend가 확정한 생존 후보 중 한 명에게 투표합니다.")
+            submit_label = "투표 제출  →"
         _render_pending_feedback(pending=pending)
         if "SUBMIT_VOTE" not in set(snapshot.get("legal_actions", [])) or not targets:
             if window.get("has_submitted") or (pending and pending.get("status") == "SUCCEEDED"):
@@ -270,6 +352,8 @@ def _render_vote_action(*, game_id: str, snapshot: dict[str, Any]) -> None:
             str(target["player_id"]): str(target.get("display_name", "플레이어"))
             for target in targets
         }
+        target_key = f"form.vote_target.{game_id}.{window.get('window_id', 'current')}"
+        _clear_invalid_selection(key=target_key, options=options)
         target_id = st.radio(
             "대상 선택",
             options,
@@ -278,13 +362,10 @@ def _render_vote_action(*, game_id: str, snapshot: dict[str, Any]) -> None:
             captions=["생존"] * len(options),
             disabled=locked,
             horizontal=True,
-            key=f"form.vote_target.{window.get('window_id', 'current')}",
+            key=target_key,
         )
-        remaining_ms = window.get("remaining_ms")
-        if isinstance(remaining_ms, int) and 0 < remaining_ms <= 15_000:
-            st.warning("투표 마감까지 15초 이하 남았습니다.")
         if st.button(
-            "투표 제출  →",
+            submit_label,
             key="action.SUBMIT_VOTE",
             disabled=locked or target_id is None,
             use_container_width=True,
@@ -297,6 +378,88 @@ def _render_vote_action(*, game_id: str, snapshot: dict[str, Any]) -> None:
                 target_player_id=target_id,
             )
         st.caption("🔒 첫 제출 후에는 선택을 변경할 수 없습니다.")
+
+
+def _action_status(snapshot: dict[str, Any]) -> tuple[str, str, str | None] | None:
+    """현재 인간에게 필요한 행동·시각·임계 경고만 고정 문구로 만든다.
+
+    후보나 자동 선택 대상은 표시하지 않는다. Front는 서버 마감 전 자동 선택 대상을
+    알 수 없고, 공개되지 않은 선택을 추정해서도 안 된다.
+    """
+
+    game = snapshot.get("game") if isinstance(snapshot.get("game"), dict) else {}
+    me = snapshot.get("me") if isinstance(snapshot.get("me"), dict) else {}
+    window = _window(snapshot)
+    legal = set(snapshot.get("legal_actions", []))
+    phase = str(game.get("phase", ""))
+    pending = _pending_for_window(game_id=str(game.get("game_id", "")), window=window)
+    if _is_locked(window=window, pending=pending):
+        return None
+    if phase in DISCUSSION_PHASES:
+        if window.get("turn_player_id") != me.get("player_id") or not ({"SPEAK", "PASS"} & legal):
+            return None
+        label = "발언하거나 PASS하세요"
+    elif phase == "NIGHT_ACTION" and "SUBMIT_NIGHT_ACTION" in legal:
+        label = {
+            "MAFIA": "공격 대상을 선택하세요",
+            "DETECTIVE": "조사 대상을 선택하세요",
+            "DOCTOR": "보호 대상을 선택하세요",
+        }.get(str(me.get("role", "")), "밤 행동을 선택하세요")
+    elif phase in VOTE_PHASES and "SUBMIT_VOTE" in legal:
+        label = (
+            "최종 판정 대상을 지목하세요"
+            if phase == "FINAL_ACCUSATION"
+            else "투표 대상을 선택하세요"
+        )
+    else:
+        return None
+    return label, _countdown_text(snapshot), _countdown_warning_text(snapshot)
+
+
+def _render_action_status(*, snapshot: dict[str, Any]) -> None:
+    """페이지를 읽는 동안에도 현재 행동과 잔여 시간을 하단에 유지한다."""
+
+    status = _action_status(snapshot)
+    if status is None:
+        return
+    label, countdown, warning = status
+    with st.container(key="current-action-status", border=True):
+        st.markdown(
+            '<div class="current-action-status-line">'
+            f'<span><strong>지금 할 일</strong> · {escape(label)}</span>'
+            '<span class="current-action-status-time" aria-hidden="true">'
+            f"⏱ {escape(countdown)}</span>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+
+def _mount_action_attention(*, snapshot: dict[str, Any]) -> None:
+    """새 행동 window에서만 브라우저가 행동 영역과 첫 입력에 focus하도록 요청한다."""
+
+    ACTION_ATTENTION_COMPONENT(
+        data=_attention_payload(snapshot),
+        default={},
+        key="action-attention",
+    )
+
+
+def _attention_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """focus 여부와 중복 제거할 live announcement만 browser component에 전달한다."""
+
+    status = _action_status(snapshot)
+    warning = _countdown_warning_text(snapshot)
+    window_id = _canonical_player_id(_window(snapshot).get("window_id"))
+    announcement = None
+    if status is not None:
+        announcement = f"새 행동: {status[0]}." + (f" {warning}" if warning else "")
+    elif warning:
+        announcement = warning
+    return {
+        "active": status is not None and window_id is not None,
+        "window_id": window_id,
+        "announcement": announcement,
+    }
 
 
 def _render_vote_summary(*, snapshot: dict[str, Any], phase_label: str) -> None:
@@ -346,6 +509,13 @@ def _queue_command(
             message=message,
             target_player_id=target_player_id,
         )
+        if command_type in {"SUBMIT_VOTE", "SUBMIT_NIGHT_ACTION"}:
+            game = snapshot.get("game", {})
+            targets = _valid_targets(snapshot=snapshot, command_type=command_type)
+            if (_canonical_player_id(game.get("game_id")) != _canonical_player_id(game_id)
+                    or _canonical_player_id(game_id) is None
+                    or command["target_player_id"] not in {target["player_id"] for target in targets}):
+                raise ValueError("현재 선택할 수 없는 대상입니다. 최신 후보에서 다시 선택해 주세요.")
     except ValueError as error:
         st.error(str(error))
         return
@@ -439,13 +609,58 @@ def _window(snapshot: dict[str, Any]) -> dict[str, Any]:
     return window if isinstance(window, dict) else {}
 
 
-def _valid_targets(window: dict[str, Any]) -> list[dict[str, Any]]:
-    """식별자가 있는 Backend valid_targets만 원래 순서대로 반환한다."""
+def _canonical_player_id(value: Any) -> str | None:
+    """외부 식별자를 UUID로 정규화해 형식 변형으로 후보 검증을 우회하지 못하게 한다."""
 
-    targets = window.get("valid_targets", [])
-    if not isinstance(targets, list):
+    if not isinstance(value, str):
+        return None
+    try:
+        return str(UUID(value))
+    except ValueError:
+        return None
+
+
+def _valid_targets(*, snapshot: dict[str, Any], command_type: str) -> list[dict[str, Any]]:
+    """서버 후보를 현재 게임 생존자와 교차 확인하며 후보를 임의로 보충하지 않는다."""
+
+    targets = _window(snapshot).get("valid_targets")
+    players = snapshot.get("players")
+    game = snapshot.get("game") if isinstance(snapshot.get("game"), dict) else {}
+    me = snapshot.get("me") if isinstance(snapshot.get("me"), dict) else {}
+    game_id = _canonical_player_id(game.get("game_id"))
+    actor_id = _canonical_player_id(me.get("player_id"))
+    if not isinstance(targets, list) or not isinstance(players, list) or game_id is None:
         return []
-    return [target for target in targets if isinstance(target, dict) and target.get("player_id")]
+    if command_type == "SUBMIT_VOTE" and actor_id is None:
+        return []
+    alive = {
+        player_id
+        for player in players
+        if isinstance(player, dict) and player.get("alive") is True
+        and ("game_id" not in player or _canonical_player_id(player["game_id"]) == game_id)
+        and (player_id := _canonical_player_id(player.get("player_id"))) is not None
+    }
+    result = []
+    seen = set()
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        player_id = _canonical_player_id(target.get("player_id"))
+        if (player_id not in alive or player_id in seen
+                or (command_type == "SUBMIT_VOTE" and player_id == actor_id)
+                or ("alive" in target and target["alive"] is not True)
+                or ("game_id" in target and _canonical_player_id(target["game_id"]) != game_id)):
+            continue
+        seen.add(player_id)
+        result.append({"player_id": player_id, "display_name": str(target.get("display_name", "플레이어"))})
+    return result
+
+
+def _clear_invalid_selection(*, key: str, options: list[str]) -> None:
+    """동률 재투표·사망 반영 뒤 사라진 선택은 해제하고 다른 후보로 대체하지 않는다."""
+
+    if st.session_state.get(key) is not None and st.session_state[key] not in options:
+        st.session_state[key] = None
 
 
 def _is_locked(*, window: dict[str, Any], pending: dict[str, Any] | None) -> bool:
@@ -453,7 +668,7 @@ def _is_locked(*, window: dict[str, Any], pending: dict[str, Any] | None) -> boo
 
     pending_status = pending.get("status") if pending else None
     remaining = window.get("remaining_ms")
-    expired = isinstance(remaining, int) and remaining <= 0
+    expired = type(remaining) is int and remaining <= 0
     return bool(
         window.get("paused")
         or window.get("has_submitted")
@@ -510,10 +725,116 @@ def _render_turn_status(*, snapshot: dict[str, Any]) -> None:
             st.caption("투표: 모든 생존자가 동시에 투표하는 단계입니다.")
 
 
-def _remaining_text(value: Any) -> str | None:
-    """Backend remaining_ms를 내림한 분:초 형식으로 표시한다."""
+def _server_datetime(value: Any) -> datetime | None:
+    """서버가 보낸 timezone 포함 시각만 사용하고 로컬 벽시계로 대체하지 않는다."""
 
-    if not isinstance(value, int):
+    if not isinstance(value, str):
         return None
-    seconds = max(0, value) // 1000
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _timer_is_running(snapshot: dict[str, Any]) -> bool:
+    """저장·일시정지·무제한 창에는 주기 갱신을 등록하지 않는다."""
+
+    window = _window(snapshot)
+    game = snapshot.get("game") if isinstance(snapshot.get("game"), dict) else {}
+    return bool(
+        game.get("status") == "IN_PROGRESS" and not window.get("paused")
+        and _server_datetime(window.get("deadline_at")) is not None
+        and _server_datetime(window.get("server_time")) is not None
+    )
+
+
+def _countdown_remaining_ms(*, game_id: str, snapshot: dict[str, Any]) -> int | None:
+    """서버 마감과 시각의 차이에서 수신 후 경과 시간만 빼 표시용 잔여 시간을 만든다.
+
+    같은 응답을 다시 렌더링해도 기준점을 재설정하지 않는다. 더 최신 서버 시각이나
+    새 창·재개 deadline을 받았을 때만 기준점을 교체하여 서버 보정을 반영한다.
+    결과는 입력 잠금 안내에만 사용하며 서버 상태·자동 선택·command를 만들지 않는다.
+    """
+
+    window = _window(snapshot)
+    game = snapshot.get("game") if isinstance(snapshot.get("game"), dict) else {}
+    remaining = window.get("remaining_ms")
+    remaining = max(0, remaining) if type(remaining) is int else None
+    if window.get("paused") or game.get("status") == "SAVED":
+        st.session_state.pop("game.action_clock", None)
+        return remaining
+    if not _timer_is_running(snapshot):
+        st.session_state.pop("game.action_clock", None)
+        return None
+
+    server_time = _server_datetime(window.get("server_time"))
+    deadline = _server_datetime(window.get("deadline_at"))
+    identity = (game_id, window.get("window_id"), window.get("deadline_at"))
+    now = monotonic()
+    anchor = st.session_state.get("game.action_clock")
+    if (not isinstance(anchor, dict) or anchor.get("identity") != identity
+            or server_time > anchor["server_time"]):
+        duration = max(0, round((deadline - server_time).total_seconds() * 1000))
+        anchor = {
+            "identity": identity,
+            "server_time": server_time,
+            "started_at": now,
+            "remaining_ms": min(duration, remaining) if remaining is not None else duration,
+        }
+        st.session_state["game.action_clock"] = anchor
+    elapsed = max(0, int((now - anchor["started_at"]) * 1000))
+    return max(0, anchor["remaining_ms"] - elapsed)
+
+
+def _countdown_text(snapshot: dict[str, Any]) -> str:
+    """저장된 시간과 시간 제한 없는 창을 진행 중 countdown과 구분해 표시한다."""
+
+    window = _window(snapshot)
+    game = snapshot.get("game") if isinstance(snapshot.get("game"), dict) else {}
+    remaining = _remaining_text(window.get("remaining_ms"))
+    if window.get("paused") or game.get("status") == "SAVED":
+        return f"{remaining} · 일시 정지" if remaining else "일시 정지 · 시간 제한 없음"
+    if window.get("kind") == "SPEECH" and window.get("deadline_at") is None:
+        return "시간 제한 없음"
+    return remaining or "시간 확인 중"
+
+
+def _render_countdown_warning(snapshot: dict[str, Any]) -> None:
+    """마감 경고는 표시만 갱신하고 최종 해소는 기존 서버 동기화를 기다린다."""
+
+    warning = _countdown_warning_text(snapshot)
+    if warning == "입력 시간이 끝났습니다. 서버의 확정 결과를 기다리고 있습니다.":
+        st.info("입력 시간이 끝났습니다. 서버의 확정 결과를 기다리고 있습니다.")
+    elif warning:
+        st.warning(warning)
+
+
+def _countdown_warning_text(snapshot: dict[str, Any]) -> str | None:
+    """서버 clock이 유효할 때만 phase별 임계 경고의 고정 문구를 반환한다."""
+
+    if not _timer_is_running(snapshot):
+        return None
+    window = _window(snapshot)
+    remaining = window.get("remaining_ms")
+    if type(remaining) is not int:
+        return None
+    if remaining <= 0:
+        return "입력 시간이 끝났습니다. 서버의 확정 결과를 기다리고 있습니다."
+    if window.get("kind") == "NIGHT" and remaining <= 10_000:
+        return "밤 행동 마감까지 10초 이하 남았습니다."
+    if window.get("kind") in {"VOTE", "REVOTE", "FINAL_VOTE"}:
+        if remaining <= 5_000:
+            return "투표 마감까지 5초 이하 남았습니다."
+        if remaining <= 15_000:
+            return "투표 마감까지 15초 이하 남았습니다."
+    return None
+
+
+def _remaining_text(value: Any) -> str | None:
+    """1초 미만이 남아도 00:00으로 오인하지 않도록 초 단위로 올림해 표시한다."""
+
+    if type(value) is not int:
+        return None
+    seconds = (max(0, value) + 999) // 1000
     return f"{seconds // 60:02d}:{seconds % 60:02d}"

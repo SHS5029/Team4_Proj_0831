@@ -6,6 +6,8 @@ from html import escape
 
 import streamlit as st
 
+from frontend_admin.core.models import ADMIN_PHASES, ADMIN_STATUSES
+
 
 LIST_CSS = """
 <style>
@@ -16,12 +18,29 @@ LIST_CSS = """
 """
 
 
+def render_filters() -> tuple[str | None, str | None]:
+    """Backend 목록 API가 지원하는 상태·단계만 선택하게 한다."""
+
+    columns = st.columns(2)
+    status = columns[0].selectbox(
+        "게임 상태", (None, *ADMIN_STATUSES), key="admin.filter.status",
+        format_func=lambda value: value or "전체 상태",
+    )
+    phase = columns[1].selectbox(
+        "게임 단계", (None, *ADMIN_PHASES), key="admin.filter.phase",
+        format_func=lambda value: value or "전체 단계",
+    )
+    return status, phase
+
+
 def render(items: list[dict]) -> str | None:
     """공개 관리자 요약 필드만 표시하고 선택한 game id를 반환한다."""
 
     st.markdown(LIST_CSS, unsafe_allow_html=True)
     st.subheader("최근 게임")
-    st.caption("운영에 필요한 공개 요약 정보만 표시됩니다.")
+    st.caption("선택한 조건의 최근 20개 게임에서 공개 요약 정보만 표시됩니다.")
+    if not items:
+        st.info("조건에 맞는 게임이 없습니다.")
     selected = None
     for item in items:
         game_id = item.get("game_id")

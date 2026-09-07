@@ -50,6 +50,7 @@ from backend.app.repositories.snapshot_repository import PostgresSnapshotReposit
 from backend.app.routers import health_router as health_router_module
 from backend.app.schemas.command_schema import GameCommandRequest
 from backend.app.schemas.game_schema import CreateGameRequest
+from backend.app.services.game.constants import INTRO_MESSAGE
 from backend.app.services.game_service import (
     PostgresBeginGameService,
     PostgresDiscussionCommandService,
@@ -674,8 +675,12 @@ def test_postgres_game_creation_rolls_back_when_player_storage_fails() -> None:
     assert service._test_connection.rolled_back  # type: ignore[attr-defined]
 
 
-def test_postgres_game_reader_projects_owned_initial_snapshot_without_role_leak() -> None:
-    """DB game·player·fact 행에서 인간 본인 정보만 포함한 최초 snapshot을 복원한다."""
+def _snapshot_reader(
+    events: list[Mapping[str, Any]] | None = None,
+    *,
+    game_changes: Mapping[str, Any] | None = None,
+) -> tuple[PostgresGameReadService, FakeCursor, FakeConnection]:
+    """DB 없이 동일한 저장 이력을 두 번 재조회할 수 있는 snapshot 대역을 구성한다."""
 
     seed = b"database-read-seed"
     players = GameEngine.new_game(
@@ -698,6 +703,7 @@ def test_postgres_game_reader_projects_owned_initial_snapshot_without_role_leak(
         "day_number": 1,
         "state_version": 1,
         "next_front_sequence": 1,
+        "next_event_sequence": 1,
         "player_count": 6,
         "mafia_count": 1,
         "scenario_version": "scenario-v1",
@@ -731,8 +737,9 @@ def test_postgres_game_reader_projects_owned_initial_snapshot_without_role_leak(
         }
         for player in players
     ]
+    game_row.update(game_changes or {})
     cursor = FakeCursor(
-        one_rows=[game_row],
+        one_rows=[game_row, None, game_row, None],
         all_rows=[
             player_rows,
             [
@@ -745,7 +752,10 @@ def test_postgres_game_reader_projects_owned_initial_snapshot_without_role_leak(
                     "rendered_text": "좌석 1은 조정실 쪽을 보았다.",
                 },
             ],
-        ],
+            events or [],
+            [],
+            [],
+        ] * 2,
     )
     connection = FakeConnection(cursor)
     reader = PostgresGameReadService(
@@ -755,6 +765,13 @@ def test_postgres_game_reader_projects_owned_initial_snapshot_without_role_leak(
         ),
         keyring=keyring,
     )
+    return reader, cursor, connection
+
+
+def test_postgres_game_reader_projects_owned_initial_snapshot_without_role_leak() -> None:
+    """DB game·player·fact 행에서 인간 본인 정보만 포함한 최초 snapshot을 복원한다."""
+
+    reader, _, connection = _snapshot_reader()
 
     snapshot = reader.snapshot(USER_ID, GAME_ID)
 
@@ -765,7 +782,236 @@ def test_postgres_game_reader_projects_owned_initial_snapshot_without_role_leak(
     assert snapshot["me"]["role"] in {"MAFIA", "DETECTIVE", "DOCTOR", "CITIZEN"}
     assert snapshot["me"]["alibi"] == "좌석 1은 스튜디오에 있었다."
     assert snapshot["me"]["observation"] == "좌석 1은 조정실 쪽을 보았다."
+    assert snapshot["public_events"] == []
     assert connection.committed
+
+
+def _public_event_row(
+    sequence: int,
+    event_type: str = "PLAYER_PASSED",
+    payload: Any = None,
+    **changes: Any,
+) -> dict[str, Any]:
+    """실제 append 저장 형식에 맞는 synthetic 이벤트를 만들고 손상 조건을 주입한다."""
+
+    return {
+        "id": UUID(int=10_000 + sequence),
+        "game_id": GAME_ID,
+        "sequence": sequence,
+        "front_sequence": 1,
+        "operation_index": sequence,
+        "state_version": 2,
+        "event_type": event_type,
+        "audience": "PUBLIC",
+        "audience_player_id": None,
+        "schema_version": 1,
+        "operation_type": "APPEND_PUBLIC_EVENT",
+        "payload": {"player_id": str(UUID(int=700))} if payload is None else payload,
+        "created_at": datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
+        **changes,
+    }
+
+
+HISTORY_GAME_CHANGES = {
+    "phase": "DAY_DISCUSSION", "state_version": 10,
+    "next_front_sequence": 11, "next_event_sequence": 2001,
+}
+
+
+@pytest.mark.parametrize("status, phase", [
+    ("IN_PROGRESS", "DAY_DISCUSSION"), ("SAVED", "DAY_DISCUSSION"), ("COMPLETED", "ENDED"),
+])
+def test_snapshot_restores_public_history_in_sequence_order_on_each_read(
+    status: str, phase: str,
+) -> None:
+    """동일 시각·batch의 시작/인간/AI 발언과 PASS를 재조회해도 DB 순서대로 복원한다."""
+
+    rows = [
+        _public_event_row(1, "GAME_BEGAN", {"message": INTRO_MESSAGE}),
+        _public_event_row(3, "PLAYER_SPOKE", {
+            "player_id": str(UUID(int=700)), "message": "  함께\n 확인합시다. ",
+            "target_player_id": str(UUID(int=702)), "role": "MAFIA",
+        }),
+        _public_event_row(4, "PLAYER_SPOKE", {
+            "player_id": str(UUID(int=701)), "message": "동의합니다.",
+        }),
+        _public_event_row(6),
+    ]
+    reader, cursor, _ = _snapshot_reader(list(reversed(rows)), game_changes={
+        **HISTORY_GAME_CHANGES, "status": status, "phase": phase,
+    })
+
+    first = reader.snapshot(USER_ID, GAME_ID)
+
+    assert [event["event_id"] for event in first["public_events"]] == [
+        str(row["id"]) for row in rows
+    ]
+    second = reader.snapshot(USER_ID, GAME_ID)
+    assert first["public_events"] == second["public_events"]
+    assert first["public_events"][1]["data"] == {
+        "player_id": str(UUID(int=700)), "message": "함께 확인합시다.",
+    }
+    assert first["me"]["private_events"] == []
+    assert all(set(event) == {"event_id", "event_type", "created_at", "data"}
+               for event in first["public_events"])
+    assert all(event["created_at"] == "2026-01-02T03:04:05Z"
+               for event in first["public_events"])
+    queries = [(sql, params) for sql, params in cursor.statements if "FROM public.game_events" in sql and "audience = 'PUBLIC'" in sql]
+    assert len(queries) == 2
+    assert all(params == (GAME_ID, 2000, 10, 10) for _, params in queries)
+
+
+@pytest.mark.parametrize("changes", [
+    {"audience": "PLAYER", "audience_player_id": UUID(int=700)},
+    {"audience": "INTERNAL"}, {"audience": "ADMIN"},
+    {"audience": "unknown"}, {"audience_player_id": UUID(int=701)},
+    {"game_id": UUID(int=999)}, {"state_version": 11},
+    {"front_sequence": 11}, {"sequence": 2001},
+    {"front_sequence": None}, {"front_sequence": 0},
+    {"sequence": 0}, {"state_version": 0}, {"operation_index": -1},
+    {"operation_type": "SET_ACTION_WINDOW", "event_type": "TURN_OPENED"},
+    {"operation_type": "APPEND_PRIVATE_EVENT"}, {"schema_version": 2},
+    {"schema_version": True}, {"state_version": True}, {"sequence": "1"},
+    {"event_type": "ACTION_RESOLVED", "payload": {"target_player_id": str(UUID(int=701))}},
+    {"event_type": "VOTE_RESOLVED", "payload": {
+        "round": 1, "phase": "DAY_VOTE", "counts": [], "tied": False,
+        "needs_revote": False, "ballots": ["synthetic-private"],
+    }},
+    {"event_type": "UNRECOGNIZED"}, {"payload": ["synthetic-private"]},
+    {"payload": {}}, {"payload": {"player_id": str(UUID(int=999))}},
+    {"payload": {"player_id": "not-a-uuid"}},
+    {"event_type": "PLAYER_SPOKE", "payload": {"player_id": str(UUID(int=700)), "message": " "}},
+    {"event_type": "PLAYER_SPOKE", "payload": {"player_id": str(UUID(int=700)), "message": "x" * 201}},
+    {"event_type": "PLAYER_SPOKE", "payload": {"player_id": str(UUID(int=700)), "message": {"role": "MAFIA"}}},
+    {"event_type": "GAME_BEGAN", "payload": {"message": "미승인 시작 안내"}},
+    {"id": "not-an-event-id"}, {"created_at": "synthetic-invalid"},
+    {"created_at": datetime(2026, 1, 2)},
+])
+def test_snapshot_discards_unapproved_or_malformed_events(changes: dict[str, Any]) -> None:
+    """저장소가 잘못된 행을 반환해도 타인 정보와 snapshot 이후 이벤트를 공개하지 않는다."""
+
+    invalid = _public_event_row(1)
+    invalid.update(changes)
+    valid = _public_event_row(2)
+    reader, _, _ = _snapshot_reader([invalid, valid], game_changes=HISTORY_GAME_CHANGES)
+
+    snapshot = reader.snapshot(USER_ID, GAME_ID)
+
+    assert [event["event_id"] for event in snapshot["public_events"]] == [str(valid["id"])]
+
+
+@pytest.mark.parametrize("event_type, data", [
+    ("TURN_OPENED", {"player_id": str(UUID(int=701)), "cycle": 1, "prompt": None}),
+    ("NIGHT_RESOLVED", {"round": 1, "killed_player_id": str(UUID(int=701))}),
+    ("NIGHT_RESOLVED", {"round": 5, "killed_player_id": None}),
+    ("PLAYER_EXECUTED", {"player_id": str(UUID(int=701)), "revealed_role": "CITIZEN"}),
+    ("FAST_FORWARD_ENABLED", {"enabled": True}),
+    ("GAME_SAVED", {"phase": "ROLE_REVEAL", "round": 0}),
+    ("GAME_RESUMED", {"phase": "FINAL_DISCUSSION", "round": 5}),
+    ("GAME_ENDED", {"winner": "MAFIA", "win_reason": "MAFIA_PARITY"}),
+])
+def test_snapshot_supports_existing_approved_event_fields_only(
+    event_type: str, data: dict[str, Any],
+) -> None:
+    """기존 정본 이벤트도 허용한 필드만 복사하고 비공개·미승인 확장 내용은 버린다."""
+
+    row = _public_event_row(1, event_type, {
+        **data, "target_player_id": str(UUID(int=702)),
+        "private": {"role": "MAFIA", "ballots": ["synthetic"]},
+    })
+    reader, _, _ = _snapshot_reader([row], game_changes=HISTORY_GAME_CHANGES)
+
+    events = reader.snapshot(USER_ID, GAME_ID)["public_events"]
+
+    assert len(events) == 1
+    assert events[0]["data"] == data
+
+
+@pytest.mark.parametrize("event_type, data", [
+    ("TURN_OPENED", {"player_id": str(UUID(int=701)), "cycle": 2, "prompt": None}),
+    ("TURN_OPENED", {"player_id": str(UUID(int=701)), "cycle": True, "prompt": None}),
+    ("TURN_OPENED", {"player_id": str(UUID(int=701)), "cycle": 1, "prompt": "synthetic-private"}),
+    ("TURN_OPENED", {"player_id": str(UUID(int=701)), "cycle": 1}),
+    ("NIGHT_RESOLVED", {"round": 0, "killed_player_id": None}),
+    ("NIGHT_RESOLVED", {"round": 6, "killed_player_id": None}),
+    ("NIGHT_RESOLVED", {"round": 1, "killed_player_id": str(UUID(int=999))}),
+    ("NIGHT_RESOLVED", {"round": 1}),
+    ("PLAYER_EXECUTED", {"player_id": str(UUID(int=999)), "revealed_role": "MAFIA"}),
+    ("PLAYER_EXECUTED", {"player_id": str(UUID(int=701)), "revealed_role": "UNKNOWN"}),
+    ("FAST_FORWARD_ENABLED", {"enabled": False}),
+    ("FAST_FORWARD_ENABLED", {"enabled": 1}),
+    ("GAME_SAVED", {"phase": "INTERNAL", "round": 0}),
+    ("GAME_RESUMED", {"phase": "DAY_DISCUSSION", "round": 6}),
+    ("GAME_ENDED", {"winner": "UNKNOWN", "win_reason": "MAFIA_PARITY"}),
+    ("GAME_ENDED", {"winner": "MAFIA", "win_reason": "UNKNOWN"}),
+])
+def test_snapshot_discards_invalid_approved_event_data(
+    event_type: str, data: dict[str, Any],
+) -> None:
+    """알려진 event 이름이라도 필수 필드·enum·nullable·정수 계약을 어기면 제외한다."""
+
+    reader, _, _ = _snapshot_reader(
+        [_public_event_row(1, event_type, data)], game_changes=HISTORY_GAME_CHANGES,
+    )
+
+    assert reader.snapshot(USER_ID, GAME_ID)["public_events"] == []
+
+
+def test_snapshot_restores_more_than_500_events_without_truncation() -> None:
+    """sync의 페이지 크기로 snapshot 이력을 잘라 뒤쪽 발언을 잃지 않는지 확인한다."""
+
+    rows = [_public_event_row(index) for index in range(1, 602)]
+    reader, cursor, _ = _snapshot_reader(rows, game_changes=HISTORY_GAME_CHANGES)
+
+    events = reader.snapshot(USER_ID, GAME_ID)["public_events"]
+
+    assert [event["event_id"] for event in events] == [str(row["id"]) for row in rows]
+    query = next(sql for sql, _ in cursor.statements if "FROM public.game_events" in sql)
+    assert "LIMIT" not in query.upper()
+    assert "ORDER BY sequence" in query
+    assert "audience = 'PUBLIC'" in query
+    assert "operation_type = 'APPEND_PUBLIC_EVENT'" in query
+    assert "state_version <= %s" in query and "front_sequence <= %s" in query
+    assert "sequence <= %s" in query
+
+
+def test_snapshot_checks_ownership_before_reading_public_history() -> None:
+    """비소유자에게 404를 반환할 때 이벤트와 player 테이블을 조회하지 않는다."""
+
+    reader, cursor, connection = _snapshot_reader()
+    cursor.one_rows = [None]
+
+    with pytest.raises(ApiError) as error:
+        reader.snapshot(UUID(int=999), GAME_ID)
+
+    assert error.value.code == "GAME_NOT_FOUND"
+    assert error.value.status_code == 404
+    assert len(cursor.statements) == 1
+    assert cursor.statements[0][1] == (GAME_ID, UUID(int=999))
+    assert connection.rolled_back
+
+
+def test_snapshot_event_read_failure_returns_safe_dependency_error() -> None:
+    """이력 조회 장애를 빈 성공으로 숨기거나 DB 오류의 비공개 내용을 반환하지 않는다."""
+
+    class FailingEvents:
+        """조회 실패만 주입해 기존 API 오류 경계를 검사하는 저장소 대역."""
+
+        def list_snapshot_public_events(self, *args: Any, **kwargs: Any) -> list[Any]:
+            """오류 내용이 공개 응답으로 복사되지 않는지 확인한다."""
+
+            raise RuntimeError("synthetic-private-storage-detail")
+
+    reader, _, connection = _snapshot_reader(game_changes=HISTORY_GAME_CHANGES)
+    reader._events = FailingEvents()
+
+    with pytest.raises(ApiError) as error:
+        reader.snapshot(USER_ID, GAME_ID)
+
+    assert error.value.code == "DEPENDENCY_UNAVAILABLE"
+    assert error.value.status_code == 503
+    assert "synthetic-private" not in str(error.value)
+    assert connection.rolled_back
 
 
 def test_postgres_game_reader_lists_only_public_game_summary() -> None:
@@ -1425,3 +1671,462 @@ def test_redis_lock_cache_and_stream_follow_canonical_keys() -> None:
     assert stream_id == "1-0"
     assert client.xadd_calls[0][0] == f"mafia:v1:events:{GAME_ID}"
     assert client.published == [("mafia:v1:outbox:wakeup", "7")]
+
+
+def _b5_action_service(*, phase="NIGHT_ACTION", human_role="DETECTIVE", roles=None,
+                       submissions=None, deadline_offset=20, status="IN_PROGRESS", human_alive=True,
+                       resolutions=None, round_number=1):
+    """유료 API와 DB 없이 잠금·commit·원장 호출을 확인하는 B5 서비스 대역을 만든다."""
+
+    from unittest.mock import Mock
+    from backend.app.services.game.action_command import PostgresActionCommandService
+
+    now = datetime(2026, 9, 7, tzinfo=UTC)
+    roles = roles or [human_role, "MAFIA", "MAFIA", "DOCTOR", "CITIZEN", "CITIZEN", "CITIZEN"]
+    players = [{"id": UUID(int=7100 + index), "seat": index + 1, "display_name": f"플레이어 {index + 1}",
+                "kind": "HUMAN" if index == 0 else "AI", "user_id": USER_ID if index == 0 else None,
+                "alive": human_alive if index == 0 else True, "role": role}
+               for index, role in enumerate(roles)]
+    window = {"id": UUID(int=7200), "window_kind": {"NIGHT_ACTION": "NIGHT", "DAY_VOTE": "VOTE", "REVOTE": "REVOTE", "FINAL_ACCUSATION": "FINAL_VOTE"}[phase],
+              "phase": phase, "round": round_number, "cycle": 1, "status": "OPEN", "turn_player_id": None,
+              "opened_state_version": 10, "deadline_at": now + timedelta(seconds=deadline_offset)}
+    game = {"id": GAME_ID, "owner_user_id": USER_ID, "status": status, "phase": phase, "round": round_number,
+            "day_number": 1 if phase == "NIGHT_ACTION" else 2, "state_version": 10, "player_count": len(players),
+            "seed_ciphertext": b"synthetic", "seed_nonce": b"synthetic", "seed_key_id": "synthetic",
+            "updated_at": now, "fast_forward_enabled": False}
+    cursor = FakeCursor()
+    connection = FakeConnection(cursor)
+    service = PostgresActionCommandService(transactions=TransactionManager("postgresql://synthetic", connection_factory=lambda _: connection),
+                                          keyring=Mock(), games=Mock(), players=Mock(), actions=Mock(), events=Mock(), outbox=Mock(), receipts=Mock())
+    service._keyring.decrypt_seed.return_value = b"synthetic-b5-state"
+    service._games.lock_game.return_value = game
+    service._games.next_front_sequence.return_value = 5
+    service._players.list_players.return_value = players
+    service._actions.current_window.return_value = window
+    service._actions.list_window_action_submissions.return_value = list(submissions or [])
+    service._actions.list_resolutions.return_value = list(resolutions or [])
+    service._events.append.side_effect = lambda *args, **kwargs: {"id": UUID(int=8000 + service._events.append.call_count)}
+    service._receipts.find.return_value = None
+    return service, game, players, window, now, connection
+
+
+def _b5_submission(actor, target, action_type, source="HUMAN"):
+    """외부 정보 없이 actor·대상·출처가 명확한 제출 fixture를 만든다."""
+
+    return {"actor_player_id": UUID(int=7100 + actor), "target_player_id": UUID(int=7100 + target), "action_type": action_type, "source": source}
+
+
+@pytest.mark.parametrize("phase,command", [("NIGHT_ACTION", "SUBMIT_NIGHT_ACTION"), ("DAY_VOTE", "SUBMIT_VOTE"), ("FINAL_ACCUSATION", "SUBMIT_VOTE")])
+@pytest.mark.parametrize("offset", [0, -1])
+def test_b5_rejects_submission_at_or_after_deadline(phase, command, offset):
+    """마감과 같은 시각부터 인간 행동을 거부하고 원장·이벤트를 변경하지 않는다."""
+
+    service, _, _, window, now, connection = _b5_action_service(phase=phase, deadline_offset=offset)
+    with pytest.raises(ApiError) as error:
+        service.submit(USER_ID, GAME_ID, GameCommandRequest(type=command, expected_state_version=10, window_id=window["id"], target_player_id=UUID(int=7101)), IDEMPOTENCY_KEY, now=now)
+    assert error.value.code == "WINDOW_CLOSED"
+    service._actions.insert_submission.assert_not_called()
+    service._events.append.assert_not_called()
+    assert connection.rolled_back
+
+
+@pytest.mark.parametrize("phase", ["NIGHT_ACTION", "DAY_VOTE", "FINAL_ACCUSATION"])
+def test_b5_expiry_rechecks_current_window_after_lock(phase):
+    """worker 조회 뒤 열린 새 window가 아직 마감 전이면 아무 결과도 만들지 않는다."""
+
+    service, _, _, _, now, _ = _b5_action_service(phase=phase)
+    resolve = service.auto_resolve_expired_night if phase == "NIGHT_ACTION" else service.auto_resolve_expired_vote
+    assert resolve(USER_ID, GAME_ID, now=now) is None
+    service._actions.insert_resolution.assert_not_called()
+    service._games.update_game_state.assert_not_called()
+
+
+def test_b5_mixed_night_batch_keeps_human_choice_and_all_mafia():
+    """인간 탐정 제출과 두 AI 마피아를 함께 해소하고 인간 조사만 private로 기록한다."""
+
+    service, _, _, window, now, connection = _b5_action_service(submissions=[_b5_submission(0, 1, "INVESTIGATE")])
+    actions = [{"player_id": UUID(int=7100 + actor), "target_player_id": UUID(int=7100 + target)} for actor, target in [(1, 4), (2, 4), (3, 4)]]
+    result, replayed = service.submit_agent_night_actions(USER_ID, GAME_ID, actions, expected_state_version=10, window_id=window["id"], idempotency_key=IDEMPOTENCY_KEY, now=now)
+    assert connection.committed and not replayed and result["result_state_version"] == 11
+    payload = service._actions.insert_resolution.call_args.kwargs["payload"]
+    assert len(payload["attack_choices"]) == 2
+    assert payload["resolved_attack_target_player_id"] == str(UUID(int=7104))
+    assert payload["killed_player_id"] is None
+    assert payload["investigations"] == [{"actor_player_id": str(UUID(int=7100)), "target_player_id": str(UUID(int=7101)), "is_auto": False, "is_mafia": True}]
+    private = [call.kwargs for call in service._events.append.call_args_list if call.kwargs["audience"] == "PLAYER"]
+    assert len(private) == 1 and private[0]["audience_player_id"] == UUID(int=7100)
+    assert private[0]["event_type"] == "INVESTIGATION_RESULT"
+    public = [call.kwargs for call in service._events.append.call_args_list if call.kwargs["operation_type"] == "APPEND_PUBLIC_EVENT"]
+    assert [event["event_type"] for event in public] == ["NIGHT_RESOLVED"]
+    assert "target_player_id" not in json.dumps([event["payload"] for event in public])
+
+
+def test_b5_partial_night_only_stores_choice_without_public_target():
+    """밤 제출 한 건은 창을 닫거나 비공개 대상을 PUBLIC으로 기록하지 않는다."""
+
+    service, _, _, window, now, _ = _b5_action_service()
+    service.submit(USER_ID, GAME_ID, GameCommandRequest(type="SUBMIT_NIGHT_ACTION", expected_state_version=10, window_id=window["id"], target_player_id=UUID(int=7101)), IDEMPOTENCY_KEY, now=now)
+    service._actions.insert_resolution.assert_not_called()
+    service._actions.open_window.assert_not_called()
+    assert all(call.kwargs["operation_type"] != "APPEND_PUBLIC_EVENT" for call in service._events.append.call_args_list)
+
+
+@pytest.mark.parametrize("existing_attack", [True, False])
+def test_b5_expired_night_preserves_choices_and_faction_auto(existing_attack):
+    """미제출 마피아의 가상 표를 만들지 않고 기존 공격 또는 진영 자동 공격을 기록한다."""
+
+    submissions = [_b5_submission(0, 1, "INVESTIGATE")]
+    if existing_attack:
+        submissions.append(_b5_submission(1, 4, "ATTACK", "AGENT"))
+    service, _, _, _, now, _ = _b5_action_service(submissions=submissions, deadline_offset=-1)
+    service.auto_resolve_expired_night(USER_ID, GAME_ID, now=now)
+    resolution = service._actions.insert_resolution.call_args.kwargs
+    assert len(resolution["payload"]["attack_choices"]) == int(existing_attack)
+    if existing_attack:
+        assert resolution["target_player_id"] == UUID(int=7104)
+    else:
+        assert resolution["resolution_source"] == "FACTION_AUTO"
+    assert resolution["rng_proof_hash"] is not None
+    automatic = [call.args[1] for call in service._actions.insert_submission.call_args_list]
+    assert [row.action_type for row in automatic] == ["PROTECT"]
+    assert automatic[0].target_player_id != automatic[0].actor_player_id
+    assert resolution["payload"]["investigations"][0]["target_player_id"] == str(UUID(int=7101))
+
+
+@pytest.mark.parametrize("phase", ["DAY_VOTE", "FINAL_ACCUSATION"])
+def test_b5_final_and_day_votes_wait_for_all_and_restore_prior_votes(phase):
+    """인간 첫 표를 보존하고 마지막 AI batch가 모두 제출된 뒤에만 집계한다."""
+
+    service, _, _, window, now, _ = _b5_action_service(phase=phase)
+    command = GameCommandRequest(type="SUBMIT_VOTE", expected_state_version=10, window_id=window["id"], target_player_id=UUID(int=7101))
+    service.submit(USER_ID, GAME_ID, command, IDEMPOTENCY_KEY, now=now)
+    service._actions.insert_resolution.assert_not_called()
+    service, _, _, window, now, _ = _b5_action_service(phase=phase, submissions=[_b5_submission(0, 1, "VOTE")])
+    actions = [{"player_id": UUID(int=7100 + actor), "target_player_id": UUID(int=7100 if actor == 1 else 7101)} for actor in range(1, 7)]
+    service.submit_agent_votes(USER_ID, GAME_ID, actions, expected_state_version=10, window_id=window["id"], idempotency_key=IDEMPOTENCY_KEY, now=now)
+    payload = service._actions.insert_resolution.call_args.kwargs["payload"]
+    assert len(payload["ballots"]) == 7
+    assert sum(item["vote_count"] for item in payload["counts"]) == 7
+    assert service._players.update_eliminated_players.call_args.kwargs["phase"] == phase
+    public = [call.kwargs["event_type"] for call in service._events.append.call_args_list if call.kwargs["operation_type"] == "APPEND_PUBLIC_EVENT"]
+    assert public[:2] == ["VOTE_RESOLVED", "PLAYER_EXECUTED"]
+    if phase == "FINAL_ACCUSATION":
+        assert public[-1] == "GAME_ENDED"
+
+
+@pytest.mark.parametrize("phase", ["DAY_VOTE", "FINAL_ACCUSATION"])
+def test_b5_expired_vote_fills_only_missing_ballots(phase):
+    """마감 시 이미 낸 표는 그대로 남고 나머지 표만 AUTO 원장에 저장된다."""
+
+    service, _, _, _, now, _ = _b5_action_service(phase=phase, submissions=[_b5_submission(0, 1, "VOTE")], deadline_offset=0)
+    service.auto_resolve_expired_vote(USER_ID, GAME_ID, now=now)
+    payload = service._actions.insert_resolution.call_args.kwargs["payload"]
+    assert payload["ballots"][0] == {"actor_player_id": str(UUID(int=7100)), "target_player_id": str(UUID(int=7101)), "is_auto": False}
+    assert len(payload["ballots"]) == 7
+    assert all(row["actor_player_id"] != row["target_player_id"] for row in payload["ballots"])
+    assert sum(row["is_auto"] for row in payload["ballots"]) == 6
+    assert service._actions.insert_submission.call_count == 6
+
+
+@pytest.mark.parametrize("attackers", [[0], [1, 1]])
+def test_b5_rejects_human_or_duplicate_actor_in_ai_batch(attackers):
+    """AI batch가 인간 자격을 대리하거나 같은 actor를 중복 제출할 수 없다."""
+
+    service, _, _, window, now, connection = _b5_action_service()
+    actions = [{"player_id": UUID(int=7100 + actor), "target_player_id": UUID(int=7104)} for actor in attackers]
+    with pytest.raises(ApiError) as error:
+        service.submit_agent_night_actions(USER_ID, GAME_ID, actions, expected_state_version=10, window_id=window["id"], idempotency_key=IDEMPOTENCY_KEY, now=now)
+    assert error.value.code in {"ACTOR_NOT_ALLOWED", "ACTION_ALREADY_SUBMITTED"}
+    service._actions.insert_submission.assert_not_called()
+
+
+def test_b5_fast_forward_persists_selection_without_advancing_phase():
+    """관전 선택은 실제 DB bool만 켜고 생존자·round·window를 바꾸지 않는다."""
+
+    service, game, _, _, _, connection = _b5_action_service(human_alive=False)
+    service.fast_forward(USER_ID, GAME_ID, GameCommandRequest(type="FAST_FORWARD", expected_state_version=10), IDEMPOTENCY_KEY)
+    update = service._games.update_game_state.call_args.kwargs
+    assert update["state"].fast_forward_enabled is True
+    assert update["state"].phase.value == game["phase"] and update["state"].round == game["round"]
+    service._actions.open_window.assert_not_called()
+    service._actions.insert_resolution.assert_not_called()
+    service._players.update_eliminated_players.assert_not_called()
+    assert connection.committed
+
+
+@pytest.mark.parametrize("human_alive,status", [(True, "IN_PROGRESS"), (False, "SAVED"), (False, "COMPLETED")])
+def test_b5_fast_forward_rejects_alive_or_inactive_game(human_alive, status):
+    """생존 상태와 저장·종료 상태는 빠른 진행 선택을 거부한다."""
+
+    service, _, _, _, _, _ = _b5_action_service(human_alive=human_alive, status=status)
+    with pytest.raises(ApiError) as error:
+        service.fast_forward(USER_ID, GAME_ID, GameCommandRequest(type="FAST_FORWARD", expected_state_version=10), IDEMPOTENCY_KEY)
+    assert error.value.code == "ACTION_NOT_ALLOWED"
+    service._games.update_game_state.assert_not_called()
+
+
+def _b5_tied_resolution():
+    """유효한 첫날 투표 동률 원장을 후속 재투표 복원 테스트에 사용한다."""
+
+    service, _, _, window, now, _ = _b5_action_service(phase="DAY_VOTE", roles=["DETECTIVE", "MAFIA", "DOCTOR", "CITIZEN", "CITIZEN", "CITIZEN"])
+    # 0과 1이 세 표씩 받으며 모든 actor가 자기 자신을 피한다.
+    ballots = [_b5_submission(actor, target, "VOTE", "HUMAN" if actor == 0 else "AGENT") for actor, target in enumerate([1, 0, 0, 0, 1, 1])]
+    service._actions.list_window_action_submissions.return_value = ballots[:1]
+    actions = [{"player_id": row["actor_player_id"], "target_player_id": row["target_player_id"]} for row in ballots[1:]]
+    service.submit_agent_votes(USER_ID, GAME_ID, actions, expected_state_version=10, window_id=window["id"], idempotency_key=IDEMPOTENCY_KEY, now=now)
+    payload = service._actions.insert_resolution.call_args.kwargs["payload"]
+    assert payload["needs_revote"] is True
+    assert service._actions.open_window.call_args.args[1].window_kind == "REVOTE"
+    return {"game_id": GAME_ID, "resolution_type": "VOTE", "resolved_state_version": 9, "result_payload": payload}
+
+
+def test_b5_revote_restores_only_tied_candidates_and_excludes_self():
+    """확정 원장 복원 뒤 재투표 snapshot 후보와 엔진 거부 대상이 일치한다."""
+
+    from backend.app.services.game.models import CanonicalGameRecord
+    from backend.app.services.game.game_read_service import build_snapshot
+    from backend.app.services.game.postgres_helpers import restore_locked_game
+
+    resolution = _b5_tied_resolution()
+    service, game, _, window, now, _ = _b5_action_service(phase="REVOTE", roles=["DETECTIVE", "MAFIA", "DOCTOR", "CITIZEN", "CITIZEN", "CITIZEN"], resolutions=[resolution])
+    state, human = restore_locked_game(service, FakeCursor(), game)
+    record = CanonicalGameRecord(state, {}, human, USER_ID, "synthetic", "synthetic", action_window=window)
+    assert build_snapshot(record)["action_window"]["valid_targets"] == [{"player_id": str(UUID(int=7101)), "display_name": "플레이어 2"}]
+    for target in [7100, 7102]:
+        with pytest.raises(ApiError) as error:
+            service.submit(USER_ID, GAME_ID, GameCommandRequest(type="SUBMIT_VOTE", expected_state_version=10, window_id=window["id"], target_player_id=UUID(int=target)), IDEMPOTENCY_KEY, now=now)
+        assert error.value.code == "TARGET_INVALID"
+    service._actions.insert_submission.assert_not_called()
+
+
+def test_b5_revote_expiry_uses_original_candidates_and_preserves_round():
+    """마감된 재투표의 자동 표는 원장 후보에만 투표하고 공개 round는 이전 낮 번호다."""
+
+    resolution = _b5_tied_resolution()
+    service, _, _, _, now, _ = _b5_action_service(phase="REVOTE", roles=["DETECTIVE", "MAFIA", "DOCTOR", "CITIZEN", "CITIZEN", "CITIZEN"], resolutions=[resolution], deadline_offset=0)
+    service.auto_resolve_expired_vote(USER_ID, GAME_ID, now=now)
+    payload = service._actions.insert_resolution.call_args.kwargs["payload"]
+    assert {row["target_player_id"] for row in payload["ballots"]} <= {str(UUID(int=7100)), str(UUID(int=7101))}
+    assert {row["target_player_id"] for row in payload["counts"]} == {str(UUID(int=7100)), str(UUID(int=7101))}
+    assert payload["round"] == 1 and payload["phase"] == "REVOTE" and payload["needs_revote"] is False
+
+
+def test_b5_missing_revote_ledger_fails_closed():
+    """이전 확정 후보가 없으면 생존자 전체를 임의 재투표 후보로 만들지 않는다."""
+
+    service, _, _, window, now, connection = _b5_action_service(phase="REVOTE")
+    with pytest.raises(ApiError) as error:
+        service.submit(USER_ID, GAME_ID, GameCommandRequest(type="SUBMIT_VOTE", expected_state_version=10, window_id=window["id"], target_player_id=UUID(int=7101)), IDEMPOTENCY_KEY, now=now)
+    assert error.value.code == "DEPENDENCY_UNAVAILABLE" and connection.rolled_back
+    service._actions.insert_submission.assert_not_called()
+
+
+def test_b5_resolution_failure_rolls_back_entire_action():
+    """해소 원장 저장이 실패하면 player 상태·새 window·receipt를 확정하지 않는다."""
+
+    service, _, _, _, now, connection = _b5_action_service(deadline_offset=0)
+    service._actions.insert_resolution.side_effect = RuntimeError("synthetic failure")
+    with pytest.raises(ApiError) as error:
+        service.auto_resolve_expired_night(USER_ID, GAME_ID, now=now)
+    assert error.value.code == "DEPENDENCY_UNAVAILABLE" and connection.rolled_back and not connection.committed
+    service._players.update_eliminated_players.assert_not_called()
+    service._games.update_game_state.assert_not_called()
+    service._events.append.assert_not_called()
+    service._receipts.insert.assert_not_called()
+
+
+def test_b5_snapshot_restores_night_submission_and_actual_fast_forward_flag():
+    """제출 복원은 인간 행동 버튼을 비활성화하고 사망만으로 빠른 진행을 켜지 않는다."""
+
+    from backend.app.services.game.models import CanonicalGameRecord
+    from backend.app.services.game.game_read_service import build_snapshot
+    from backend.app.services.game.postgres_helpers import restore_locked_game, restore_action_submissions
+
+    service, game, _, window, _, _ = _b5_action_service()
+    state, human = restore_locked_game(service, FakeCursor(), game)
+    restore_action_submissions(state, [_b5_submission(0, 1, "INVESTIGATE")])
+    record = CanonicalGameRecord(state, {}, human, USER_ID, "synthetic", "synthetic", action_window=window)
+    snapshot = build_snapshot(record)
+    assert snapshot["action_window"]["has_submitted"] is True
+    assert "SUBMIT_NIGHT_ACTION" not in snapshot["legal_actions"]
+    state.player_by_id[human].alive = False
+    assert build_snapshot(record)["game"]["fast_forward_enabled"] is False
+    state.fast_forward_enabled = True
+    assert build_snapshot(record)["game"]["fast_forward_enabled"] is True
+    assert "FAST_FORWARD" not in build_snapshot(record)["legal_actions"]
+
+
+def test_b5_legacy_first_night_restores_as_round_one_and_result_keeps_round():
+    """첫밤 round0/day1만 호환하고 해소·공개 사망 원장은 round1로 남긴다."""
+
+    service, _, _, _, now, _ = _b5_action_service(round_number=0, deadline_offset=0)
+    service.auto_resolve_expired_night(USER_ID, GAME_ID, now=now)
+    assert service._actions.insert_resolution.call_args.kwargs["payload"]["round"] == 1
+    assert service._games.update_game_state.call_args.kwargs["state"].round == 1
+    assert service._players.update_eliminated_players.call_args.kwargs["round"] == 1
+    assert service._players.update_eliminated_players.call_args.kwargs["phase"] == "NIGHT_ACTION"
+
+
+def test_b5_result_reveals_only_committed_ledger_after_completion():
+    """완료 전 원장 선택은 숨기고 완료 뒤 승인 필드만 복기하며 없는 과거는 비워 둔다."""
+
+    from backend.app.models.enums import GameStatus
+    from backend.app.services.game.result_service import build_result
+    from backend.app.services.game.postgres_helpers import restore_locked_game
+
+    service, game, _, _, now, _ = _b5_action_service(deadline_offset=0)
+    service.auto_resolve_expired_night(USER_ID, GAME_ID, now=now)
+    stored = service._actions.insert_resolution.call_args.kwargs
+    row = {"game_id": GAME_ID, "resolved_state_version": 11, "resolution_type": "NIGHT", "result_payload": dict(stored["payload"], raw_model_response="synthetic-private")}
+    state = service._games.update_game_state.call_args.kwargs["state"]
+    assert build_result(state, resolutions=[row]) is None
+    state.status = GameStatus.COMPLETED
+    result = build_result(state, resolutions=[row], public_events=[{"event_id": str(EVENT_ID)}])
+    assert len(result["nights"]) == 1 and result["votes"] == []
+    assert result["nights"][0]["round"] == 1
+    assert "synthetic-private" not in json.dumps(result)
+    assert result["public_event_ids"] == [str(EVENT_ID)]
+    assert build_result(state)["nights"] == []
+    bad = dict(row, game_id=UUID(int=999))
+    with pytest.raises(ValueError):
+        build_result(state, resolutions=[bad])
+
+
+@pytest.mark.parametrize("change", [{"audience_player_id": UUID(int=7101)}, {"game_id": UUID(int=99)}, {"audience": "PUBLIC"}, {"state_version": 11}, {"front_sequence": 6}, {"schema_version": True}, {"payload": {"round": 1, "target_player_id": str(UUID(int=7101)), "is_mafia": "false"}}])
+def test_b5_private_snapshot_rejects_wrong_recipient_and_malformed_rows(change):
+    """수신자·게임·버전·boolean 경계를 벗어난 조사 원문은 인간 snapshot에 나오지 않는다."""
+
+    from backend.app.services.game.models import CanonicalGameRecord
+    from backend.app.services.game.game_read_service import _snapshot_private_events
+    from backend.app.services.game.postgres_helpers import restore_locked_game
+
+    service, game, _, _, now, _ = _b5_action_service()
+    state, human = restore_locked_game(service, FakeCursor(), game)
+    record = CanonicalGameRecord(state, {}, human, USER_ID, "", "", front_sequence=5)
+    row = {"id": EVENT_ID, "game_id": GAME_ID, "sequence": 10, "state_version": 10, "front_sequence": 5,
+           "operation_index": 1, "operation_type": "APPEND_PRIVATE_EVENT", "audience": "PLAYER", "audience_player_id": human,
+           "schema_version": 1, "created_at": now, "event_type": "INVESTIGATION_RESULT",
+           "payload": {"round": 1, "target_player_id": str(UUID(int=7101)), "is_mafia": True}}
+    assert len(_snapshot_private_events(record, [row], through_sequence=10)) == 1
+    assert _snapshot_private_events(record, [dict(row, **change)], through_sequence=10) == []
+
+
+def test_b5_ai_investigation_has_no_front_cursor_or_outbox_entry():
+    """AI 조사 결과는 자기 PLAYER 원장에만 남고 인간 Front batch에는 들어가지 않는다."""
+
+    service, _, _, _, now, _ = _b5_action_service(roles=["CITIZEN", "MAFIA", "DETECTIVE", "DOCTOR", "CITIZEN", "CITIZEN"], deadline_offset=0)
+    service.auto_resolve_expired_night(USER_ID, GAME_ID, now=now)
+    private = [call.kwargs for call in service._events.append.call_args_list if call.kwargs["event_type"] == "INVESTIGATION_RESULT"]
+    assert len(private) == 1 and private[0]["audience_player_id"] == UUID(int=7102)
+    assert "front_sequence" not in private[0] and "operation_index" not in private[0]
+    assert service._events.append.call_count == service._outbox.enqueue.call_count + 1
+
+
+def test_b5_action_queries_include_all_mafia_and_all_vote_expiries():
+    """두 번째 마피아 제외 조건 없이 조회하고 인간 무응답 최종 투표도 마감 대상으로 찾는다."""
+
+    repository = PostgresActionRepository()
+    cursor = FakeCursor()
+    repository.list_ai_night_turns(cursor)
+    sql, _ = cursor.statements[-1]
+    assert "earlier_mafia" not in sql and "deadline_at > CURRENT_TIMESTAMP" in sql
+    repository.list_ai_vote_turns(cursor)
+    sql, _ = cursor.statements[-1]
+    assert "window_kind <> 'FINAL_VOTE'" not in sql
+    repository.list_expired_vote_windows(cursor, now=datetime.now(UTC))
+    sql, _ = cursor.statements[-1]
+    assert "('VOTE', 'REVOTE', 'FINAL_VOTE')" in sql and "human" not in sql
+
+
+@pytest.mark.parametrize("phase", ["NIGHT_ACTION", "DAY_VOTE", "FINAL_ACCUSATION"])
+def test_b5_agent_batch_cannot_submit_after_deadline(phase):
+    """Agent batch도 인간 command와 같은 deadline을 적용해 늦은 응답을 버린다."""
+
+    service, _, _, window, now, _ = _b5_action_service(phase=phase, deadline_offset=0)
+    submit = service.submit_agent_night_actions if phase == "NIGHT_ACTION" else service.submit_agent_votes
+    with pytest.raises(ApiError) as error:
+        submit(USER_ID, GAME_ID, [{"player_id": UUID(int=7101), "target_player_id": UUID(int=7104)}], expected_state_version=10, window_id=window["id"], idempotency_key=IDEMPOTENCY_KEY, now=now)
+    assert error.value.code == "WINDOW_CLOSED"
+    service._actions.insert_submission.assert_not_called()
+
+
+def test_b5_replay_still_checks_owner_and_never_reapplies_action():
+    """기존 receipt를 재사용해도 소유권을 먼저 확인하고 원장을 중복 기록하지 않는다."""
+
+    service, game, _, window, now, _ = _b5_action_service()
+    payload = GameCommandRequest(type="SUBMIT_NIGHT_ACTION", expected_state_version=10, window_id=window["id"], target_player_id=UUID(int=7101))
+    first, _ = service.submit(USER_ID, GAME_ID, payload, IDEMPOTENCY_KEY, now=now)
+    receipt = service._receipts.insert.call_args.kwargs
+    service._receipts.find.return_value = receipt
+    service._actions.insert_submission.reset_mock()
+    second, replayed = service.submit(USER_ID, GAME_ID, payload, IDEMPOTENCY_KEY, now=now + timedelta(seconds=100))
+    assert replayed and first == second
+    service._actions.insert_submission.assert_not_called()
+    with pytest.raises(ApiError) as error:
+        service.submit(UUID(int=99), GAME_ID, payload, IDEMPOTENCY_KEY, now=now)
+    assert error.value.code == "GAME_NOT_FOUND"
+    with pytest.raises(ApiError) as error:
+        service.submit(USER_ID, GAME_ID, payload.model_copy(update={"target_player_id": UUID(int=7102)}), IDEMPOTENCY_KEY, now=now)
+    assert error.value.code == "IDEMPOTENCY_KEY_REUSED"
+
+
+@pytest.mark.parametrize("change,expected", [({"expected_state_version": 9}, "STALE_STATE_VERSION"), ({"target_player_id": UUID(int=7100)}, "TARGET_INVALID")])
+def test_b5_vote_rejects_stale_state_and_self_vote(change, expected):
+    """오래된 버전과 자기 투표는 단일 제출도 같은 안전 경계에서 거부한다."""
+
+    service, _, _, window, now, _ = _b5_action_service(phase="DAY_VOTE")
+    payload = GameCommandRequest(type="SUBMIT_VOTE", expected_state_version=10, window_id=window["id"], target_player_id=UUID(int=7101)).model_copy(update=change)
+    with pytest.raises(ApiError) as error:
+        service.submit(USER_ID, GAME_ID, payload, IDEMPOTENCY_KEY, now=now)
+    assert error.value.code == expected
+    service._actions.insert_submission.assert_not_called()
+
+
+def test_b5_restored_submission_cannot_be_changed():
+    """새 Idempotency-Key를 써도 이미 저장된 인간 밤 선택을 변경할 수 없다."""
+
+    service, _, _, window, now, _ = _b5_action_service(submissions=[_b5_submission(0, 1, "INVESTIGATE")])
+    with pytest.raises(ApiError) as error:
+        service.submit(USER_ID, GAME_ID, GameCommandRequest(type="SUBMIT_NIGHT_ACTION", expected_state_version=10, window_id=window["id"], target_player_id=UUID(int=7102)), IDEMPOTENCY_KEY, now=now)
+    assert error.value.code == "ACTION_ALREADY_SUBMITTED"
+    service._actions.insert_submission.assert_not_called()
+
+
+@pytest.mark.parametrize("change", [{"tied": 1}, {"needs_revote": "false"}, {"tied": False}, {"counts": [{"target_player_id": str(UUID(int=7100)), "vote_count": True}]}, {"counts": [{"target_player_id": str(UUID(int=999)), "vote_count": 6}]}])
+def test_b5_vote_event_rejects_invalid_closed_union(change):
+    """득표수와 동률의 boolean·UUID·정수 계약이 다른 event를 공개하지 않는다."""
+
+    from backend.app.services.game.game_read_service import _public_event_data
+    from backend.app.services.game.models import CanonicalGameRecord
+    from backend.app.services.game.postgres_helpers import restore_locked_game
+
+    resolution = _b5_tied_resolution()
+    service, game, _, _, _, _ = _b5_action_service(phase="DAY_VOTE", roles=["DETECTIVE", "MAFIA", "DOCTOR", "CITIZEN", "CITIZEN", "CITIZEN"])
+    state, human = restore_locked_game(service, FakeCursor(), game)
+    record = CanonicalGameRecord(state, {}, human, USER_ID, "", "")
+    payload = resolution["result_payload"]
+    public = _public_event_data("VOTE_RESOLVED", payload, record)
+    assert set(public) == {"round", "phase", "counts", "tied", "needs_revote"}
+    with pytest.raises((ValueError, KeyError)):
+        _public_event_data("VOTE_RESOLVED", dict(payload, **change), record)
+
+
+@pytest.mark.parametrize("day,stored,expected", [(1, 0, 1), (2, 1, 2), (3, 2, 3), (5, 4, 5), (2, 2, 2), (5, 5, 5), (6, 5, 5)])
+@pytest.mark.parametrize("status", ["IN_PROGRESS", "SAVED"])
+def test_b5_legacy_night_round_normalization_preserves_inputs(day, stored, expected, status):
+    """구형 밤 번호만 읽기·쓰기 복원에서 교정하며 기존 제출과 deadline은 유지한다."""
+
+    from backend.app.services.game.game_read_service import initial_record_from_rows
+    from backend.app.services.game.postgres_helpers import restore_locked_game, restore_action_submissions
+
+    service, game, _, window, _, _ = _b5_action_service(round_number=stored, status=status)
+    game["day_number"] = day
+    deadline = window["deadline_at"]
+    state, human = restore_locked_game(service, FakeCursor(), game)
+    restore_action_submissions(state, [_b5_submission(0, 1, "INVESTIGATE")])
+    assert state.round == expected and state.state_version == 10
+    assert state.night_actions[human].target_id == UUID(int=7101)
+    assert game["round"] == stored and window["round"] == stored and window["deadline_at"] == deadline
+    reader, cursor, _ = _snapshot_reader(game_changes={"phase": "NIGHT_ACTION", "round": stored, "day_number": day, "status": status})
+    record = initial_record_from_rows(keyring=reader._keyring, game=cursor.one_rows[0], player_rows=cursor.all_rows[0])
+    assert record.state.round == expected

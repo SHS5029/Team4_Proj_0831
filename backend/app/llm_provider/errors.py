@@ -41,3 +41,15 @@ class LLMResponseError(LLMProviderError):
     """Provider 응답이 비어 있거나 공통 계약과 맞지 않는 경우다."""
 
     code = "LLM_RESPONSE_ERROR"
+
+
+class LLMIncompleteError(LLMResponseError):
+    """추론·출력 한도 등으로 최종 구조화 응답이 완성되지 않은 경우다."""
+
+    code = "LLM_INCOMPLETE"
+
+
+class LLMModelUnavailableError(LLMProviderError):
+    """설정한 모델이 존재하지 않거나 해당 프로젝트에서 접근할 수 없는 경우다."""
+
+    code = "LLM_MODEL_UNAVAILABLE"

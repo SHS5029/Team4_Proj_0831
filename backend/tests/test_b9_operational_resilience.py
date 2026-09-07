@@ -1,5 +1,7 @@
-"""B9 외부 의존성 장애가 안전한 fallback·재시도로 이어지는지 검증한다."""
+"""B9 규칙 harness와 외부 장애의 fallback·재시도 경계를 검증한다."""
 
+from collections import Counter
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -8,8 +10,107 @@ import pytest
 from backend.app.agent.orchestrator import AgentJobSpec, AgentOrchestrator
 from backend.app.infrastructure.redis.lock import RedisGameLock
 from backend.app.infrastructure.transaction import TransactionManager
+from backend.app.game_engine.engine import GameEngine
+from backend.app.models.enums import GamePhase, GameStatus, PlayerRole
 from backend.app.repositories.agent_repository import AgentReservation, CapabilityGrant
 from backend.app.services.outbox_service import PostgresOutboxPublisher
+from backend.tests.simulations.heuristic_game import (
+    _pass_discussion,
+    _players,
+    _resolve_heuristic_night,
+    _resolve_heuristic_vote,
+    _signature,
+)
+
+
+@pytest.mark.parametrize("player_count", [6, 7, 8, 9])
+def test_b9_night_harness_submits_every_living_role_actor(player_count: int) -> None:
+    """마피아 두 명 구성에서도 모두 첫 제출 기회를 가진 뒤 밤을 해소한다."""
+
+    seed = f"b9-full-night:{player_count}"
+    state = GameEngine.new_game(_players(player_count, seed), seed=seed)
+    engine = GameEngine()
+    engine.begin_game(state)
+    _pass_discussion(engine, state)
+    assert state.phase is GamePhase.NIGHT_ACTION
+    assert state.round == 1
+    expected = {
+        player.player_id for player in state.alive_players
+        if player.role in {PlayerRole.MAFIA, PlayerRole.DETECTIVE, PlayerRole.DOCTOR}
+    }
+
+    _resolve_heuristic_night(engine, state)
+
+    submitted = [op.actor_id for op in state.operations if op.command == "SUBMIT_NIGHT_ACTION"]
+    assert len(submitted) == len(expected)
+    assert set(submitted) == expected
+    assert state.phase is not GamePhase.NIGHT_ACTION
+
+
+@pytest.mark.parametrize("player_count", [6, 8])
+def test_b9_revote_harness_keeps_candidates_and_submitted_vote_on_resume(player_count: int) -> None:
+    """동률 replay와 메모리 저장·재개 뒤에도 후보와 첫 제출이 변하지 않는다.
+
+    이 테스트의 복원은 엔진 상태 복사이며 PostgreSQL snapshot 복구를 대신하지 않는다.
+    """
+
+    seed = f"b9-revote-resume:{player_count}"
+    state = GameEngine.new_game(_players(player_count, seed), seed=seed)
+    state.phase = GamePhase.DAY_VOTE
+    state.round = 1
+    initial = deepcopy(state)
+    engine = GameEngine()
+    candidates = {player.player_id for player in state.players[:2]}
+    for index, actor in enumerate(state.alive_players):
+        engine.submit_vote(state, actor.player_id, state.players[1 - index % 2].player_id)
+    engine.resolve_vote(state)
+    assert state.phase is GamePhase.REVOTE
+    assert state.revote_candidates == candidates
+    replayed = GameEngine.replay(initial, state.operations)
+    assert replayed.revote_candidates == candidates
+    assert replayed.phase is GamePhase.REVOTE
+
+    actor, target = state.players[:2]
+    engine.submit_vote(state, actor.player_id, target.player_id)
+    submitted = dict(state.votes)
+    engine.save(state, remaining_ms=12_000)
+    restored = deepcopy(state)
+    now = datetime(2026, 9, 7, tzinfo=UTC)
+    engine.resume(restored, now=now)
+    assert restored.deadline_at == now + timedelta(seconds=12)
+    assert restored.revote_candidates == candidates
+    assert restored.votes == submitted
+    operation_start = len(restored.operations) - 3
+
+    _resolve_heuristic_vote(engine, restored)
+
+    votes = [op for op in restored.operations[operation_start:] if op.command == "SUBMIT_VOTE"]
+    assert len(votes) == player_count
+    assert len({op.actor_id for op in votes}) == player_count
+    assert all(op.target_id in candidates and op.target_id != op.actor_id for op in votes)
+    assert next(op.target_id for op in votes if op.actor_id == actor.player_id) == target.player_id
+
+
+@pytest.mark.parametrize("player_count", [6, 7, 8, 9])
+def test_b9_final_harness_uses_every_vote_and_replays_result(player_count: int) -> None:
+    """최종 결과는 전원 유효 표의 최다 득표 후보이며 같은 기록을 replay해도 같다."""
+
+    seed = f"b9-final-votes:{player_count}"
+    state = GameEngine.new_game(_players(player_count, seed), seed=seed)
+    state.phase = GamePhase.FINAL_ACCUSATION
+    state.round = 5
+    initial = deepcopy(state)
+
+    _resolve_heuristic_vote(GameEngine(), state)
+
+    assert state.status is GameStatus.COMPLETED
+    assert set(state.votes) == {player.player_id for player in state.alive_players}
+    assert all(vote.actor_id != vote.target_id for vote in state.votes.values())
+    counts = Counter(vote.target_id for vote in state.votes.values())
+    assert counts[state.final_accusation_target] == max(counts.values())
+    target = state.player_by_id[state.final_accusation_target]
+    assert state.winner.value == ("CITIZEN" if target.role is PlayerRole.MAFIA else "MAFIA")
+    assert _signature(GameEngine.replay(initial, state.operations)) == _signature(state)
 
 
 class BrokenRedis:

@@ -29,7 +29,7 @@ class FakeBackend:
         **payload: str | None,
     ) -> dict[str, object]:
         self.calls.append(("tool", str(payload["action"])))
-        return {"status": "accepted", "action": payload["action"]}
+        return {"status": "accepted", "accepted": True, "action": payload["action"]}
 
 
 @pytest.mark.anyio
@@ -44,7 +44,11 @@ async def test_fastmcp_registers_and_delegates_minimal_capabilities() -> None:
 
     assert resources == []
     assert [item.uriTemplate for item in resource_templates] == [
-        "mafia://context/current/{game_id}/{user_id}"
+        "mafia://context/current/{game_id}/{user_id}",
+        "mafia://context/scoped/{game_id}/{user_id}/{player_id}/{scope}",
+    ]
+    assert [item.mimeType for item in resource_templates] == [
+        "application/json", "application/json",
     ]
     assert [item.name for item in tools] == ["submit_action"]
     assert [item.name for item in prompts] == ["agent_instruction"]
@@ -65,11 +69,14 @@ async def test_fastmcp_registers_and_delegates_minimal_capabilities() -> None:
     )
     prompt = await server.get_prompt("agent_instruction", {})
 
+    assert resource[0].mime_type == "application/json"
     assert json.loads(resource[0].content) == {
         "session_id": "fixture-session",
         "phase": "DAY",
     }
-    assert json.loads(tool[0][0].text) == {"status": "accepted", "action": "PASS"}
+    assert json.loads(tool[0][0].text) == {
+        "status": "accepted", "accepted": True, "action": "PASS",
+    }
     assert prompt.messages[0].content.text == "fixture agent instruction"
     assert backend.calls == [
         (
@@ -79,3 +86,21 @@ async def test_fastmcp_registers_and_delegates_minimal_capabilities() -> None:
         ("tool", "PASS"),
         ("prompt", "agent_instruction"),
     ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("scope", ["public", "me", "turn", "persona", "gm-guide"])
+async def test_scoped_resource_preserves_actor_and_scope_for_backend(scope: str) -> None:
+    backend = FakeBackend()
+    server = create_fastmcp_server(backend)
+    uri = (
+        "mafia://context/scoped/00000000-0000-4000-8000-000000000001/"
+        "00000000-0000-4000-8000-000000000002/00000000-0000-4000-8000-000000000003/"
+        f"{scope}"
+    )
+
+    resource = await server.read_resource(uri)
+
+    assert resource[0].mime_type == "application/json"
+    assert json.loads(resource[0].content) == {"session_id": "fixture-session", "phase": "DAY"}
+    assert backend.calls == [("resource", uri)]

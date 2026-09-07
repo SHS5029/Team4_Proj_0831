@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from collections.abc import Mapping
 from typing import Any
 from uuid import UUID
 
 from backend.app.core.errors import ApiError
-from backend.app.models.enums import GamePhase
+from backend.app.models.enums import GamePhase, GameStatus
 from backend.app.models.game_state import GameState
 from backend.app.repositories.action_repository import ActionWindowInsert
 from backend.app.schemas.command_schema import GameCommandRequest
@@ -55,6 +55,8 @@ def validate_action_window(
     state: Any,
     window: Mapping[str, Any] | None,
     payload: GameCommandRequest,
+    *,
+    now: datetime | None = None,
 ) -> None:
     """행동 command가 현재 phase와 열린 window에 맞는지 검증한다.
 
@@ -72,12 +74,32 @@ def validate_action_window(
     if expected_kind is None:
         raise ApiError(status_code=409, code="INVALID_PHASE", message="현재 행동 단계가 아닙니다.")
     if (
-        window is None
+        state.status is not GameStatus.IN_PROGRESS
+        or window is None
         or payload.window_id is None
         or UUID(str(window["id"])) != payload.window_id
         or window["status"] != "OPEN"
         or window["window_kind"] != expected_kind
+        or window["phase"] != state.phase.value
     ):
         raise ApiError(status_code=409, code="WINDOW_CLOSED", message="현재 행동 window가 더 이상 유효하지 않습니다.")
+    deadline = window["deadline_at"]
+    if not isinstance(deadline, datetime) or deadline.utcoffset() is None or deadline <= (now or datetime.now(UTC)):
+        raise ApiError(status_code=409, code="WINDOW_CLOSED", message="행동 제출 시간이 마감되었습니다.")
     if payload.target_player_id is None:
         raise ApiError(status_code=422, code="INVALID_REQUEST", message="대상을 선택해야 합니다.")
+
+
+def is_expired_window(state: GameState, window: Mapping[str, Any] | None, now: datetime) -> bool:
+    """잠금 획득 뒤에도 현재 활성 window가 실제로 마감된 경우만 자동 해소한다."""
+
+    return bool(
+        state.status is GameStatus.IN_PROGRESS
+        and window is not None
+        and window["status"] == "OPEN"
+        and window["phase"] == state.phase.value
+        and window["window_kind"] == {GamePhase.NIGHT_ACTION: "NIGHT", GamePhase.DAY_VOTE: "VOTE", GamePhase.REVOTE: "REVOTE", GamePhase.FINAL_ACCUSATION: "FINAL_VOTE"}.get(state.phase)
+        and isinstance(window["deadline_at"], datetime)
+        and window["deadline_at"].utcoffset() is not None
+        and window["deadline_at"] <= now
+    )

@@ -21,6 +21,33 @@
 
 ## 1. 공통 규칙
 
+### 현재 FastMCP actor projection 보완 (2026-09-07)
+
+최소 연결의 `GET /internal/mcp/context`는 필수 `game_id`, `user_id`와 선택
+`player_id`, `scope`를 받는다. scope 기본값은 `public`이며 허용 값은 8.2절의
+다섯 scope다. 사용자 소유권과 player의 해당 게임 소속·AI 여부를 검증한 뒤
+8.2절 envelope/data를 반환한다. actor 없는 요청은 공개 scope만 허용하며 인간
+snapshot의 `me`를 재사용하지 않는다. 없는 게임·다른 소유자는 404, 잘못된
+actor/scope 조합은 403으로 거부한다. UUID만으로 사용자를 구분하는 사설 MVP
+경계는 유지하며 과거 bootstrap/HMAC 설계를 재도입하지 않는다.
+
+이 내부 adapter는 진행 중 실제 OPEN window가 있을 때만 context를 제공하며
+ROLE_REVEAL·SAVED·COMPLETED 또는 window 없는 상태는 409 ACTION_NOT_ALLOWED로
+거부한다. actor 없는 public은 GM/game_id envelope이고 AI의 gm-guide 요청은
+403이다. actor의 persona/facts 필수 자료가 없으면 403으로 거부하며 다른 사람의
+자료나 임의 window UUID로 보충하지 않는다.
+
+기존 `mafia://context/current/{game_id}/{user_id}`는 공개 조회로 유지하고, AI 호출은
+`mafia://context/scoped/{game_id}/{user_id}/{player_id}/{scope}`를 사용한다. MCP는
+URI를 위 endpoint 인자로 전달하는 얇은 adapter이며 DB 접근·독자 projection을
+만들지 않는다. scope별 `data`는 8.2절을 유일한 정본으로 삼는다. Backend client는
+envelope의 state_version/window_id를 검증하고 각 scope를 따로 조회한다.
+두 Resource의 JSON text content는 `mimeType: application/json`으로 명시한다.
+
+관련 책임은 WU-B7(내부 context endpoint·actor projection), WU-M3(기존 Resource
+등록부·HTTP adapter), WU-B6(Agent client·Provider 입력 연결)로 나눈다. 공개
+`agent_activity`는 AI 판단 입력에 재삽입하지 않는다.
+
 ### 1.1 전송과 형식
 
 - JSON request·response는 UTF-8 `application/json`을 사용한다.
@@ -148,6 +175,12 @@ Backend까지 전달하고, Front에는 proxy origin만 Backend URL로 제공한
 - 다른 AI의 미해소 private submission과 Agent reservation은 Front projection을
   바꾸지 않으므로 공개 `state_version`을 올리지 않는다. phase 해소·공개 event 또는
   인간 본인 private 상태가 바뀔 때 version을 올린다.
+- 진행 중 투표의 내부 AI 제출은 미해소 상태라면 `result_state_version`이 현재
+  version과 같다. 인간의 같은 window 첫 투표만으로 한 버전 증가한 경우에는 해당
+  submission의 `observed_state_version`으로 증명한 AI 판단만 계속 적용할 수 있다.
+  공개 사용자 command에는 이 예외를 적용하지 않는다. 내부 투표 context client는 같은
+  window·phase에서 이 한 버전 차이만 허용하고, 저장 전 원장이 원인을 최종 검증한다.
+  window 변경·저장/재개·deadline 만료 결과는 거부하며 이전 표를 새 투표에 옮기지 않는다.
 
 ## 2. 공통 모델
 
@@ -346,6 +379,48 @@ window 안의 `legal_actions`는 빈 배열이다. Front countdown은 표시용�
   다른 player의 private 정보는 종료 전 받지 않는다.
 - 종료 snapshot의 `result`에는 2.5절의 전체 role·action 공개 기록을 넣는다.
 
+### 2.4.1 AI 처리 상태 표시
+
+일반 snapshot에 선택적 `agent_activity` 배열을 추가한다. 미지원 또는 재시작 직후는
+빈 배열이다. 게임 소유권 확인 뒤 같은 게임의 최근 공개 발언 처리 기록만 최대
+50개를 순서대로 반환한다. 이 정보는 진행 보조 표시이며 command version이나
+SSE cursor를 바꾸지 않는다. `NIGHT_ACTION`과 진행 중 투표의 actor별 기록은 공개
+배열에 넣지 않는다. Front는 해당 phase에서 공통 비공개 처리 안내를 표시한다.
+
+각 item은 다음 field만 갖는다.
+
+| field | 계약 |
+|---|---|
+| `sequence` | 해당 Backend 실행 내 단조 증가 양의 정수 |
+| `run_id` | 서버 실행 UUID; 재시작 시 변경 |
+| `created_at` | UTC RFC 3339 |
+| `player_id` | 같은 게임의 AI player UUID |
+| `phase` | `DAY_DISCUSSION` 또는 `FINAL_DISCUSSION` |
+| `state_version` | 관찰한 상태 버전, 양의 정수 |
+| `stage` | `STARTED`, `CONTEXT_READY`, `DECIDING`, `DECIDED`, `APPLIED`, `FALLBACK`, `FAILED`, `SKIPPED` |
+| `action` | `SPEAK`, `PASS` 또는 `null`; 적용 전 선택과 적용 완료를 stage로 구별 |
+| `summary` | Backend가 enum에서 만드는 고정 한국어 안내, 최대 200자 |
+| `decision_source` | 선택적 `MODEL`, `DUMMY`, `FALLBACK` 또는 `null`; 과거 응답의 필드 생략 허용 |
+| `reason_code` | 선택적 실패 분류 코드 또는 `null`; 아래 allowlist만 허용 |
+| `decision_basis` | 선택적 공개 판단 근거 코드 또는 `null`; 아래 allowlist만 허용 |
+
+`reason_code`는 `PROVIDER_TIMEOUT`, `PROVIDER_AUTHENTICATION`, `PROVIDER_RATE_LIMIT`,
+`PROVIDER_MODEL_UNAVAILABLE`, `PROVIDER_INCOMPLETE`, `PROVIDER_UNAVAILABLE`,
+`PROPOSAL_INVALID`, `MCP_UNAVAILABLE`, `MCP_SUBMISSION_FAILED`,
+`AGENT_DEPENDENCY_ERROR`만 허용한다. `decision_basis`는 `PUBLIC_EVIDENCE`,
+`COMPARE_STATEMENTS`, `ASK_FOR_CLARIFICATION`, `INSUFFICIENT_EVIDENCE`,
+`NO_NEW_INFORMATION`만 허용하며 Backend가 고정 한국어로 설명한다. 이는 모델이
+선택한 공개 근거 유형이며 내부 사고 원문이나 사실의 진위 검증 결과가 아니다.
+SPEAK의 기존 `public_rationale` 문자열 중 위 코드에 정확히 일치하는 값만 표시한다.
+PASS의 `public_rationale`는 null 또는 위 코드만 허용한다. 밤·투표 proposal에는
+기존처럼 rationale를 넣지 않으며 공개 진행 배열에도 기록하지 않는다.
+새 Provider 요청은 현재 job의 행동 enum과 위 근거 코드로 출력 schema를 제한한다.
+
+summary는 모델이 생성한 내부 사고나 원문 rationale가 아니다. 자유 형식 Provider
+문자열·발언 원문·대상·비공개 역할은 이 배열과 운영 로그에 복사하지 않는다.
+`APPLIED`는 mutation이 성공 반환한 뒤에만 기록한다. 취소되거나 오래된 작업은
+성공으로 표시하지 않는다. Front는 field를 검증하고 텍스트를 escape한다.
+
 ### 2.5 종료 결과
 
 `result`는 `status=COMPLETED`에서만 object이며 그 전에는 `null`이다.
@@ -399,6 +474,12 @@ FINAL_NON_MAFIA_SELECTED
 
 `attack_choices`, `investigations`와 `ballots`는 종료 뒤 공개되는 actor·target·자동 선택
 여부의 구조화 배열이다. 내부 추론, prompt와 raw model response는 포함하지 않는다.
+
+배열 item은 `actor_player_id`, `target_player_id`(같은 게임 UUID), `is_auto`(boolean)를
+갖고 investigations에는 `is_mafia` boolean을 추가한다. nights의 보호 대상은 UUID
+또는 null이며 counts는 5.1절의 후보별 집계다. 마피아 전원 미응답의 진영 자동 선택은
+개별 attack_choices를 창작하지 않고 확정 공격 대상에만 반영한다. 오래된 게임에
+확정 해소 원장이 없으면 누락된 선택을 추정하지 않고 해당 기록을 빈 배열로 반환한다.
 
 ## 3. 상태 확인
 
@@ -670,6 +751,12 @@ scenario는 저장 당시 값을 복원한다.
 
 polling과 SSE는 같은 operation 모델을 사용한다.
 
+현재 Backend의 nested 전송 형식도 허용한다. 바깥 batch는 `front_sequence`,
+`state_version`, `operations`를 가지며, 안쪽 각 operation은 `schema_version: 1`,
+`operation_index`, `type`, `payload`를 가진다. 바깥 sequence/version을 상속할 뿐
+원장의 index나 schema를 새로 추정하지 않는다. flat 형식에는 위 공통 필드를 모두
+포함한다. 명시된 schema가 없거나 서로 충돌하면 전체 batch를 거부한다.
+
 ```json
 {
   "schema_version": 1,
@@ -741,11 +828,15 @@ operation payload 계약:
 `PublicEvent`와 각 `data` object는 표에 적힌 field만 갖는 폐쇄형 union이다.
 `GAME_BEGAN.message`는 마스터플랜 3.4절의 고정 시작 문구다. player 관련 ID는 같은
 game의 공개 player UUID다. `PLAYER_SPOKE.message`는 공백 정규화 뒤 1~200자,
-`TURN_OPENED.cycle`은 현재 MVP에서 1이며 nullable `prompt`는 사용하지 않는다.
+`TURN_OPENED.cycle`은 1 또는 2다. 첫날은 항상 1이며 둘째 날부터 첫 순환이 전원
+PASS일 때만 한 번 더 순환한다. 추가 순환의 `prompt`는 마스터플랜의 고정 질문이며
+그 밖에는 `null`이다.
 `NIGHT_RESOLVED`와 `VOTE_RESOLVED.round`는 1~5,
 저장·재개 event의 `round`는 0~5다. `NIGHT_RESOLVED.killed_player_id`는 UUID 또는
 `null`, `PLAYER_EXECUTED.revealed_role`은 2.1절 `Role`이다.
 `VOTE_RESOLVED.phase`는 `DAY_VOTE`, `REVOTE`, `FINAL_ACCUSATION` 중 하나다.
+`VOTE_RESOLVED.tied`는 최다 득표 동률 여부의 boolean이고 `needs_revote`는
+첫 낮 투표 동률로 재투표를 여는 경우만 true다.
 `VOTE_RESOLVED.counts`는 `target_player_id` UUID와 `vote_count` 0 이상 정수만 가진
 폐쇄형 item 배열이다. 해소 당시 유효 후보를 좌석 오름차순으로 한 번씩 포함하고 각
 count는 생존 투표자 수 이하이며 합계는 확정된 유효 표 수와 같다. actor, 자동 선택
@@ -1140,7 +1231,7 @@ Resource에 넣지 않는다.
 |---|---|
 | `window_id` | UUID, envelope의 `window_id`와 같음 |
 | `window_kind` | `SPEECH`, `NIGHT`, `VOTE`, `REVOTE`, `FINAL_VOTE` |
-| `cycle` | 정수 1; 현재 MVP의 `SPEECH` 추가 순환은 사용하지 않음 |
+| `cycle` | 정수 1 또는 2; 첫날은 1, 둘째 날부터 전원 PASS일 때만 추가 순환 2 |
 | `opened_state_version` | 1 이상의 정수 |
 | `server_time` | 응답 생성 시각 |
 | `deadline_at` | `SPEECH`이면 `null`, 나머지는 UTC RFC 3339 시각 |
@@ -1205,7 +1296,7 @@ persona는 말투와 표현 성향만 바꾸며 규칙·정보 권한·추론 �
 | `fixed_message_key` | 제품 문구 정본 |
 |---|---|
 | `GAME_INTRO` | 마스터플랜 3.4절 게임 시작 안내 |
-| `ALL_PASS_FOLLOW_UP` | 마스터플랜 3.4절 전원 `PASS` 후 고정 질문 |
+| `ALL_PASS_FOLLOW_UP` | 마스터플랜 3.6절 둘째 날 이후 전원 `PASS` 후 고정 질문 |
 | `FINAL_ACCUSATION_NOTICE` | 마스터플랜 3.8절 최종 지목 안내 |
 
 `source_public_event`는 현재 GM job을 연 원인 event와 일치하고 같은
