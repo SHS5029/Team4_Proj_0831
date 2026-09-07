@@ -244,11 +244,18 @@ agent 한 세션을 마스터플랜의 WU 한 개 이하로 제한합니다.
 | [AI_MAFIA_INDEPENDENT_CONTRACT.md](docs/개발상세플랜/AI_MAFIA_INDEPENDENT_CONTRACT.md)             | 세 섹터가 독립 구현할 때 공통으로 고정할 최소 연결 형식과 경계                          |
 | [AI_MAFIA_GAME_ENGINE_STRATEGY_DRAFT.md](docs/개발상세플랜/AI_MAFIA_GAME_ENGINE_STRATEGY_DRAFT.md) | 게임 엔진·Agent Manager 모듈화 전략 임시 초안                              |
 | [AI_MAFIA_CURRENT_CODE_STATUS.md](docs/AI_MAFIA_CURRENT_CODE_STATUS.md)                      | 현재 실제 코드 구조, 게임 흐름, 공개 API, 설정, 검증 결과와 제약                     |
+| [AI_MAFIA_AGENT_ARCHITECTURE_DESIGN.md](docs/AI_MAFIA_AGENT_ARCHITECTURE_DESIGN.md) | 현재 실행 구조 기반 StateGraph 도입안: 분기·기억·도구·공유 상태·중복 제거·종료 조건, Mermaid 흐름도와 시퀀스 |
 
 
 다섯 MCP Resource의 상세 `data` schema는 API 명세 8.2절과 그 절이 명시적으로
 참조하는 API 공통 모델만 정본이며 MCP 서버 설계서에는 URI·Engine scope 매핑과
 비규범 예시만 둡니다.
+
+에이전트 아키텍처 문서는 현재 직접 orchestration과 StateGraph·요약 메모리 도입안을 구분합니다.
+[인터랙티브 StateGraph HTML](docs/AI_MAFIA_AGENT_STATEGRAPH.html)은 브라우저에서 바로 열 수 있으며
+테마 전환·확대·검색을 지원합니다. [Archify workflow 사양](docs/AI_MAFIA_AGENT_STATEGRAPH.workflow.json),
+[9/9 showcase 검증 기록](docs/AI_MAFIA_AGENT_STATEGRAPH.validation.json),
+[산출물 SHA-256 기록](docs/AI_MAFIA_AGENT_STATEGRAPH.delivery.json)을 함께 제공합니다.
 
 문서 통합은 구현 완료 범위를 바꾸지 않습니다. 계약 변경은 영향받는 정본을 먼저
 갱신하고 세 섹터가 합의한 뒤 구현합니다.
