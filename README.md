@@ -12,8 +12,14 @@
 
 현재 저장소는 로그인 없이 브라우저가 생성·보관한 UUID `user_id`와
 `X-User-Id`로 사용자를 구분합니다. UUID는 인증 수단이 아니므로 신뢰된 로컬·사설망
-환경을 전제로 합니다. 실제 `mystery-v1` 게임 엔진과 AI 플레이어 기능은 후속 WU
-범위이며 계획 문서만으로 구현 완료로 간주하지 않습니다.
+환경을 전제로 합니다. `mystery-v1` 규칙 엔진, PostgreSQL runtime과 AI 진행 worker는
+연결되어 있지만 역할별 정보 격리·일부 규칙·화면 재개 흐름에는 보완이 남아 있습니다.
+merge `3157f17` 이후 재점검과 로컬 테스트 준비 결과는
+[게임 테스트 점검표](docs/AI_MAFIA_GAME_TEST_GAP_REPORT.md)를 참고하세요.
+사용자 제보로 확인된 검은 버튼·텍스트 영역의 글자 가독성 문제는
+[Frontend 수정 요청 N14](docs/AI_MAFIA_GAME_TEST_GAP_REPORT.md#frontend-text-contrast)에
+재현 위치와 완료 기준을 기록했습니다. 현재 미수정 상태입니다.
++ 게임이 두 번째 세션부터 시작이 안됨
 
 개발하거나 기여하기 전에 반드시 [AGENTS.MD](AGENTS.MD)의 브랜치, 커밋,
 파일·디렉터리 구조, 테스트, 주석 및 문서화 규칙을 확인하세요.
@@ -28,7 +34,7 @@
 - Backend 소유 PostgreSQL migration 실행 코드(MCP 섹터가 실제 실행)
 - 독립 관리자 Streamlit 앱과 후속 MCP 서버 예약 구조(`mcp_server/mcp_2`)
 - FastMCP 기반 `/mcp`와 최소 Resource·Prompt·Tool 등록부
-- FastMCP 등록부에서 Backend synthetic context·prompt·action endpoint로 전달하는 HTTP adapter
+- FastMCP 등록부에서 Backend 게임 context·prompt·action endpoint로 전달하는 HTTP adapter
 
 개발 섹터 역할은 코드 소유권과 실행 환경 책임을 분리합니다. Backend 섹터는
 DB schema·migration SQL·repository와 Redis client·lock 코드를 작성하고, MCP
@@ -40,11 +46,11 @@ migration 실행과 health 확인을 담당합니다. 실제 Backend 프로세�
 보존합니다. 신규 MVP 실행 경로의 게임 추적은 `game_events`와 `receipts`를
 사용하고, MCP는 FastMCP 표준 protocol session만 사용합니다.
 
-LLM Agent loop, 관리자 업무 기능과 canonical game의 Redis 연결은 아직 구현하지
-않았습니다. FastMCP는 실제 Backend 게임 snapshot과 command를 호출하는 최소
-Resource·Prompt·Tool 등록부를 제공합니다. 실제 Agent turn orchestration은 후속 정의합니다. 기존 LLM Provider adapter는 연결돼
-있지만 앱 수준의 LLM timeout 설정, token 상한·사용량, 비용·예산과 관련 KPI는 새 MVP
-범위에서 제외합니다.
+AI 진행 worker의 Resource·Provider 호출과 read-only 관리자 API는 연결되어 있습니다.
+GM 진행, actor별 비공개 context 분리와 Agent의 Prompt·Tool 운영 경로는 완료되지
+않았습니다. FastMCP에는 Resource·Prompt·Tool과 Backend HTTP adapter가 등록되어
+있습니다. canonical game의 Redis publisher 자동 기동은 연결하지 않았으며,
+앱 수준의 LLM timeout 설정·token·비용 운영 기능은 새 MVP 범위에서 제외합니다.
 
 게임 흐름용 `DeterministicGameAgent`는 DB reservation이나 lease 없이 Backend가
 제공한 context를 deterministic Fake Provider에 전달하고, 검증된 action만 Backend
@@ -272,11 +278,46 @@ Front·MCP 연결까지 완료됐다는 뜻은 아닙니다. 규칙 수준의 �
 │       ├── AI_MAFIA_FRONTEND_TECHNICAL_DESIGN.md # Front WU-F1~F8 파생 기술 설계안
 │       ├── AI_MAFIA_FRONTEND_BACKEND_HANDOFF.md # Frontend–Backend 연동 인계 요약
 │       └── AI_MAFIA_INDEPENDENT_CONTRACT.md # 섹터 간 최소 연결 형식·독립 개발 규칙
-├── tests/{integration,e2e}/          # 서버 간·브라우저 검증 확장 위치
 └── scripts/                          # 운영·개발 보조 스크립트
 ```
 
-### Frontend 컴포넌트별 가상환경
+### 로컬 가상환경과 의존성 준비
+
+2026-09-07 macOS에서 Python 3.12.11로 다음 환경을 준비했습니다. 기존 루트·MCP
+환경은 재사용하고 나머지 환경은 컴포넌트의 의존성 파일에 맞춰 생성했습니다.
+
+| 위치 | 용도·설치 기준 |
+|---|---|
+| `.venv` | 기존 통합 환경, 루트 `pyproject.toml`·`uv.lock`의 dev 포함 |
+| `backend/.venv` | `backend/requirements.txt`, pytest·pytest-asyncio·httpx2 포함 |
+| `frontend_user/.venv` | `frontend_user/requirements-dev.txt` |
+| `frontend_admin/.venv` | `frontend_admin/requirements.txt`와 테스트용 `pytest>=8,<9` |
+| `mcp_server/.venv` | 독립 `pyproject.toml`·`uv.lock`의 dev 포함, MCP SDK 1.29.1 |
+
+기존 환경을 삭제하거나 덮어쓰지 않고, 없는 컴포넌트 환경만 `uv venv --python 3.12
+<컴포넌트>/.venv`로 만듭니다. 설치·갱신은 저장소 루트에서 다음과 같이 수행합니다.
+
+```bash
+uv sync --locked --dev
+uv pip install --python backend/.venv/bin/python -r backend/requirements.txt
+uv pip install --python frontend_user/.venv/bin/python -r frontend_user/requirements-dev.txt
+uv pip install --python frontend_admin/.venv/bin/python -r frontend_admin/requirements.txt 'pytest>=8,<9'
+uv sync --project mcp_server --locked --dev
+```
+
+루트 dev에 `httpx2`를 추가하고 merge 이후 불일치하던 lock을 갱신했습니다.
+컴포넌트 requirements는 범위 설치이므로 루트 lock 환경과 패치 버전이 다를 수 있습니다.
+각 환경의 `uv pip check --python <환경>/bin/python`은 모두 통과했습니다.
+
+로컬 `.vscode/settings.json`, `.zshenv`, `.zshrc`, `project-venv.zsh`는 macOS의 새
+VS Code 터미널에서 사용자 shell 초기화 뒤 가장 가까운 `.venv`를 선택합니다.
+루트는 통합 환경, `cd backend`·`frontend_user`·`frontend_admin`·`mcp_server`는 각
+환경으로 전환하고 저장소 밖에서는 관리하던 환경을 해제합니다. 새 터미널과 폴더
+이동으로 `VIRTUAL_ENV`·`sys.executable`을 확인했습니다. `.vscode/`와 가상환경은
+Git 제외 대상인 로컬 설정입니다. 기존 터미널은 새로 열어야 하며 외부 터미널에서는
+`source backend/.venv/bin/activate`처럼 직접 활성화합니다.
+
+### Windows 컴포넌트별 설치
 
 Windows에서는 컴포넌트별 환경을 분리합니다. 기존 `.venv`가 있으면 삭제하지
 않고 재사용하며, 반드시 환경 내부 Python으로 설치합니다.
@@ -287,11 +328,8 @@ Windows에서는 컴포넌트별 환경을 분리합니다. 기존 `.venv`가 �
 & ".\frontend_admin\.venv\Scripts\python.exe" -m pip install -r ".\frontend_admin\requirements.txt"
 ```
 
-`.vscode\settings.json`과 `.vscode\project-venv.ps1`은 현재 폴더에 맞는
-PowerShell 가상환경 자동 전환을 제공합니다. PowerShell 7에서 발생할 수 있는
-`Split-Path -LiteralPath ... -Parent` 매개변수 집합 오류를 피하기 위해 스크립트는
-상위 폴더를 .NET API로 계산합니다. 원본 Python 설치가 바뀐 경우에는
-각 컴포넌트의 `.venv`를 재생성하기 전에 먼저 Python 3.12 설치 경로를 확인합니다.
+이번 환경 준비는 macOS에서 수행했습니다. Windows 환경 및 PowerShell 자동
+전환 스크립트는 이번에 준비·검증하지 않았습니다.
 
 현재 일반 사용자 Frontend는 WU-F1 UUID-only bootstrap과 공통 화면 테마를 사용합니다. 브라우저
 저장 key는 `ai_mafia_user_id_v1`이며, Backend에는 UUID를 `X-User-Id` header로만
@@ -323,45 +361,12 @@ MCP 구현부터 `mcp_server/`를 독립 프로젝트 루트, `mafia_game`을 �
 package로 사용합니다. composition root는 `mafia_game/main.py`, module 진입점은
 `mafia_game/__main__.py`, package test 위치는 `mcp_server/tests/`로 고정했습니다.
 독립 `pyproject.toml`과 `uv.lock`은 Python 3.12와 MCP SDK 1.29.1을 정확히 고정합니다.
-stateful MCP session은 initialize 전에 canonical 세션 개설 토큰을 검증하고 Backend
-Engine consume이 성공한 뒤에만 활성화되며, 명시적 DELETE와 30초 idle에 메모리를
-멱등 폐기합니다. 세션 개설 토큰 만료가 idle보다 이르면 만료 시각을 우선하며 consume
-결과가 비확정이면 신규 HTTP code 없이 `403 BOOTSTRAP_DENIED`로 fail-closed합니다.
-각 headerless initialize는 fresh low-level `Server`와 그 child application 전용 stateful
-`StreamableHTTPSessionManager`를 하나씩 만듭니다. top-level lifecycle pool은 SDK 공개
-constructor·`run()`·`handle_request()`만 사용하며 manager마다 `run()` context를 정확히
-한 번 소유합니다. SDK 자체 idle reaper는 공개 설정 `None`으로 비활성화하고,
-registry/middleware reaper만 30초 idle 종료를 소유합니다. terminal 승자는 route를 먼저
-분리하고 공개 DELETE를 최대 한 번 시도한 뒤 성공·오류·취소 모두에서 해당 manager
-`run()`을 끝내므로 SDK transport·owner tombstone도 함께 폐기합니다. 테스트용
-`application.state.session_manager`는 이제 단일 SDK manager가 아니라 이 pool이며,
-민감 ID 없이 candidate·active·running count와 run-exit count만 관측합니다. initialize
-응답은 route와 registry를 모두 준비하고 commit 소유권을 얻은 뒤 외부 start/body를
-송신하므로 그 사이 DELETE·reaper가 manager를 먼저 닫지 못합니다.
-fresh credential 조정은 `WU-M7` 범위입니다. 초기 요청의 capability header는 정확히
-한 번만 허용하고 후속 요청은 동일 bearer로만 session owner를 증명합니다. consume은
-`status`, `allowed_resource_scopes`, `phase`, `state_version`, `window_id` 정확한 다섯
-field를 요구하고 bootstrap claim은 기존 field 그대로 유지합니다. Resource list는
-binding만 사용해 Engine을 호출하지 않으며, 허용 read는 `GET
-/internal/v1/agent-context?scope=...`를 한 번 호출하고 응답을 캐시하지 않습니다.
-Resource read의 Engine 호출은 서로 병렬로 진행할 수 있습니다. session gate 안에서는
-검증된 성공 응답의 commit 소유권 또는 route·registry terminal 소유권만 짧게 확정하고
-실제 ASGI 송신과 SDK DELETE·manager stop은 gate와 registry lock 밖에서 수행합니다.
-terminal 전이가 먼저 소유권을 얻으면 이미 버퍼된 성공 context를 보내지 않고, 성공
-commit이 먼저면 gate 밖 body 송신이 끝났다는 event 뒤에 terminal cleanup이 진행됩니다.
-reaper는 session별 teardown을 독립 dispatch하므로 A 종료가 지연돼도 같은 sweep의 B와
-이후 만료 C의 route 제거·teardown 시작을 막지 않습니다. registry cleanup의 실제
-승자만 SDK transport를 한 번 닫으며 동시 DELETE 패자는 `404 SESSION_NOT_FOUND`로
-끝납니다.
-session ID 재사용 회귀는 A 요청 scope의 expected owner·binding과 같은 ID의 B registry
-binding을 애플리케이션 경계에서 직접 구성해, SDK 내부 생성 구현을 monkeypatch하지 않고
-A가 B capability로 Engine GET을 호출하지 않는지와 고정 내부 오류 redaction을 검증합니다.
-후속 요청에서 raw URI·validation 같은 고정 오류 응답의 송신이 실패해도 기대 binding을
-gate-aware하게 한 번 닫고 원래 transport 예외를 전파합니다. 과도하게 깊거나 5,000자리
-정수를 포함한 client·Engine JSON과 비표준 `NaN`·`Infinity`·`-Infinity`는 decoder
-예외나 비유한 값으로 통과하지 않고 각각 고정 `-32602`, `-32004`로 정규화됩니다. 오류
-원문과 `data`는 노출하지 않으며 이 입력·Engine validation 오류 자체만으로 정상
-session을 닫지는 않습니다.
+현재 runtime은 FastMCP 표준 session을 사용하며 별도 bootstrap·HMAC·capability
+registry를 구현하지 않습니다. Resource template은
+`mafia://context/current/{game_id}/{user_id}`, Prompt는 `agent_instruction`, Tool은
+`submit_action`입니다. 기존 custom session 프로파일은 후속 별도 범위이며 이번
+테스트 준비의 요구사항에서 제외합니다. actor별 context와 실제 Tool 호출 정합성에
+남은 공백은 [게임 테스트 점검표](docs/AI_MAFIA_GAME_TEST_GAP_REPORT.md)에 기록했습니다.
 
 ## 사전 준비
 
@@ -483,11 +488,12 @@ Backend가 작성·소유하는 `backend/migrations/`의 SQL을 MCP 담당자가
 실행합니다. 아래 명령은 Backend 실행기를 사용하지만 실행 책임은 MCP 섹터에
 있습니다.
 
-현재 runner는 `DATABASE_MIGRATION_URL`을 직접 읽지 않고 `DATABASE_URL`을 읽습니다.
-`WU-B2` 전까지 MCP 담당자는 격리된 migration 프로세스에 DDL DSN을 일시적으로
-`DATABASE_URL` 이름으로만 주입해 아래 명령을 실행하고, 평소 Backend runtime의
-`DATABASE_URL`이나 공용 `.env`에 DDL 권한을 부여하지 않습니다. 실제 DSN을 shell
-history나 완료 로그에 쓰지 않습니다.
+현재 runner는 `DATABASE_MIGRATION_URL`을 직접 읽지 않고 공통 설정의 effective
+DSN을 사용합니다. `TEAM_DATABASE_URL`이 우선하므로 migration 프로세스에서 이를
+명시적으로 빈 값으로 덮거나 정확한 전용 대상으로 지정해야 합니다. 단순 unset은
+루트 `.env`에서 다시 로드될 수 있습니다. 격리된 migration 프로세스에만 DDL DSN을
+주입하고, 평소 Backend runtime이나 공용 `.env`에 DDL 권한을 부여하지 않습니다.
+실제 DSN을 shell history나 완료 로그에 쓰지 않습니다.
 
 ```bash
 uv run python -m backend.app.infrastructure.migrations
@@ -521,12 +527,32 @@ chmod 600 frontend_user/.streamlit/secrets.toml
 
 ## 실행
 
-MCP 담당자가 PostgreSQL을 먼저 기동하고 연결·migration 상태를 확인한 뒤
-Backend를 실행합니다. 게임용 Redis가 구현된 이후에는 Redis health도 먼저
-확인합니다.
+### 로컬 기동 확인 (2026-09-07)
+
+서버 기동 요청에 따라 기존 DB·Redis 설정을 유지하고 아래 네 프로세스를
+`127.0.0.1`에 실행했습니다. Backend는 프로세스 환경만 `LLM_PROVIDER=dummy`,
+`MCP_SERVER_URL=http://127.0.0.1:8100`으로 지정했으며 실제 `.env`는 수정하지 않았습니다.
+Backend client가 `/mcp`를 붙이므로 이 설정에는 경로를 포함하지 않습니다.
+
+| 서비스 | 주소 | 기동 검증 |
+|---|---|---|
+| 사용자 Front | <http://127.0.0.1:8501> | `/_stcore/health` HTTP 200 |
+| 관리자 Front | <http://127.0.0.1:8502> | `/_stcore/health` HTTP 200 |
+| Backend | <http://127.0.0.1:8000/docs> | `/health`·`/ready` HTTP 200, PostgreSQL·Redis 정상 |
+| MCP | <http://127.0.0.1:8100/mcp> | SDK initialize·Resource template·Prompt·Tool 목록 조회 성공 |
+
+각 컴포넌트 가상환경으로 백그라운드 실행했습니다. 이 결과는 프로세스·연결 기동
+확인이며 실제 게임 생성·완주나 유료 Provider 검증은 아닙니다. 관리자 화면의
+접근 권한은 기존 `ADMIN_USER_IDS` 설정을 따릅니다.
+
+### 직접 실행
+
+MCP 담당자가 전용 테스트 PostgreSQL·Redis의 대상과 migration·seed 상태를 확인한
+뒤 Backend를 실행합니다. Backend worker는 DB에 열린 AI 차례를 처리하므로 공유
+게임 데이터와 분리된 환경을 사용합니다. 첫 게임 검증은 dummy Provider로 진행합니다.
 
 ```bash
-uv run uvicorn backend.app.main:app --reload --port 8000
+LLM_PROVIDER=dummy .venv/bin/python -m uvicorn backend.app.main:app --reload --port 8000
 ```
 
 `http://127.0.0.1:8000/health`의 정상 응답은 `{"status":"ok"}`입니다.
@@ -536,7 +562,7 @@ Mafia Game MCP는 Backend를 먼저 실행한 뒤 최소 FastMCP process로 실�
 
 ```bash
 uv sync --project mcp_server --locked --dev
-uv run --project mcp_server --directory mcp_server --locked python -m mafia_game.main
+(cd mcp_server && .venv/bin/python -m mafia_game)
 ```
 
 기본 endpoint는 `http://127.0.0.1:8100/mcp`입니다. `/health`나 다른 공개 endpoint는
@@ -560,14 +586,11 @@ Windows에서 `uv`를 사용하지 않는 경우 프로젝트 가상환경의 Py
 브라우저에서 [http://localhost:8501](http://localhost:8501)을 엽니다. Backend
 설정이 없거나 연결되지 않으면 고정된 연결 오류 안내를 표시합니다.
 
-최소 MCP 왕복 검증은 Backend와 FastMCP를 각각 subprocess로 실행해 수행합니다.
+`test_process_backend_roundtrip.py`는 Backend·FastMCP subprocess와 실제 DB를 사용하는
+통합 테스트입니다. 독립 MCP 가상환경에는 Backend 의존성이 없으므로 아래 테스트
+절의 실행 조건을 먼저 확인하세요.
 
-```powershell
-$env:PYTHONPATH = "mcp_server"
-uv run --project mcp_server --locked pytest -q mcp_server/tests/test_process_backend_roundtrip.py
-```
-
-관리자 앱은 업무 기능 없이 독립 실행 경계만 확인할 수 있습니다.
+관리자 앱은 read-only 통계·게임 목록·상세 화면을 제공합니다.
 
 ```bash
 uv run streamlit run frontend_admin/app.py --server.port 8502
@@ -578,65 +601,82 @@ uv run streamlit run frontend_admin/app.py --server.port 8502
 
 ## 테스트와 정적 검사
 
-변경 동작별 focused test 예시는 다음과 같습니다.
+DB·Redis·유료 Provider 없이 실행할 범위는 다음과 같습니다. 실제 DB 테스트 세
+파일은 자동 skip되지 않으므로 아래 제외 목록과 MCP 파일 목록을 유지합니다.
 
 ```bash
-uv run pytest backend/tests/test_identity_api.py
-uv run pytest backend/tests/test_users_repository.py
-uv run pytest frontend_user/tests
-cd mcp_server
-uv run --locked pytest tests
-uv run --locked ruff check mafia_game tests
-uv lock --check
+TEAM_DATABASE_URL='postgresql://test:synthetic@127.0.0.1:1/mafia_tests' \
+DATABASE_URL='postgresql://test:synthetic@127.0.0.1:1/mafia_tests' \
+GAME_STATE_KEYRING_FILE='' GAME_STATE_ACTIVE_KEY_ID='' \
+LLM_PROVIDER=dummy OPENAI_API_KEY='' GEMINI_API_KEY='' \
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 backend/.venv/bin/python -m pytest \
+  -p pytest_asyncio.plugin -p anyio.pytest_plugin backend/tests \
+  --ignore=backend/tests/test_b5_game_api.py \
+  --ignore=backend/tests/test_postgres_game_flow.py -q
+
+BACKEND_API_URL=http://127.0.0.1:8000 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+  frontend_user/.venv/bin/python -m pytest -c pyproject.toml frontend_user/tests -q
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 frontend_admin/.venv/bin/python -m pytest \
+  -c pyproject.toml frontend_admin/tests -q
+
+(cd mcp_server && PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest \
+  -p pytest_asyncio.plugin -p anyio.pytest_plugin \
+  tests/test_backend_context_client.py tests/test_fastmcp_composition.py \
+  tests/test_fastmcp_registration.py tests/test_fastmcp_roundtrip.py -q)
 ```
 
-사용자 게임 목록은 API 명세서의 `status`, opaque `cursor`, `limit(1~100)` query를
-지원하며, 역할 공개 화면은 명세서의 `BEGIN_GAME` command를 성공한 뒤 진행 화면으로
-이동합니다. 관리자 게임 목록도 `status`, `phase`, `cursor`, `limit(1~100)` query
-계약을 사용합니다.
+2026-09-07 실행 결과는 **Backend 128, 사용자 Front 34, 관리자 Front 3, MCP 6개로
+총 171 passed**입니다. async plugin이 설치되어 과거 문서의 plugin 미설치 상태는
+해소됐습니다. 이 결과는 실제 게임 전체 E2E 성공을 뜻하지 않습니다.
 
-완료 전 전체 회귀·컴파일·lint는 다음 명령으로 확인합니다.
+다음 세 파일은 **실제 DB 쓰기·삭제가 있는 통합 테스트**이며 이번에는 실행하지
+않았습니다. 특히 MCP subprocess는 Backend worker를 켜고 기존 환경을 상속합니다.
+실행 전에 전용 테스트 DB·seed·keyring·Redis 대상과 `LLM_PROVIDER=dummy`를 확인해야
+합니다. `TEAM_DATABASE_URL`이 `DATABASE_URL`보다 우선하므로 로컬 DSN만 바꾸어서는
+테스트가 격리되지 않습니다.
+
+- `backend/tests/test_b5_game_api.py`
+- `backend/tests/test_postgres_game_flow.py`
+- `mcp_server/tests/test_process_backend_roundtrip.py`
+
+실제 통합 환경을 준비한 뒤에는 Backend 의존성도 설치된 루트 환경에서 다음처럼
+MCP package 경로를 명시합니다. 통합 테스트는 Tool 오류도 허용하는 단언이 있어
+통과하더라도 전체 AI 행동 승인 증거로 삼지 않습니다.
 
 ```bash
-uv run pytest
-uv run python -m compileall -q backend frontend_user frontend_admin mcp_server
-uv run ruff check .
+PYTHONPATH=.:mcp_server LLM_PROVIDER=dummy .venv/bin/python -m pytest \
+  backend/tests/test_b5_game_api.py backend/tests/test_postgres_game_flow.py \
+  mcp_server/tests/test_process_backend_roundtrip.py -q
 ```
 
-자동 테스트는 synthetic identity, 가짜 DB 연결, mock HTTP transport를 사용해 운영 DB와
-유료 API를 호출하지 않습니다. 실제 PostgreSQL
-마이그레이션은 자격 증명과 로컬 인프라가 필요하므로 MCP 담당자가 실행 환경을
-준비·검증하고 Backend 담당자와 결과를 공동 판정합니다.
+이번에는 가상환경·의존성 준비와 merge 재점검만 수행했으므로 전체 lint, 실제 DB
+통합 테스트, 브라우저 게임·유료 Provider 호출은 생략했습니다. 기존 `.env`·실제
+secrets와 게임 코드는 변경하지 않았습니다.
 
 ## 보안 원칙과 알려진 제약
 
 - `.env`, 실제 `secrets.toml`, token과 모든 실제 자격증명을 커밋하지 않습니다.
 - 목표 공개 API의 `X-User-Id`는 인증이 아니라 UUID scope 선택값입니다. UUID를 아는
   사용자의 가장을 막지 못하므로 MVP는 개인 개발 환경 또는 사설망으로 제한합니다.
-- 내부 Engine HMAC과 MCP 세션 개설 토큰 서명 secret은 Front에 전달하지 않고 서로
-  다른 값으로
-  유지합니다. 서명을 통과한 payload도 schema와 도메인 규칙으로 다시 검증합니다.
-- Backend만 전체 역할·야간 행동·seed를 보유하고, AI GM과 각 플레이어 Agent에는
-  공개 상태 및 자기에게 허용된 개인 정보만 전달합니다.
-- MCP capability는 game·agent job·phase·state version·window에 묶습니다. 각
-  `agent_jobs` reservation은 새 capability·세션 개설 토큰·MCP session을 사용하고
-  terminal 처리와 reconnect에서 기존 값을 재사용하지 않습니다.
-- AI GM은 MCP의 `public`, `gm-guide`만 읽고 Tool을 사용하지 않습니다. narration은
-  LLM adapter가 Backend Agent Manager에 직접 반환하며 Backend가 검증·fallback·
-  `PUBLIC` event 저장을 담당합니다.
-- MCP runtime은 Backend `event_outbox`를 사용하거나 영속 audit outbox를 소유하지
-  않습니다. MCP 로그는 request·correlation ID, operation, status, duration과
-  비밀이 없는 분류 오류만 남기고 payload·capability·token·signature·prompt는
-  남기지 않습니다.
+- 현재 최소 FastMCP는 custom bootstrap·HMAC·capability 인증을 제공하지 않습니다.
+  요청 schema·게임 소유권·행동 유효성은 Backend가 검증하며, 운영 보안을 완료한
+  공개 배포 구성으로 취급하지 않습니다.
+- 목표 정보 경계는 Backend만 전체 상태를 보유하고 각 AI에는 허용된 자기 정보만
+  제공하는 것입니다. 현재는 인간 snapshot을 AI context에 재사용하고 개별 행동
+  target을 PUBLIC event에 기록하는 공백이 확인됐으므로, 완료된 격리 보장으로
+  표현하지 않습니다. GM 진행도 후속 연결 대상입니다.
+- MCP runtime은 DB·Redis에 직접 접근하거나 영속 outbox를 소유하지 않습니다.
+  구 custom MCP 감사 로그 프로파일을 현재 FastMCP의 검증된 보장으로 사용하지 않습니다.
 - seed와 engine snapshot keyring은 저장소 밖에 두고 과거 record가 참조하는 key를
-  보존합니다.
+  보존합니다. 현재 runtime은 keyring 미설정 시 legacy plaintext 경로를 사용하므로
+  실제 게임 환경에서 암호화 설정 여부를 확인해야 합니다.
 - LLM prompt, raw response, private context, token과 비용을 로그에 넣지 않습니다.
 - `ADMIN_USER_IDS`는 강한 인증이 아니므로 관리자 앱도 loopback·사설망에서만 사용합니다.
-- 현재 관리자 앱에는 인증·권한과 업무 기능이 없으며 준비 화면만 표시합니다.
-- 현재 Mafia Game MCP에는 `/mcp` 실행 서버와 세션 개설 토큰 consume용 Engine HTTP
-  adapter가 있으며 FastMCP 독립 composition 경계에 최소 Resource·Prompt·AI 행동 요청
-  Tool 등록부와
-  ASGI 왕복 fixture가 있습니다. MCP runtime은 여전히 DB·Redis에 직접 접근하지 않습니다.
+- 관리자 앱에는 read-only 통계·게임 목록·상세가 있지만 UUID 입력·필터 등 화면
+  동선이 일부 남아 있습니다. 관리자 권한은 Backend allowlist로 확인합니다.
+- 현재 Mafia Game MCP에는 `/mcp` 서버, 최소 Resource·Prompt·Tool 등록부와 Backend
+  HTTP adapter, fake·ASGI 테스트가 있습니다. 실제 프로세스 테스트는 DB를 사용하므로
+  독립 테스트와 구분합니다.
 
 비밀값 노출이 의심되면 값을 다시 출력하지 말고 즉시 폐기·재발급한 뒤 Git 이력과
 외부 로그를 별도로 점검하세요.
@@ -651,7 +691,7 @@ uv run ruff check .
   추가하고 MCP 담당자가 실제 환경에서 실행·재실행 검증
 - Agent·LLM·MCP client: `backend/app/agent/`, `backend/app/llm_provider/`,
   `backend/app/mcp/`
-- 독립 MCP 기능: `mcp_server/mafia_game/`(현재 session·Resource, 후속 Tool) 또는
+- 독립 MCP 기능: `mcp_server/mafia_game/`(현재 FastMCP Resource·Prompt·Tool) 또는
   `mcp_server/mcp_2/` 내부 계층에만 추가
 
 ## 기여

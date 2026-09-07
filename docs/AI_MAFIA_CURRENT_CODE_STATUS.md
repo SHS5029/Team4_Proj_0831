@@ -1,8 +1,9 @@
 # AI 마피아 현재 코드 상태
 
 **기준일:** 2026-09-07  
-**기준 브랜치:** `ik-2`  
-**상태:** 작업 트리에 미커밋 변경이 존재함
+**기준 브랜치:** `Hwanseok`, merge `3157f17`
+
+**상태:** merge 이후 가상환경·의존성 준비와 재점검 완료; 게임 전체 통합은 미검증
 
 이 문서는 여러 임시 계획 문서를 대신해 현재 저장소에 실제로 존재하는 구현,
 실행 경로, 검증 결과와 남은 제약을 기록한다. 제품 규칙과 공개 API의 규범적
@@ -109,31 +110,41 @@ preflight와 `X-User-Id`, `X-Request-Id`, `Last-Event-ID` header를 허용한다
 
 실제 비밀번호, API key, token, 사용자 데이터는 문서·로그·fixture에 기록하지 않는다.
 
-## 7. 검증 상태
+## 7. merge 이후 로컬 검증 상태
 
-확인된 명령과 결과:
+2026-09-07 macOS/Python 3.12.11 환경에서 실행했다. 루트·MCP 기존 가상환경을
+재사용하고 Backend·사용자 Front·관리자 Front 환경을 준비했다. 다섯 환경의
+의존성 호환 검사와 root/MCP lock 확인을 마쳤으며 pytest-asyncio 미설치 문제는
+해소했다.
 
-```text
-py -3.12 -m pytest frontend_user/tests backend/tests/test_config.py \
-  backend/tests/test_b5_game_api.py backend/tests/test_postgres_game_flow.py -q
-55 passed, 1 warning
+| 범위 | 결과 |
+|---|---|
+| Backend, 실제 DB 테스트 2파일 제외 | 128 passed |
+| 사용자 Front | 34 passed |
+| 관리자 Front | 3 passed |
+| MCP fake·ASGI 4파일 | 6 passed |
+| 합계 | 171 passed, 실패 0 |
 
-py -3.12 -m compileall -q backend/app frontend_user
-git diff --check
-```
-
-전체 Backend·Frontend 테스트 실행에서는 **161 passed, 12 failed**였다. 실패한 12개는
-이번 게임 연결 변경과 무관한 async 테스트이며 현재 환경에 `pytest-asyncio`가 없어
-`pytest.mark.asyncio`를 실행하지 못한 결과다. Starlette/httpx deprecation warning도
-1건 확인되었다.
+정확한 재실행 명령은 [README](../README.md)의 테스트 절에 있다. 기존 55 passed,
+161 passed/12 failed 기록은 merge 전 환경의 기록이며 이번 실행 결과와 합산하지
+않는다. 실제 DB 테스트가 추가되었으므로 전체 테스트가 fake라는 과거 설명은 더
+이상 맞지 않는다.
 
 ## 8. 현재 제약과 다음 통합 확인
 
-- UUID는 인증 수단이 아니므로 개인 개발 환경 또는 사설망 전용이다.
-- 실제 browser에서 `localhost:8501` 또는 `127.0.0.1:8501`로 접속해 SSE preflight,
-  reconnect와 polling fallback을 확인해야 한다.
-- 실제 PostgreSQL·Redis·FastMCP를 함께 기동한 상태에서 생성→BEGIN→토론→밤→투표→
-  저장·재개→관전→종료→feedback 전체 E2E가 최종 통합 gate다.
-- async 회귀 테스트 실행을 위해 해당 환경에 `pytest-asyncio`를 설치해야 한다.
-- 작업 트리에는 본 문서 작성 시점 이전부터 존재한 대규모 미커밋 변경이 있으므로,
-  커밋·push 전 변경 소유권과 diff를 별도로 확인해야 한다.
+- 실제 DB 쓰기·삭제를 수행하는 B5·Postgres game flow·MCP process roundtrip 세
+  파일은 이번에 제외했다. 전용 DB·Redis 대상과 migration/seed를 확인한 뒤 실행한다.
+- 현재 로컬 설정은 외부 DB와 OpenAI Provider를 선택한다. 실제 연결·유료 호출은
+  하지 않았고 `.env`와 비밀값을 변경하거나 출력하지 않았다. 테스트는 우선 dummy
+  Provider와 격리 데이터를 사용한다.
+- keyring 미설정이면 runtime은 legacy plaintext 경로를 사용한다. 항상 암호화된
+  저장 상태라고 가정하지 말고 실제 게임용 keyring을 준비해야 한다.
+- AI context에 인간 private snapshot을 재사용하는 경로, PUBLIC 행동 이벤트의
+  개별 target 기록, deadline 만료 처리, 2명 마피아·재투표·최종 판정 공백이 남았다.
+- Front의 RESUME 화면·UUID 복구 persistence·지속 polling·실시간 countdown·조사
+  결과·홈·피드백 동선은 후속 보완 대상이다. 단순 SSE 재연결과 snapshot 재조회는
+  merge에서 추가되었다.
+- 실제 브라우저의 생성→진행→저장·재개→관전→종료·feedback 전체 E2E는 미검증이다.
+
+해결된 항목과 남은 코드 근거는
+[merge 이후 게임 테스트 준비·재점검](AI_MAFIA_GAME_TEST_GAP_REPORT.md)에 정리했다.
