@@ -74,7 +74,10 @@ def test_private_phase_activity_has_no_actor_or_history(phase):
     assert not app.exception
     text = " ".join(item.value for item in app.markdown) + " ".join(item.value for item in app.info)
     assert "비공개" in text
-    assert "img" not in text and "판단 중" not in text and len(app.expander) == 0
+    assert "img" not in text and "판단 중" not in text
+    assert len(app.expander) == 1
+    assert app.expander[0].label == "AI 판단과 실행"
+    assert app.expander[0].proto.expanded is False
 
 
 def test_activity_escapes_names_and_does_not_render_provider_summary():

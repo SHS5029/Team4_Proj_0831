@@ -188,7 +188,16 @@ class FastMcpGameContextClient:
             if str(window) != payload["window_id"] or type(version) is not int or version < 1 or (self._state_version is not None and version != self._state_version and not vote_increment) or (self._window_id is not None and window != self._window_id):
                 raise ValueError
             data = payload["data"]
-            if not isinstance(data, dict) or set(data) != data_keys[scope]:
+            # 운영 MCP 축약 응답과 기존 응답을 함께 허용해 재기동 순서에 따른 실패를 막는다.
+            allowed_shapes = [data_keys[scope]]
+            if scope == "public":
+                allowed_shapes.append(data_keys[scope] | {"rules"})
+            elif scope == "me":
+                allowed_shapes.append(data_keys[scope] - {"alibi", "observation"})
+            if not isinstance(data, dict) or set(data) not in allowed_shapes:
+                raise ValueError
+            if "rules" in data and (not isinstance(data["rules"], list) or not data["rules"]
+                                    or any(not isinstance(rule, str) or not rule.strip() for rule in data["rules"])):
                 raise ValueError
             if scope == "public":
                 game = data["game"]

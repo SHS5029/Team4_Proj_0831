@@ -368,11 +368,20 @@ def _render_night_record(*, night: dict[str, Any], player_names: dict[str, str])
 
     st.markdown(f"**🌙 밤 {_record_round(night.get('round'))}**")
     for field, label in (
-        ("resolved_attack_target_player_id", "공격 대상"),
+        ("resolved_attack_target_player_id", "최종 공격 대상"),
         ("protect_player_id", "보호 대상"), ("killed_player_id", "사망자"),
     ):
         st.text(f"{label}: {_record_target(night, field, player_names)}")
-    _render_choices(night.get("attack_choices"), label="공격", player_names=player_names)
+    choices = [choice for choice in _objects(night.get("attack_choices"))
+               if _player_name(choice.get("actor_player_id"), player_names)
+               and _player_name(choice.get("target_player_id"), player_names)
+               and type(choice.get("is_auto")) is bool]
+    targets = {choice["target_player_id"] for choice in choices}
+    actors = {choice["actor_player_id"] for choice in choices}
+    # 종료 공개 원장의 두 유효 선택과 확정 대상이 일치할 때만 규칙의 사유를 설명한다.
+    if len(choices) == len(actors) == len(targets) == 2 and night.get("resolved_attack_target_player_id") in targets:
+        st.info("마피아 투표가 갈려서 두 후보 중 RNG(무작위 선택)로 최종 공격 대상이 결정되었습니다.")
+    _render_choices(night.get("attack_choices"), label="마피아 선택", player_names=player_names)
     _render_choices(night.get("investigations"), label="조사", player_names=player_names)
 
 

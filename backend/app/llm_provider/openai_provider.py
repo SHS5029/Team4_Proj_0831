@@ -36,7 +36,7 @@ class OpenAIProvider(LLMProvider):
         reasoning_model = self.model.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4"))
         # 추론 모델의 한도에는 비공개 reasoning도 포함된다. 낮게 지정된 legacy
         # 요청에는 최소 여유를 주고, Agent가 지정한 더 큰 예산은 그대로 전달한다.
-        options = {"reasoning": {"effort": "low"}} if reasoning_model else {}
+        options = {"reasoning": {"effort": "high"}} if reasoning_model else {}
         output_limit = max(request.max_output_tokens, 4096) if reasoning_model else request.max_output_tokens
         try:
             response = await self.client.responses.create(

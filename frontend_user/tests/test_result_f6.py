@@ -121,7 +121,7 @@ def test_result_replays_named_choices_investigations_ballots_and_public_speech()
     app = AppTest.from_function(_result_app, args=(_snapshot(),)).run()
     assert not app.exception
     rendered = _text(app)
-    for expected in ("2026-09-07 10:02:03 KST", "공격: 바다 → 하늘", "조사: 하늘 → 바다",
+    for expected in ("2026-09-07 10:02:03 KST", "마피아 선택: 바다 → 하늘", "조사: 하늘 → 바다",
                      "마피아", "자동 선택", "투표: 하늘 → 바다", "바다: 1표", "공개 발언 기록입니다."):
         assert expected in rendered
     assert PLAYER not in rendered and TARGET not in rendered
@@ -276,3 +276,33 @@ def test_new_game_clears_old_snapshot_and_only_confirmed_creation_receipt(pendin
         assert "game.create_pending" not in app.session_state
     else:
         assert app.session_state["game.create_pending"] == pending
+
+
+def test_split_mafia_choices_explain_rng_only_with_valid_resolved_target():
+    snapshot = _snapshot()
+    night = snapshot["result"]["nights"][0]
+    night["attack_choices"].append({"actor_player_id": PLAYER, "target_player_id": TARGET, "is_auto": False})
+    app = AppTest.from_function(_result_app, args=(snapshot,)).run()
+    assert not app.exception
+    assert "마피아 투표가 갈려서" in _text(app)
+    assert "최종 공격 대상: 하늘" in _text(app)
+    night["resolved_attack_target_player_id"] = None
+    app = AppTest.from_function(_result_app, args=(snapshot,)).run()
+    assert not app.exception
+    assert "마피아 투표가 갈려서" not in _text(app)
+
+
+def test_public_chat_distinguishes_speech_and_actions_and_escapes_html():
+    def chat_app():
+        from frontend_user.app_pages.game_page import _render_public_chat_event
+        names = {"speaker": "<b>합성 이름</b>"}
+        _render_public_chat_event(event={"event_type": "PLAYER_SPOKE", "data": {
+            "player_id": "speaker", "message": "<script>합성 발언</script>"}}, player_names=names)
+        _render_public_chat_event(event={"event_type": "PLAYER_PASSED", "data": {
+            "player_id": "speaker"}}, player_names=names)
+    app = AppTest.from_function(chat_app).run()
+    assert not app.exception
+    assert len(app.get("chat_message")) == 1
+    rendered = _text(app)
+    assert "&lt;script&gt;합성 발언&lt;/script&gt;" in rendered
+    assert "◈ 행동" in rendered and "발언을 넘겼습니다" in rendered
