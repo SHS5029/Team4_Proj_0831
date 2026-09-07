@@ -79,6 +79,8 @@ class AiProgressWorker:
                                 task.result()
                             except Exception as error:
                                 _log_worker_error("vote_turn_processing", error)
+                    if hasattr(self._runtime, "expire_discussions"):
+                        await asyncio.to_thread(self._runtime.expire_discussions)
                     expired = await asyncio.to_thread(self._runtime.list_expired_vote_windows)
                     for window in expired:
                         try:

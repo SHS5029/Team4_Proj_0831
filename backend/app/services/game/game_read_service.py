@@ -621,7 +621,16 @@ def legal_actions(record: CanonicalGameRecord) -> list[str]:
         return (["SAVE_AND_EXIT"] if record.state.fast_forward_enabled else ["FAST_FORWARD", "SAVE_AND_EXIT"]) if not human.alive and state.status is GameStatus.IN_PROGRESS else []
     if state.phase is GamePhase.ROLE_REVEAL:
         return ["BEGIN_GAME", "SAVE_AND_EXIT"]
-    if state.phase in {GamePhase.DAY_DISCUSSION, GamePhase.FINAL_DISCUSSION} and record.human_player_id not in state.speech_actors:
+    if state.phase in {GamePhase.DAY_DISCUSSION, GamePhase.FINAL_DISCUSSION} and record.action_window and record.action_window.get("deadline_at") is not None:
+        now = datetime.now(UTC)
+        if record.action_window["deadline_at"] <= now:
+            return ["SAVE_AND_EXIT"]
+        count = sum(event.get("event_type") == "PLAYER_SPOKE"
+                    and event.get("data", {}).get("player_id") == str(record.human_player_id)
+                    and datetime.fromisoformat(event["created_at"].replace("Z", "+00:00")) > now - timedelta(seconds=60)
+                    for event in record.public_events)
+        return ["SPEAK", "SAVE_AND_EXIT"] if count < 7 else ["SAVE_AND_EXIT"]
+    if state.phase in {GamePhase.DAY_DISCUSSION, GamePhase.FINAL_DISCUSSION} and (record.action_window and record.action_window.get("deadline_at") is not None or record.human_player_id not in state.speech_actors):
         return ["SPEAK", "PASS", "SAVE_AND_EXIT"]
     if state.phase is GamePhase.NIGHT_ACTION and human.role is not PlayerRole.CITIZEN and record.human_player_id not in state.night_actions:
         return ["SUBMIT_NIGHT_ACTION", "SAVE_AND_EXIT"]
@@ -646,7 +655,7 @@ def action_window(record: CanonicalGameRecord, legal: list[str]) -> dict[str, An
         return None
     persisted = record.action_window
     if persisted is not None:
-        timed = kind != "SPEECH"
+        timed = kind != "SPEECH" or persisted.get("deadline_at") is not None or persisted.get("remaining_ms_on_save") is not None
         now = datetime.now(UTC)
         if timed and state.status is GameStatus.IN_PROGRESS:
             deadline = persisted["deadline_at"]

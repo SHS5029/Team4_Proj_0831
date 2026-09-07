@@ -508,3 +508,18 @@ def test_agent_request_explains_game_and_limits_actions_for_local_and_remote(kin
     assert "마피아" in system and "200자" in system
     assert "첫" in system and "PASS" in system
     assert json.dumps(request.response_schema, ensure_ascii=False, sort_keys=True) in system
+
+
+@pytest.mark.parametrize("role,base,expected", [("MAFIA", 0.35, "0.7"), ("MAFIA", 0.8, "1"), ("CITIZEN", 0.35, None)])
+def test_victory_priority_and_mafia_deception_multiplier(role, base, expected):
+    """진영 목표는 공통 적용하고 기만 성향 증폭은 마피아에만 적용하며 원본을 보존한다."""
+    context = {"me": {"data": {"role": role}}, "persona": {"data": {"parameters": {"deception": base}}}}
+    request = AgentOrchestrator._request(context)
+    system = request.messages[0]["content"]
+    assert "자기 진영의 승리" in system
+    assert "동일한 증거 기준" in system
+    if expected is None:
+        assert "기존 대비 2배인" not in system
+    else:
+        assert f"기존 대비 2배인 {expected}입니다" in system
+    assert context["persona"]["data"]["parameters"]["deception"] == base

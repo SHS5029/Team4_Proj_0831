@@ -67,13 +67,9 @@ def test_real_backend_and_fastmcp_process_roundtrip() -> None:
     backend = subprocess.Popen(  # noqa: S603 - 테스트가 직접 구성한 로컬 프로세스만 실행한다.
         [
             sys.executable,
-            "-m",
-            "uvicorn",
-            "backend.app.main:app",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(backend_port),
+            "-c",
+            "import uvicorn; from backend.app.main import create_app; "
+            f"uvicorn.run(create_app(enable_background_worker=False), host='127.0.0.1', port={backend_port})",
         ],
         cwd=PROJECT_ROOT,
         env={
@@ -126,10 +122,11 @@ def test_real_backend_and_fastmcp_process_roundtrip() -> None:
             snapshot = backend_client.get(f"/api/v1/games/{game_id}", headers=common_headers)
             assert snapshot.status_code == 200, snapshot.text
             game_data = snapshot.json()["data"]
-            # 첫 인간 차례는 중앙 AI worker가 소비할 수 없으므로 PASS 승인 증거가
-            # 다른 process의 AI 진행 속도에 따라 stale 거부로 바뀌지 않아야 한다.
+            # 이 테스트는 전송 계약만 검증하므로 worker를 끄고 동일 버전의 응답을 비교한다.
+            # 자유 토론에서는 AI 예약 중에도 인간 발언이 허용된다.
             human_id = game_data["me"]["player_id"]
-            assert game_data["action_window"]["turn_player_id"] == human_id
+            assert "SPEAK" in game_data["legal_actions"]
+            assert game_data["action_window"]["deadline_at"] is not None
             state_version = game_data["game"]["state_version"]
             window_id = game_data["action_window"]["window_id"]
             action_key = str(uuid4())

@@ -462,3 +462,16 @@ def test_new_game_or_window_does_not_reuse_previous_clock(panel_state, monkeypat
         snapshot["action_window"]["window_id"] = OUTSIDER
     game_id = OUTSIDER if change == "game" else GAME
     assert action_panel._countdown_remaining_ms(game_id=game_id, snapshot=snapshot) == 30000
+
+
+def test_free_discussion_input_is_available_during_ai_slot():
+    """AI 작업 예약 힌트가 인간의 자유 발언 입력을 숨기지 않는지 확인한다."""
+    snapshot = _action_snapshot("DAY_DISCUSSION")
+    snapshot["legal_actions"] = ["SPEAK", "SAVE_AND_EXIT"]
+    snapshot["action_window"].update(kind="SPEECH", turn_player_id=TARGET,
+        deadline_at="2026-09-07T00:01:45Z", remaining_ms=105_000,
+        legal_actions=snapshot["legal_actions"], valid_targets=[], has_submitted=False)
+    app = AppTest.from_function(_action_app, args=(snapshot, Mock())).run()
+    assert not app.exception
+    assert len(app.text_area) == 1 and not app.text_area[0].disabled
+    assert any("1분에 최대 7회" in item.value for item in app.markdown)

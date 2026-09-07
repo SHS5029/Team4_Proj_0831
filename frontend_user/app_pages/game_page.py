@@ -512,8 +512,9 @@ def _render_spectator_timeline(*, snapshot: dict[str, Any]) -> None:
         st.caption("게임의 공개 이벤트와 발언만 표시됩니다.")
         if not events:
             st.info("아직 표시할 공개 기록이 없습니다.")
-        for event in events:
-            _render_public_chat_event(event=event, player_names=player_names)
+        with st.container(key="spectator-chat-scroll", height=480, border=False, autoscroll=True):
+            for event in events:
+                _render_public_chat_event(event=event, player_names=player_names)
 
 
 def _render_spectator_private(*, snapshot: dict[str, Any], me: dict[str, Any]) -> None:
@@ -586,8 +587,9 @@ def _render_timeline(
             str(player.get("player_id")): str(player.get("display_name", "플레이어"))
             for player in public_players(snapshot)
         }
-        for event in events:
-            _render_public_chat_event(event=event, player_names=player_names)
+        with st.container(key="game-chat-scroll", height=480, border=False, autoscroll=True):
+            for event in events:
+                _render_public_chat_event(event=event, player_names=player_names)
 
 
 def _render_public_chat_event(*, event: dict[str, Any], player_names: dict[str, str]) -> None:

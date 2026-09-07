@@ -99,7 +99,8 @@ def validate_discussion_actor(
         or window.get("status") != "OPEN"
         or window.get("window_kind") != "SPEECH"
         or window.get("phase") != phase.value
-        or UUID(str(window.get("turn_player_id"))) != actor.player_id
+        or (not (window.get("deadline_at") is not None and actor.kind == "HUMAN")
+            and UUID(str(window.get("turn_player_id"))) != actor.player_id)
     ):
         raise ApiError(status_code=409, code="ACTION_NOT_ALLOWED", message="현재 발언 차례가 아닙니다.")
 
@@ -258,7 +259,8 @@ def _validate_context_window(game: Mapping, window: Mapping | None, now: object)
     )
     if valid:
         if window["window_kind"] == "SPEECH":
-            valid = window.get("deadline_at") is None and window.get("turn_player_id") is not None
+            deadline = window.get("deadline_at")
+            valid = window.get("turn_player_id") is not None and (deadline is None or (isinstance(deadline, datetime) and deadline.utcoffset() is not None and deadline > now))
         else:
             deadline = window.get("deadline_at")
             valid = isinstance(deadline, datetime) and deadline.utcoffset() is not None and deadline > now and window.get("turn_player_id") is None

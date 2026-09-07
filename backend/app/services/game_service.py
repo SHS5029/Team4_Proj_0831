@@ -625,22 +625,23 @@ class PostgresDiscussionCommandService(PostgresBeginGameService):
                 },
             )
         )
-        event_payload: dict[str, Any] = {"player_id": str(actor_player_id)}
-        if command_type == "SPEAK":
-            event_payload["message"] = message
-        events.append(
-            self._events.append(
-                cursor,
-                game_id=game_id,
-                state_version=state.state_version,
-                event_type="PLAYER_SPOKE" if command_type == "SPEAK" else "PLAYER_PASSED",
-                audience="PUBLIC",
-                front_sequence=front_sequence,
-                operation_index=1,
-                operation_type="APPEND_PUBLIC_EVENT",
-                payload=event_payload,
+        if command_type != "END_DISCUSSION":
+            event_payload: dict[str, Any] = {"player_id": str(actor_player_id)}
+            if command_type == "SPEAK":
+                event_payload["message"] = message
+            events.append(
+                self._events.append(
+                    cursor,
+                    game_id=game_id,
+                    state_version=state.state_version,
+                    event_type="PLAYER_SPOKE" if command_type == "SPEAK" else "PLAYER_PASSED",
+                    audience="PUBLIC",
+                    front_sequence=front_sequence,
+                    operation_index=1,
+                    operation_type="APPEND_PUBLIC_EVENT",
+                    payload=event_payload,
+                )
             )
-        )
         if next_window is None:
             window_operation = "CLEAR_ACTION_WINDOW"
             window_payload: dict[str, Any] = {"window_id": None}
@@ -678,7 +679,7 @@ class PostgresDiscussionCommandService(PostgresBeginGameService):
                 event_type="TURN_OPENED",
                 audience="PUBLIC",
                 front_sequence=front_sequence,
-                operation_index=2,
+                operation_index=len(events),
                 operation_type=window_operation,
                 payload=window_payload,
             )

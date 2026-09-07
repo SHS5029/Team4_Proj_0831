@@ -99,6 +99,15 @@ class PostgresGameRuntime:
         self._actions = PostgresActionCommandService(**common)
         self._ai_worker = AiProgressWorker(self)
 
+    def expire_discussions(self) -> None:
+        """모델 응답과 독립적으로 마감된 자유 토론을 조회하고 잠금 안에서 확정한다."""
+        from backend.app.services.game.discussion_transaction import expire_discussion
+        with self._transactions.transaction() as connection:
+            with connection.cursor(row_factory=dict_row) as cursor:
+                rows = self._actions_repository.expired_discussions(cursor, now=datetime.now(UTC))
+        for row in rows:
+            self._mutation(row["owner_user_id"], row["id"], lambda: expire_discussion(self._discussion, row["owner_user_id"], row["id"]))
+
     def list_ai_speech_turns(self) -> list[dict[str, Any]]:
         """열린 AI 발언 차례를 조회해 중앙 worker에 전달한다.
 

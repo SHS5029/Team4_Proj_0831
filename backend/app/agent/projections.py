@@ -212,7 +212,7 @@ def _turn_data(
     if subject_id in identifiers and not (kind == "NIGHT" and player.role is PlayerRole.DOCTOR):
         raise PermissionError("CAPABILITY_DENIED")
     if kind == "SPEECH":
-        if targets or str(window.get("turn_player_id")) != str(subject_id) or subject_id in state.speech_actors:
+        if targets or str(window.get("turn_player_id")) != str(subject_id) or (window.get("deadline_at") is None and subject_id in state.speech_actors):
             raise PermissionError("CAPABILITY_DENIED")
     elif kind == "NIGHT":
         if player.role not in {PlayerRole.MAFIA, PlayerRole.DETECTIVE, PlayerRole.DOCTOR} or subject_id in state.night_actions:
@@ -221,6 +221,8 @@ def _turn_data(
         if subject_id in state.votes:
             raise PermissionError("CAPABILITY_DENIED")
     deadline = window.get("deadline_at")
+    if kind == "SPEECH" and deadline is not None and (not isinstance(deadline, datetime) or deadline.utcoffset() is None or deadline <= now):
+        raise PermissionError("CAPABILITY_DENIED")
     if kind != "SPEECH" and (
         not isinstance(deadline, datetime) or deadline.utcoffset() is None
         or deadline <= now or not targets
@@ -232,7 +234,7 @@ def _turn_data(
         "cycle": window["cycle"],
         "opened_state_version": window["opened_state_version"],
         "server_time": now.astimezone(timezone.utc).isoformat(),
-        "deadline_at": deadline.astimezone(timezone.utc).isoformat() if kind != "SPEECH" else None,
+        "deadline_at": deadline.astimezone(timezone.utc).isoformat() if deadline is not None else None,
         "turn_player_id": str(subject_id) if kind == "SPEECH" else None,
         "allowed_tools": list(TOOL_BY_WINDOW[kind]),
         "valid_targets": [

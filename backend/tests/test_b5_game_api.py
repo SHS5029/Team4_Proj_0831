@@ -237,3 +237,115 @@ def test_b5_night_ledger_persists_mixed_roles_and_reloads_private_events(human_r
     assert ended["result"]["votes"][0]["round"] == 5
     assert ended["public_events"][-1]["event_type"] == "GAME_ENDED"
     assert ended["result"]["public_event_ids"] == [event["event_id"] for event in ended["public_events"]]
+
+
+def test_free_discussion_seven_messages_deadline_and_idempotency():
+    """AI 예약 중 인간 연속 발언·7회 제한·중복 재전송·마감 전이를 실제 원장으로 검증한다."""
+    from datetime import UTC, datetime, timedelta
+    from backend.app.services.game.discussion_transaction import expire_discussion
+    client = _client()
+    game_id, _ = _create(client)
+    route = f"/api/v1/games/{game_id}"
+    response = client.post(route + "/commands", headers=_headers(uuid4()), json={"type": "BEGIN_GAME", "expected_state_version": 1})
+    assert response.status_code == 200, response.text
+    initial = client.get(route, headers=_headers()).json()["data"]
+    deadline = initial["action_window"]["deadline_at"]
+    assert deadline is not None
+    assert 95_000 < initial["action_window"]["remaining_ms"] <= 105_000
+    for number in range(7):
+        snapshot = client.get(route, headers=_headers()).json()["data"]
+        assert snapshot["game"]["phase"] == "DAY_DISCUSSION"
+        assert snapshot["action_window"]["deadline_at"] == deadline
+        key = uuid4()
+        payload = {"type": "SPEAK", "expected_state_version": snapshot["game"]["state_version"], "window_id": snapshot["action_window"]["window_id"], "message": f"합성 자유 발언 {number}"}
+        response = client.post(route + "/commands", headers=_headers(key), json=payload)
+        assert response.status_code == 200, response.text
+        replay = client.post(route + "/commands", headers=_headers(key), json=payload)
+        assert replay.status_code == 200, replay.text
+    snapshot = client.get(route, headers=_headers()).json()["data"]
+    payload.update(expected_state_version=snapshot["game"]["state_version"], window_id=snapshot["action_window"]["window_id"])
+    response = client.post(route + "/commands", headers=_headers(uuid4()), json=payload)
+    assert response.status_code == 429, response.text
+    runtime = client.app.state.game_runtime
+    expiry = datetime.fromisoformat(deadline.replace("Z", "+00:00")) + timedelta(milliseconds=1)
+    expire_discussion(runtime._discussion, USER_ID, game_id, now=expiry)
+    final = client.get(route, headers=_headers()).json()["data"]
+    assert final["game"]["phase"] == "NIGHT_ACTION"
+    assert len([e for e in final["public_events"] if e["event_type"] == "PLAYER_SPOKE"]) == 7
+    assert not any(e["event_type"] == "PLAYER_PASSED" for e in final["public_events"])
+
+
+@pytest.mark.parametrize("phase,day,expected", [("DAY_DISCUSSION", 2, "DAY_VOTE"), ("FINAL_DISCUSSION", 6, "FINAL_ACCUSATION")])
+def test_free_discussion_repeated_ai_save_resume_and_expiry(phase, day, expected):
+    """AI가 여러 번 말해도 토론은 끝나지 않고 저장·재개와 마감 후 단계가 유지된다."""
+    from datetime import datetime, timedelta
+    from backend.app.services.game.discussion_transaction import expire_discussion
+    client = _client()
+    game_id, _ = _create(client)
+    route = f"/api/v1/games/{game_id}"
+    assert client.post(route + "/commands", headers=_headers(uuid4()), json={"type": "BEGIN_GAME", "expected_state_version": 1}).status_code == 200
+    with psycopg.connect(get_settings().effective_database_url) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("UPDATE public.games SET phase=%s,day_number=%s,round=%s WHERE id=%s", (phase,day,day-1,game_id))
+            cursor.execute("UPDATE public.action_windows SET phase=%s,round=%s WHERE game_id=%s AND status='OPEN'", (phase,day-1,game_id))
+    runtime = client.app.state.game_runtime
+    seen = []
+    for index in range(8):
+        snapshot = client.get(route, headers=_headers()).json()["data"]
+        window = snapshot["action_window"]
+        actor = UUID(window["turn_player_id"])
+        seen.append(actor)
+        runtime._agent_discussion.submit_speak(USER_ID, game_id, actor, f"합성 AI 의견 {index}", expected_state_version=snapshot["game"]["state_version"], window_id=UUID(window["window_id"]))
+    assert len(set(seen)) < len(seen)
+    snapshot = client.get(route, headers=_headers()).json()["data"]
+    assert snapshot["game"]["phase"] == phase
+    assert client.post(route + "/commands", headers=_headers(uuid4()), json={"type": "SAVE_AND_EXIT", "expected_state_version": snapshot["game"]["state_version"]}).status_code == 200
+    saved = client.get(route, headers=_headers()).json()["data"]
+    assert 0 < saved["action_window"]["remaining_ms"] <= 105_000
+    assert client.post(route + "/commands", headers=_headers(uuid4()), json={"type": "RESUME", "expected_state_version": saved["game"]["state_version"]}).status_code == 200
+    resumed = client.get(route, headers=_headers()).json()["data"]
+    assert resumed["action_window"]["remaining_ms"] <= saved["action_window"]["remaining_ms"]
+    expiry = datetime.fromisoformat(resumed["action_window"]["deadline_at"].replace("Z", "+00:00")) + timedelta(milliseconds=1)
+    expire_discussion(runtime._discussion, USER_ID, game_id, now=expiry)
+    final = client.get(route, headers=_headers()).json()["data"]
+    assert final["game"]["phase"] == expected
+    expire_discussion(runtime._discussion, USER_ID, game_id, now=expiry)
+    assert client.get(route, headers=_headers()).json()["data"]["game"]["state_version"] == final["game"]["state_version"]
+
+
+def test_free_discussion_concurrent_eighth_message_is_rejected():
+    """같은 버전으로 경쟁한 발언은 하나만 반영하고 재시도로 7회 상한을 넘지 못한다."""
+    from concurrent.futures import ThreadPoolExecutor
+    client = _client()
+    game_id, _ = _create(client)
+    route = f"/api/v1/games/{game_id}"
+    assert client.post(route + "/commands", headers=_headers(uuid4()), json={"type": "BEGIN_GAME", "expected_state_version": 1}).status_code == 200
+    for i in range(6):
+        snapshot = client.get(route, headers=_headers()).json()["data"]
+        assert client.post(route + "/commands", headers=_headers(uuid4()), json={"type": "SPEAK", "message": f"합성 발언 {i}", "expected_state_version": snapshot["game"]["state_version"], "window_id": snapshot["action_window"]["window_id"]}).status_code == 200
+    snapshot = client.get(route, headers=_headers()).json()["data"]
+    payload = {"type": "SPEAK", "message": "합성 경쟁 발언", "expected_state_version": snapshot["game"]["state_version"], "window_id": snapshot["action_window"]["window_id"]}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda _: client.post(route + "/commands", headers=_headers(uuid4()), json=payload), range(2)))
+    assert sorted(r.status_code for r in responses) == [200, 409]
+    snapshot = client.get(route, headers=_headers()).json()["data"]
+    payload.update(expected_state_version=snapshot["game"]["state_version"], window_id=snapshot["action_window"]["window_id"])
+    assert client.post(route + "/commands", headers=_headers(uuid4()), json=payload).status_code == 429
+
+
+def test_free_discussion_ai_resumes_after_rolling_minute_limit():
+    """1분 45초 토론에서 전원 분당 상한 뒤에도 AI 예약이 남아 다음 분 발언을 재개한다."""
+    client = _client()
+    game_id, _ = _create(client)
+    route = f"/api/v1/games/{game_id}"
+    assert client.post(route + "/commands", headers=_headers(uuid4()), json={"type": "BEGIN_GAME", "expected_state_version": 1}).status_code == 200
+    runtime = client.app.state.game_runtime
+    for index in range(35):
+        snapshot = client.get(route, headers=_headers()).json()["data"]
+        window = snapshot["action_window"]
+        runtime._agent_discussion.submit_speak(USER_ID, game_id, UUID(window["turn_player_id"]), f"합성 AI 발언 {index}", expected_state_version=snapshot["game"]["state_version"], window_id=UUID(window["window_id"]))
+    assert not any(str(row["game_id"]) == str(game_id) for row in runtime.list_ai_speech_turns())
+    with psycopg.connect(get_settings().effective_database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("UPDATE public.action_submissions SET submitted_at=submitted_at-interval '61 seconds' WHERE game_id=%s", (game_id,))
+    assert any(str(row["game_id"]) == str(game_id) for row in runtime.list_ai_speech_turns())

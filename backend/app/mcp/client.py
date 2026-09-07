@@ -222,7 +222,7 @@ class FastMcpGameContextClient:
                     raise ValueError
                 server = _utc_time(data["server_time"])
                 if kind == "SPEECH":
-                    if targets or data["deadline_at"] is not None or data["turn_player_id"] != str(self._player_id):
+                    if targets or (data["deadline_at"] is not None and _utc_time(data["deadline_at"]) <= server) or data["turn_player_id"] != str(self._player_id):
                         raise ValueError
                 elif not targets or data["turn_player_id"] is not None or _utc_time(data["deadline_at"]) <= server:
                     raise ValueError

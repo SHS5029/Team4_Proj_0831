@@ -173,7 +173,7 @@ def _render_discussion(*, game_id: str, snapshot: dict[str, Any]) -> None:
     window = _window(snapshot)
     me = snapshot.get("me") if isinstance(snapshot.get("me"), dict) else {}
     legal = set(snapshot.get("legal_actions", []))
-    my_turn = window.get("turn_player_id") == me.get("player_id")
+    my_turn = window.get("deadline_at") is not None or window.get("turn_player_id") == me.get("player_id")
     pending = _pending_for_window(game_id=game_id, window=window)
 
     with st.container(key="discussion-action-panel", border=True):
@@ -182,7 +182,7 @@ def _render_discussion(*, game_id: str, snapshot: dict[str, Any]) -> None:
         if not my_turn or not ({"SPEAK", "PASS"} & legal):
             speaker = _current_speaker(snapshot=snapshot, player_id=window.get("turn_player_id"))
             if window.get("has_submitted"):
-                st.info("발언이 제출되었습니다. 다음 차례를 기다려 주세요.")
+                st.info("1분당 최대 7회 발언에 도달했거나 토론이 마감되었습니다." if window.get("deadline_at") else "발언이 제출되었습니다. 다음 차례를 기다려 주세요.")
             elif speaker:
                 st.info(f"현재 {speaker}님의 발언 차례입니다.")
             else:
@@ -191,9 +191,9 @@ def _render_discussion(*, game_id: str, snapshot: dict[str, Any]) -> None:
 
         locked = _is_locked(window=window, pending=pending)
         turn_col, guide_col = st.columns([1, 4])
-        turn_col.markdown("**내 차례**")
-        guide_col.write("공개된 정보를 바탕으로 의견을 말해 주세요.")
-        message_key = f"form.message.{window.get('window_id', 'current')}"
+        turn_col.markdown("**자유 토론**" if window.get("deadline_at") else "**내 차례**")
+        guide_col.write("1분 45초 동안 자유롭게 토론하세요. 플레이어별 1분에 최대 7회 발언할 수 있습니다." if window.get("deadline_at") else "공개된 정보를 바탕으로 의견을 말해 주세요.")
+        message_key = f"form.message.{game_id}" if window.get("deadline_at") else f"form.message.{window.get('window_id', 'current')}"
         message = st.text_area(
             "발언 내용",
             max_chars=200,
@@ -396,7 +396,7 @@ def _action_status(snapshot: dict[str, Any]) -> tuple[str, str, str | None] | No
     if _is_locked(window=window, pending=pending):
         return None
     if phase in DISCUSSION_PHASES:
-        if window.get("turn_player_id") != me.get("player_id") or not ({"SPEAK", "PASS"} & legal):
+        if (window.get("deadline_at") is None and window.get("turn_player_id") != me.get("player_id")) or not ({"SPEAK", "PASS"} & legal):
             return None
         label = "발언하거나 PASS하세요"
     elif phase == "NIGHT_ACTION" and "SUBMIT_NIGHT_ACTION" in legal:
@@ -551,6 +551,8 @@ def _process_pending(*, client: ApiClient, game_id: str, snapshot: dict[str, Any
         )
         refreshed = client.get_game(game_id)
         st.session_state["game.latest_snapshot"] = refreshed
+        if pending["command"].get("type") == "SPEAK" and _window(snapshot).get("deadline_at") is not None:
+            st.session_state[f"form.message.{game_id}"] = ""
         st.session_state["game.command_pending"] = {
             **pending,
             "status": "SUCCEEDED",
@@ -700,6 +702,9 @@ def _render_turn_status(*, snapshot: dict[str, Any]) -> None:
     legal = set(snapshot.get("legal_actions", []))
     kind = str(window.get("kind", ""))
     if kind == "SPEECH":
+        if window.get("deadline_at") is not None:
+            st.caption("자유 토론 · 플레이어별 1분에 최대 7회 발언")
+            return
         speaker = _current_speaker(snapshot=snapshot, player_id=window.get("turn_player_id"))
         if speaker:
             st.caption(f"현재 발언 차례: {speaker}")

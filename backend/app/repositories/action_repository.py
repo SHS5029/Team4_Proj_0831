@@ -75,6 +75,16 @@ class PostgresActionRepository:
         )
         return cursor.fetchone()
 
+    def recent_discussion_actions(self, cursor: Any, *, game_id: UUID, since: Any) -> list[dict[str, Any]]:
+        """게임 행 잠금의 호출자가 최근 발언 횟수와 AI 배분을 같은 원장으로 확인한다."""
+        cursor.execute("SELECT actor_player_id, action_type, submitted_at FROM public.action_submissions WHERE game_id=%s AND submitted_at>%s AND action_type IN ('SPEAK','PASS') ORDER BY submitted_at", (game_id, since))
+        return [dict(row) for row in cursor.fetchall()]
+
+    def expired_discussions(self, cursor: Any, *, now: Any) -> list[dict[str, Any]]:
+        """열린 자유 토론만 선택하며 서비스가 다시 잠가 마감 여부를 확정한다."""
+        cursor.execute("SELECT g.id, g.owner_user_id FROM public.games g JOIN public.action_windows w ON w.game_id=g.id WHERE g.status='IN_PROGRESS' AND w.status='OPEN' AND w.window_kind='SPEECH' AND w.deadline_at<=%s", (now,))
+        return [dict(row) for row in cursor.fetchall()]
+
     def list_ai_speech_turns(self, cursor: Any) -> list[dict[str, Any]]:
         """서버 재시작 후에도 처리할 수 있는 열린 AI 발언 차례를 조회한다."""
 
@@ -94,6 +104,10 @@ class PostgresActionRepository:
              AND player.id = action_window.turn_player_id
              AND player.kind = 'AI'
             WHERE games.status = 'IN_PROGRESS'
+              AND (action_window.deadline_at IS NULL OR action_window.deadline_at > clock_timestamp())
+              AND (SELECT count(*) FROM public.action_submissions s WHERE s.game_id=games.id
+                   AND s.actor_player_id=player.id AND s.action_type='SPEAK'
+                   AND s.submitted_at>clock_timestamp()-interval '60 seconds') < 7
             ORDER BY action_window.opened_at, games.id
             """
         )
@@ -503,7 +517,7 @@ def _validate_window(window: ActionWindowInsert) -> None:
     if window.window_kind not in {"SPEECH", *timed_kinds}:
         raise ValueError("Action window kind is invalid")
     if window.window_kind == "SPEECH":
-        if window.turn_player_id is None or window.deadline_at is not None:
+        if window.turn_player_id is None or (window.deadline_at is not None and window.deadline_at.utcoffset() is None):
             raise ValueError("Speech window fields are invalid")
     elif window.turn_player_id is not None or window.deadline_at is None:
         raise ValueError("Timed action window fields are invalid")
