@@ -4,16 +4,27 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from copy import deepcopy
+from datetime import date, timedelta
+import os
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 from uuid import UUID, uuid4
 
-from frontend_admin.core.auth import parse_admin_uuid
-from frontend_admin.core.models import ADMIN_PHASES, ADMIN_STATUSES
-
 HttpTransport = Callable[[Request, float], tuple[int, bytes]]
+
+# 공개 합성 키는 로컬 데모 연결 시험에만 사용하며 실제 API에 전송하지 않는다.
+DEMO_API_KEY = "demo_ai_mafia_admin_v1"
+AUDIT_EVENT_LABELS = {
+    "전체": None, "게임 목록 조회": "ADMIN_LIST_GAMES", "게임 상세 조회": "ADMIN_GET_GAME",
+    "운영 지표 조회": "ADMIN_GET_METRICS", "페르소나 승률 조회": "ADMIN_GET_PERSONA_WIN_RATES",
+    "직업별 승률 조회": "ADMIN_GET_ROLE_WIN_RATES",
+    "피드백 목록 조회": "ADMIN_LIST_FEEDBACK", "감사 로그 조회": "ADMIN_LIST_AUDIT_LOGS",
+    "운영 에이전트 질문": "ADMIN_QUERY_INSIGHTS",
+}
+JOB_LABELS = {"MAFIA": "마피아", "DETECTIVE": "탐정", "DOCTOR": "의사", "CITIZEN": "시민"}
 
 
 class AdminApiError(RuntimeError):
@@ -25,6 +36,12 @@ class AdminApiError(RuntimeError):
         self.code = code
 
 
+def is_demo_mode() -> bool:
+    """로컬 화면 확인용 가상 데이터 모드가 명시적으로 켜졌는지 확인한다."""
+
+    return os.getenv("ADMIN_DEMO_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 class AdminApiClient:
     """조회 endpoint만 노출해 관리자 Front의 변경 요청을 구조적으로 막는다."""
 
@@ -32,9 +49,7 @@ class AdminApiClient:
     # 접근시키고, 관리자 endpoint에는 mutation·강제 종료 기능을 추가하지 않는다.
 
     def __init__(self, *, user_id: str | UUID, api_url: str = "http://127.0.0.1:8000", transport: HttpTransport | None = None):
-        self.user_id = parse_admin_uuid(str(user_id))
-        if self.user_id is None:
-            raise ValueError("관리자 식별자는 UUID v4여야 합니다.")
+        self.user_id = UUID(str(user_id))
         self.api_url = api_url.rstrip("/")
         self._transport = transport or _send
 
@@ -56,10 +71,6 @@ class AdminApiClient:
 
         if not 1 <= limit <= 100:
             raise ValueError("관리자 게임 목록 limit은 1부터 100까지여야 합니다.")
-        if status is not None and status not in ADMIN_STATUSES:
-            raise ValueError("관리자 게임 상태 필터가 올바르지 않습니다.")
-        if phase is not None and phase not in ADMIN_PHASES:
-            raise ValueError("관리자 게임 단계 필터가 올바르지 않습니다.")
         query = [f"limit={limit}"]
         if status:
             query.append(f"status={status}")
@@ -78,8 +89,83 @@ class AdminApiClient:
 
         return self._request(f"/api/v1/admin/games/{UUID(str(game_id))}")
 
+    def role_win_rates(self, *, from_date: str | None = None,
+                       to_date: str | None = None) -> dict:
+        """API 7.5의 완료 게임 AI 집계를 조회한다."""
+
+        query = urlencode({k: v for k, v in {"from": from_date, "to": to_date}.items() if v})
+        return self._request("/api/v1/admin/role-win-rates" + (f"?{query}" if query else ""))
+
+    def persona_win_rates(self, *, from_date: str | None = None,
+                          to_date: str | None = None) -> dict:
+        """API 7.6의 에이전트 페르소나별 승률 집계를 조회한다."""
+
+        query = urlencode({k: v for k, v in {"from": from_date, "to": to_date}.items() if v})
+        return self._request("/api/v1/admin/persona-win-rates" + (f"?{query}" if query else ""))
+
+    def feedback(self, *, feedback_type: str | None = None, rating: int | None = None,
+                 cursor: str | None = None, limit: int = 20) -> dict:
+        """사용자 의견을 페이지 단위로 읽으며 필터는 URL 인코딩한다."""
+
+        query = urlencode({k: v for k, v in {"feedback_type": feedback_type, "rating": rating,
+                                           "cursor": cursor, "limit": limit}.items() if v is not None})
+        return self._request("/api/v1/admin/feedback?" + query)
+
+    def audit_logs(self, *, event_type: str | None = None,
+                   cursor: str | None = None, limit: int = 20) -> dict:
+        """서버 원문 로그 대신 관리자 감사 메타데이터를 조회한다."""
+
+        query = urlencode({k: v for k, v in {"event_type": event_type, "cursor": cursor,
+                                           "limit": limit}.items() if v is not None})
+        return self._request("/api/v1/admin/audit-logs?" + query)
+
+    def insights_query(self, question: str, *, source_types: list[str] | None = None,
+                       rating_lte: int | None = None, from_date: str | None = None,
+                       to_date: str | None = None, top_k: int = 5) -> dict[str, Any]:
+        """승인 자료 검색 API에 질문을 보내고 근거 중심 응답을 받는다."""
+
+        normalized_question = " ".join(str(question).split())
+        if not 3 <= len(normalized_question) <= 500:
+            raise ValueError("관리자 질문은 3자부터 500자까지 입력해야 합니다.")
+        if not 1 <= top_k <= 10:
+            raise ValueError("관리자 검색 결과 수는 1부터 10까지여야 합니다.")
+        filters: dict[str, Any] = {}
+        if source_types:
+            filters["source_types"] = list(source_types)
+        if rating_lte is not None:
+            filters["rating_lte"] = rating_lte
+        if from_date:
+            filters["from"] = from_date
+        if to_date:
+            filters["to"] = to_date
+        return self._request_json(
+            "/api/v1/admin/insights/query",
+            {"question": normalized_question, "filters": filters, "top_k": top_k},
+        )
+
     def _request(self, path: str) -> dict[str, Any]:
-        request = Request(f"{self.api_url}{path}", headers={"Accept": "application/json", "X-User-Id": str(self.user_id), "X-Request-Id": str(uuid4())})
+        request = Request(
+            f"{self.api_url}{path}",
+            headers={"Accept": "application/json", "X-User-Id": str(self.user_id),
+                     "X-Request-Id": str(uuid4())},
+        )
+        return self._send_request(request)
+
+    def _request_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """관리자 질문 body를 JSON으로 보내되 인증 header 규칙은 GET과 공유한다."""
+
+        request = Request(
+            f"{self.api_url}{path}",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            method="POST",
+            headers={"Accept": "application/json", "Content-Type": "application/json",
+                     "X-User-Id": str(self.user_id), "X-Request-Id": str(uuid4())},
+        )
+        return self._send_request(request)
+
+    def _send_request(self, request: Request) -> dict[str, Any]:
+        """HTTP 오류와 JSON 응답을 기존 관리자 오류 경계로 통일한다."""
+
         try:
             status, body = self._transport(request, 5.0)
         except (OSError, URLError, TimeoutError) as exc:
@@ -94,9 +180,281 @@ class AdminApiClient:
             error = payload.get("error")
             code = error.get("code") if isinstance(error, dict) else payload.get("code")
             raise AdminApiError(status, code if isinstance(code, str) else "ADMIN_ACCESS_DENIED")
-        if status != 200:
-            raise AdminApiError(503, "INVALID_RESPONSE")
         return payload
+
+
+class DemoAdminApiClient:
+    """외부 Backend 없이 관리자 화면을 확인하기 위한 읽기 전용 가상 API다.
+
+    가상 응답은 Backend 관리자 API의 공개 응답 모양만 재현한다. 실제 게임의
+    역할·행동·투표·시드 같은 비공개 필드는 포함하지 않아 화면 개발 중에도
+    관리자 정보 경계를 동일하게 점검할 수 있다.
+    """
+
+    def __init__(self, *, api_key: str = DEMO_API_KEY) -> None:
+        """비밀 인증 대신 공개 데모 키의 일치 여부만 시험한다."""
+
+        if not isinstance(api_key, str) or api_key.strip() != DEMO_API_KEY:
+            raise AdminApiError(401, "DEMO_KEY_INVALID")
+
+    def preview(self) -> dict[str, Any]:
+        """운영 API 계약에 없는 화면 예시를 데모 전용으로 분리한다."""
+
+        return deepcopy(DEMO_PREVIEW)
+
+    def metrics(self, **_: Any) -> dict[str, Any]:
+        """통합 운영 분석 화면에서 사용하는 가상 지표를 반환한다."""
+
+        return {"data": {**deepcopy(DEMO_METRICS), "users_total": DEMO_PREVIEW["users_total"],
+                         "daily_games": [{"date": row["날짜"], "games_created": row["생성 게임"]}
+                                         for row in DEMO_PREVIEW["daily"]]}}
+
+    def role_win_rates(self) -> dict:
+        """운영 API와 같은 집계 필드로 고정된 합성 기록의 AI 승률을 반환한다."""
+
+        jobs = {label: key for key, label in JOB_LABELS.items()}
+        return {"data": {"items": [{"job": jobs[row["직업"]], "participations": row["참여 수"],
+                                    "wins": row["승리 수"],
+                                    "win_rate": round(row["승리 수"] / row["참여 수"], 6)}
+                                   for row in DEMO_PREVIEW["jobs"]]}}
+
+    def persona_win_rates(self) -> dict:
+        """운영 API와 같은 집계 필드로 합성 페르소나 승률을 반환한다."""
+
+        return {"data": {"items": deepcopy(DEMO_PREVIEW["personas"])} }
+
+    def feedback(self, *, feedback_type: str | None = None, rating: int | None = None,
+                 cursor: str | None = None, limit: int = 20) -> dict:
+        """가상 의견도 실제 API 필드와 커서 규칙으로 조회한다."""
+
+        rows = [{"feedback_id": f"20000000-0000-4000-8000-{i + 1:012d}",
+                 "user_id": f"10000000-0000-4000-8000-{i % 300 + 1:012d}",
+                 "feedback_type": "GAME" if i % 2 else "GENERAL",
+                 "game_id": DEMO_GAMES[i]["game_id"] if i % 2 else None,
+                 "rating": row["평점"], "comment": row["의견"], "tags": [],
+                 "created_at": "2026-09-07T01:00:00Z"}
+                for i, row in enumerate(DEMO_PREVIEW["feedback"])]
+        if cursor is not None:
+            try:
+                cursor = str(UUID(cursor))
+            except ValueError as exc:
+                raise AdminApiError(422, "INVALID_REQUEST") from exc
+            if not any(row["feedback_id"] == cursor for row in rows):
+                return {"data": {"items": [], "next_cursor": None}}
+        rows = [row for row in reversed(rows)
+                if (feedback_type is None or row["feedback_type"] == feedback_type)
+                and (rating is None or row["rating"] == rating)
+                and (cursor is None or row["feedback_id"] < cursor)]
+        return self._page(rows, "feedback_id", limit)
+
+    def audit_logs(self, *, event_type: str | None = None,
+                   cursor: str | None = None, limit: int = 20) -> dict:
+        """가상 감사 이력은 운영 계약의 이벤트 분류와 ID를 사용한다."""
+
+        # 기존 데모 필터의 페이지 예시가 바뀌지 않도록 새 질문 action은
+        # 순환 분포에 섞지 않고 마지막에 한 건만 추가한다.
+        events = list(AUDIT_EVENT_LABELS.values())[1:-1]
+        rows = [{"audit_id": str(i + 1),
+                 "admin_user_id": "00000000-0000-4000-8000-000000000201",
+                 "event_type": events[i % len(events)], "target_game_id": None,
+                 "request_id": f"30000000-0000-4000-8000-{i + 1:012d}",
+                 "created_at": row["시각"].replace(" ", "T") + ":00Z"}
+                for i, row in enumerate(DEMO_PREVIEW["logs"])]
+        rows[-1]["event_type"] = "ADMIN_QUERY_INSIGHTS"
+        rows = [row for row in reversed(rows)
+                if (event_type is None or row["event_type"] == event_type)
+                and (cursor is None or int(row["audit_id"]) < int(cursor))]
+        return self._page(rows, "audit_id", limit)
+
+    def insights_query(self, question: str, *, source_types: list[str] | None = None,
+                       rating_lte: int | None = None, from_date: str | None = None,
+                       to_date: str | None = None, top_k: int = 5) -> dict[str, Any]:
+        """실제 색인 없이도 계획 화면의 근거 답변 흐름을 확인한다."""
+
+        del source_types, rating_lte, from_date, to_date
+        normalized_question = " ".join(str(question).split())
+        if not 3 <= len(normalized_question) <= 500 or not 1 <= top_k <= 10:
+            raise ValueError("가상 관리자 질문 조건이 올바르지 않습니다.")
+        rows = [
+            {
+                "source_type": "FEEDBACK",
+                "source_id": "feedback:demo-001",
+                "title": "합성 사용자 피드백",
+                "snippet": "투표 전 남은 시간과 사건 설명을 더 크게 보여 주면 좋겠습니다.",
+                "score": 0.86,
+            },
+            {
+                "source_type": "OPERATIONS_DOC",
+                "source_id": "screen-flow:demo-15.2",
+                "title": "관리자 화면 흐름도",
+                "snippet": "운영 분석 화면은 핵심 KPI와 진영별 결과를 한눈에 표시합니다.",
+                "score": 0.74,
+            },
+        ][:top_k]
+        return {"data": {
+            "answer": "승인된 자료에서 확인된 내용입니다: "
+                      + " ".join(row["snippet"] for row in rows),
+            "confidence": "HIGH",
+            "has_sufficient_evidence": True,
+            "sources": rows,
+        }}
+
+    @staticmethod
+    def _page(rows: list, id_field: str, limit: int) -> dict:
+        """가상 목록도 페이지 한도를 지키며 복사본만 돌려준다."""
+
+        if not 1 <= limit <= 100:
+            raise AdminApiError(422, "INVALID_REQUEST")
+        return {"data": {"items": deepcopy(rows[:limit]),
+                         "next_cursor": rows[limit - 1][id_field] if len(rows) > limit else None}}
+
+    def games(self, *, status: str | None = None, phase: str | None = None,
+              cursor: str | None = None, limit: int = 20) -> dict[str, Any]:
+        """필터에 묶인 데모 전용 커서로 가상 기록을 빠짐없이 나눠 반환한다."""
+
+        if not 1 <= limit <= 100:
+            raise ValueError("게임 목록 한도는 1부터 100까지입니다.")
+        items = [game for game in DEMO_GAMES
+                 if (status is None or game["status"] == status)
+                 and (phase is None or game["phase"] == phase)]
+        prefix = f"{status or 'ALL'}:{phase or 'ALL'}:"
+        offset = 0
+        if cursor is not None:
+            if not isinstance(cursor, str) or not cursor.startswith(prefix):
+                raise ValueError("가상 목록 커서의 필터가 일치하지 않습니다.")
+            position = cursor[len(prefix):]
+            if not position.isascii() or not position.isdigit() or len(position) > 8:
+                raise ValueError("가상 목록 커서가 올바르지 않습니다.")
+            offset = int(position)
+            if offset >= len(items):
+                raise ValueError("가상 목록 커서가 범위를 벗어났습니다.")
+        end = offset + limit
+        return {"data": {"items": deepcopy(items[offset:end]),
+                         "next_cursor": f"{prefix}{end}" if end < len(items) else None,
+                         "total": len(items)}}
+
+    def game_detail(self, game_id: str | UUID) -> dict[str, Any]:
+        """선택한 가상 게임의 공개 상세를 반환한다."""
+
+        normalized_id = str(UUID(str(game_id)))
+        detail = next(
+            (item for item in DEMO_GAME_DETAILS if item["game_id"] == normalized_id),
+            None,
+        )
+        if detail is None:
+            raise AdminApiError(404, "GAME_NOT_FOUND")
+        return {"data": deepcopy(detail)}
+
+
+def _build_demo_data() -> tuple[list[dict], list[dict], dict, dict]:
+    """고정된 합성 기록에서 KPI를 계산해 목록과 수치가 어긋나지 않게 한다."""
+
+    games, details = [], []
+    jobs = {name: {"직업": name, "참여 수": 0, "승리 수": 0}
+            for name in ["마피아", "탐정", "의사", "시민"]}
+    daily = {}
+    for index in range(1200):
+        status = (
+            "COMPLETED" if index < 900 else "SAVED" if index < 1080
+            else "IN_PROGRESS" if index < 1176 else "FAILED"
+        )
+        day = (date(2026, 8, 9) + timedelta(days=index % 30)).isoformat()
+        daily[day] = daily.get(day, 0) + 1
+        phase = "RESULT" if status in {"COMPLETED", "FAILED"} else "DAY_DISCUSSION"
+        game = {
+            "game_id": f"00000000-0000-4000-8000-{index + 1:012d}",
+            "status": status, "phase": phase, "player_count": 6 + index % 4,
+            "round": 2 + index % 4,
+            "owner_user_id": f"10000000-0000-4000-8000-{index % 300 + 1:012d}",
+            "updated_at": f"{day}T{index % 24:02d}:00:00Z",
+        }
+        games.append(game)
+        winner = ("CITIZEN" if index % 5 < 3 else "MAFIA") if status == "COMPLETED" else None
+        details.append({
+            **game,
+            "winner": winner,
+            "failure_code": "DEPENDENCY_UNAVAILABLE" if status == "FAILED" else None,
+        })
+        if winner is not None:
+            # 합성 좌석에서 사람 한 명을 제외해 AI만 집계한다. 개별 역할은 응답에 남기지 않는다.
+            mafia_count = 1 if game["player_count"] < 8 else 2
+            seats = (["마피아"] * mafia_count + ["탐정", "의사"]
+                     + ["시민"] * (game["player_count"] - mafia_count - 2))
+            human_seat = (index // 4) % len(seats)
+            for seat, job in enumerate(seats):
+                if seat != human_seat:
+                    jobs[job]["참여 수"] += 1
+                    faction = "MAFIA" if job == "마피아" else "CITIZEN"
+                    jobs[job]["승리 수"] += int(faction == winner)
+    feedback = [
+        {"번호": f"FB-{i + 1:03}", "작성자": f"데모 사용자 {i + 1:02}",
+         "평점": rating, "의견": message}
+        for i, (rating, message) in enumerate([
+            (5, "야간 열차 분위기가 추리와 잘 어울려요."),
+            (4, "투표 전 남은 시간을 더 크게 보고 싶어요."),
+            (5, "AI마다 말투가 달라 재미있었어요."),
+            (3, "게임 규칙을 처음에 더 자세히 알려 주세요."),
+            (4, "저장한 게임을 이어 할 수 있어 편해요."),
+            (5, "산장 시나리오를 다시 플레이하고 싶어요."),
+            (4, "모바일에서 플레이어 목록이 더 짧으면 좋겠어요."),
+            (4, "결과 화면의 사건 기록이 도움이 됐어요."),
+        ] * 30)
+    ]
+    logs = [
+        {"시각": f"{date(2026, 8, 9) + timedelta(days=i // 6)} {9 + i % 6:02}:00",
+         "등급": "WARN" if i % 6 == 4 else "INFO",
+         "내용": ["운영 지표 조회 완료", "게임 목록 조회 완료", "공개 게임 상세 조회 완료",
+                   "통계 화면 조회 완료", "목록 조회 지연 후 재시도 완료", "피드백 예시 조회 완료"][i % 6]}
+        for i in range(180)
+    ]
+    personas = [
+        {"persona_id": persona_id, "persona_name": persona_name,
+         "personality_summary": summary, "participations": 0, "wins": 0}
+        for persona_id, persona_name, summary in [
+            ("CAUTIOUS_ANALYST", "신중한 분석가", "근거를 차분히 쌓고 성급한 결론을 피하는 성격"),
+            ("ACTIVE_DEBATER", "적극적인 토론가", "질문과 반론으로 논의를 빠르게 이끄는 성격"),
+            ("OBSERVANT_NOTEKEEPER", "관찰형 기록자", "작은 발언과 행동의 변화를 꼼꼼히 기억하는 성격"),
+            ("EMOTIONAL_REACTOR", "감정적인 반응가", "놀람과 의심을 솔직하게 표현하는 성격"),
+            ("COOPERATIVE_MEDIATOR", "협력형 조정자", "서로 다른 의견을 요약하고 부드럽게 연결하는 성격"),
+        ]
+    ]
+    for index, game in enumerate(games):
+        if game["status"] != "COMPLETED":
+            continue
+        ai_count = game["player_count"] - 1
+        for offset in range(ai_count):
+            persona = personas[(index + offset) % len(personas)]
+            persona["participations"] += 1
+            persona["wins"] += int(details[index]["winner"] == ("MAFIA" if offset == 0 and index % 3 else "CITIZEN"))
+    for persona in personas:
+        persona["win_rate"] = round(persona["wins"] / persona["participations"], 6) if persona["participations"] else 0.0
+    preview = {
+        "users_total": len({game["owner_user_id"] for game in games}),
+        "feedback": feedback,
+        "logs": logs,
+        "personas": personas,
+        "jobs": [
+            {**row, "승률 (%)": round(row["승리 수"] / row["참여 수"] * 100, 1)}
+            for row in jobs.values()
+        ],
+        "daily": [
+            {"날짜": day, "생성 게임": count} for day, count in sorted(daily.items())
+        ],
+    }
+    completed = [item for item in details if item["status"] == "COMPLETED"]
+    metrics = {
+        "games_created": len(games), "games_completed": len(completed),
+        "games_saved": sum(game["status"] == "SAVED" for game in games),
+        "completion_rate": len(completed) / len(games),
+        "average_rounds": sum(g["round"] for g in completed) / len(completed),
+        "wins_by_faction": {faction: sum(g["winner"] == faction for g in completed)
+                            for faction in ["CITIZEN", "MAFIA"]}, "auto_action_count": 120,
+        "feedback_average": sum(row["평점"] for row in feedback) / len(feedback),
+    }
+    return games, details, metrics, preview
+
+
+DEMO_GAMES, DEMO_GAME_DETAILS, DEMO_METRICS, DEMO_PREVIEW = _build_demo_data()
 
 
 def _send(request: Request, timeout: float) -> tuple[int, bytes]:
