@@ -182,7 +182,6 @@ def _app_ui(monkeypatch, state):
     monkeypatch.setattr(app, "st", ui)
     monkeypatch.setattr(app, "render_app_theme", Mock())
     monkeypatch.setattr(app, "render_home", Mock())
-    monkeypatch.setattr(app, "render_settings", Mock())
     monkeypatch.setattr(app, "load_games", Mock())
     monkeypatch.setattr(app, "should_load_games", lambda _state: False)
     client = Mock()
@@ -451,8 +450,8 @@ def test_actual_main_manual_refresh_failure_waits_for_explicit_retry(monkeypatch
     assert len(requests) == 2
 
 
-def test_actual_main_refreshes_expired_home_without_losing_settings(monkeypatch):
-    """이동 요청이 없으면 만료 목록을 한 번 갱신하고 홈·설정 widget을 유지한다."""
+def test_actual_main_refreshes_expired_home_without_losing_identity_controls(monkeypatch):
+    """이동 요청이 없으면 만료 목록을 한 번 갱신하고 홈의 UUID 제어를 유지한다."""
 
     tested, requests = _main_with_mock_transport(monkeypatch)
     tested.session_state["home.games_loaded_at"] = 0

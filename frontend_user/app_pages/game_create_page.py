@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import streamlit as st
 
-from frontend_user.components.theme import render_page_navigation
+from frontend_user.components.theme import render_application_header, render_header_back_button
 from frontend_user.core.api_client import ApiClient, ApiResponseError, ApiUnavailableError
 
 ROLE_COUNTS = {
@@ -90,14 +90,10 @@ def render(client: ApiClient) -> None:
     # 화면 표현만 설정 화면 형태로 조율한다. 사용자가 시나리오·역할·persona를
     # 직접 선택하는 입력은 추가하지 않는다.
     st.markdown(SETUP_CSS, unsafe_allow_html=True)
-    st.markdown(
-        '<header class="setup-header"><div><span class="setup-brand">AI 마피아</span>'
-        '<span class="setup-status">연결됨</span></div>'
-        '<nav class="setup-nav"><span>▣&nbsp; 피드백</span><span>⚙&nbsp; 설정</span></nav></header>',
-        unsafe_allow_html=True,
+    render_application_header(
+        title="AI 마피아",
+        action_renderer=lambda: render_header_back_button(current_page="create"),
     )
-    render_page_navigation(current_page="create")
-    st.markdown('<div class="setup-breadcrumb">⌂ &nbsp; 홈 &nbsp; / &nbsp; <strong>새 게임</strong></div>', unsafe_allow_html=True)
     st.markdown(
         '<section class="setup-intro"><div><h1>새 게임 설정</h1>'
         '<p>함께 플레이할 인원을 선택해 주세요</p></div>'
@@ -133,7 +129,6 @@ def render(client: ApiClient) -> None:
     if cancel_clicked:
         st.session_state["navigation.page"] = "home"
         st.rerun()
-    st.markdown('<div class="setup-note">ⓘ &nbsp; 식별자를 잃어버리면 기존 게임을 복구할 수 없어요</div>', unsafe_allow_html=True)
 
     pending = st.session_state.get("game.create_pending")
     if not isinstance(pending, dict):
@@ -156,8 +151,9 @@ def render(client: ApiClient) -> None:
         st.session_state["game.create_pending"] = {**pending, "status": "SUCCEEDED", "game_id": data["game_id"], "snapshot": snapshot}
         st.session_state["game.latest_snapshot"] = snapshot
         st.session_state["game.game_id"] = data["game_id"]
-        # 성공 상태를 생성 화면에서 다시 소비하지 않고 다음 rerun의 경로를 확정한다.
-        st.session_state["navigation.page"] = "creation_complete"
+        # 생성 직후 받은 snapshot은 ROLE_REVEAL 상태다. 중간 완료 화면을 거치지 않고
+        # dispatcher가 같은 snapshot의 비공개 역할 공개 화면으로 바로 이동하게 한다.
+        st.session_state["navigation.page"] = "game"
     except ApiResponseError as error:
         status = "RETRYABLE_UNKNOWN" if error.status_code >= 500 else "REJECTED"
         st.session_state["game.create_pending"] = {**pending, "status": status, "code": error.code}
@@ -198,7 +194,7 @@ def _render_terminal(pending: dict[str, object]) -> None:
 
     status = pending.get("status")
     if status == "SUCCEEDED":
-        st.session_state["navigation.page"] = "creation_complete"
+        st.session_state["navigation.page"] = "game"
         st.rerun()
     elif status == "RETRYABLE_UNKNOWN":
         st.warning("결과를 확인하지 못했어요. 같은 요청으로 다시 확인할 수 있습니다.")
