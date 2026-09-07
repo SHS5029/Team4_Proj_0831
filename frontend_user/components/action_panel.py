@@ -56,11 +56,26 @@ ACTION_PANEL_CSS = """
 }
 [class*="st-key-vote-action-panel"] div[role="radiogroup"] > label {
   flex: 1 1 29%; min-width: 8.5rem; margin: 0; padding: 1rem .75rem;
-  border: 1px solid #d6dfec; border-radius: .7rem; background: #fff;
+  border: 1px solid #bfa3ce; border-radius: .7rem; background: #faf7fc;
+  color: #24152f !important;
+}
+[class*="st-key-vote-action-panel"] div[role="radiogroup"] > label p,
+[class*="st-key-vote-action-panel"] div[role="radiogroup"] > label span {
+  color: #24152f !important; -webkit-text-fill-color: #24152f !important;
+  opacity: 1; font-weight: 600;
+}
+[class*="st-key-vote-action-panel"] div[role="radiogroup"] > label:focus-within {
+  outline: 3px solid #784493; outline-offset: 2px;
 }
 [class*="st-key-vote-action-panel"] div[role="radiogroup"] > label:has(input:checked) {
-  border-color: #2f7cff; box-shadow: inset 0 0 0 1px #2f7cff;
-  background: linear-gradient(145deg, #fff, #eef5ff);
+  border-color: #4b176f; box-shadow: inset 0 0 0 1px #4b176f;
+  background: #eee2f5;
+}
+[class*="st-key-vote-survivors"] {
+  background: #f6f0fa !important; border-color: #bfa3ce !important;
+}
+[class*="st-key-vote-survivors"] p {
+  color: #24152f !important;
 }
 [class*="st-key-discussion-action-panel"] [data-testid="stButton"] button,
 [class*="st-key-night-action-panel"] [data-testid="stButton"] button,
@@ -113,7 +128,7 @@ def _render_discussion(*, game_id: str, snapshot: dict[str, Any]) -> None:
         _render_pending_feedback(pending=pending)
         if not my_turn or not ({"SPEAK", "PASS"} & legal):
             speaker = _current_speaker(snapshot=snapshot, player_id=window.get("turn_player_id"))
-            if window.get("has_submitted"):
+            if my_turn and window.get("has_submitted"):
                 st.info("발언이 제출되었습니다. 다음 차례를 기다려 주세요.")
             elif speaker:
                 st.info(f"현재 {speaker}님의 발언 차례입니다.")
@@ -152,7 +167,7 @@ def _render_discussion(*, game_id: str, snapshot: dict[str, Any]) -> None:
             use_container_width=True,
         ):
             _queue_command(game_id=game_id, snapshot=snapshot, command_type="PASS")
-        st.caption("🔒 제출 후에는 내용을 변경할 수 없습니다.")
+        st.caption("제출 후에는 내용을 변경할 수 없습니다.")
 
 
 def _render_night_action(*, game_id: str, snapshot: dict[str, Any]) -> None:
@@ -230,7 +245,7 @@ def _render_night_action(*, game_id: str, snapshot: dict[str, Any]) -> None:
                 command_type="SUBMIT_NIGHT_ACTION",
                 target_player_id=target_id,
             )
-        st.caption("🔒 첫 제출 후에는 선택을 변경할 수 없습니다.")
+        st.caption("첫 제출 후에는 선택을 변경할 수 없습니다.")
 
 
 def _render_vote_action(*, game_id: str, snapshot: dict[str, Any]) -> None:
@@ -255,8 +270,16 @@ def _render_vote_action(*, game_id: str, snapshot: dict[str, Any]) -> None:
         _render_turn_status(snapshot=snapshot)
         _render_vote_summary(snapshot=snapshot, phase_label=phase_label)
         st.divider()
+        survivors = [
+            player for player in snapshot.get("players", [])
+            if isinstance(player, dict) and player.get("alive") is True
+        ]
+        with st.container(key="vote-survivors", border=True):
+            st.markdown(f"**생존 플레이어 · {len(survivors)}명**")
+            for player in survivors:
+                st.text(f"● {player.get('display_name', '플레이어')} · 생존")
         st.subheader("처형할 플레이어를 선택해 주세요")
-        st.caption("Backend가 확정한 생존 후보 중 한 명에게 투표합니다.")
+        st.caption("아래 투표 가능한 생존 후보 중 한 명을 선택하세요.")
         _render_pending_feedback(pending=pending)
         if "SUBMIT_VOTE" not in set(snapshot.get("legal_actions", [])) or not targets:
             if window.get("has_submitted") or (pending and pending.get("status") == "SUCCEEDED"):
@@ -274,7 +297,7 @@ def _render_vote_action(*, game_id: str, snapshot: dict[str, Any]) -> None:
             "대상 선택",
             options,
             index=None,
-            format_func=lambda value: f"🤖 {names.get(value, '플레이어')}",
+            format_func=lambda value: names.get(value, "플레이어"),
             captions=["생존"] * len(options),
             disabled=locked,
             horizontal=True,
@@ -284,7 +307,7 @@ def _render_vote_action(*, game_id: str, snapshot: dict[str, Any]) -> None:
         if isinstance(remaining_ms, int) and 0 < remaining_ms <= 15_000:
             st.warning("투표 마감까지 15초 이하 남았습니다.")
         if st.button(
-            "투표 제출  →",
+            "🗳️ 투표 제출",
             key="action.SUBMIT_VOTE",
             disabled=locked or target_id is None,
             use_container_width=True,
@@ -296,7 +319,7 @@ def _render_vote_action(*, game_id: str, snapshot: dict[str, Any]) -> None:
                 command_type="SUBMIT_VOTE",
                 target_player_id=target_id,
             )
-        st.caption("🔒 첫 제출 후에는 선택을 변경할 수 없습니다.")
+        st.caption("첫 제출 후에는 선택을 변경할 수 없습니다.")
 
 
 def _render_vote_summary(*, snapshot: dict[str, Any], phase_label: str) -> None:
@@ -325,8 +348,8 @@ def _render_vote_summary(*, snapshot: dict[str, Any], phase_label: str) -> None:
         st.markdown("**공개 타임라인 요약**")
         if latest_night:
             st.write(latest_night)
-        st.write(f"☀️ 낮 {game.get('day_number', 1)}일차: 토론 종료")
-        st.write(f"☀️ 낮 {game.get('day_number', 1)}일차: {phase_label} 진행 중")
+        st.write(f"낮 {game.get('day_number', 1)}일차: 토론 종료")
+        st.write(f"낮 {game.get('day_number', 1)}일차: {phase_label} 진행 중")
 
 
 def _queue_command(
@@ -350,7 +373,9 @@ def _queue_command(
         st.error(str(error))
         return
     st.session_state["game.command_pending"] = {
-        "status": "PENDING_TO_RENDER",
+        # 버튼 한 번의 클릭으로 요청 처리를 시작한다. idempotency key와 원본 command는
+        # 그대로 보존하므로 Streamlit rerun이 발생해도 Backend 중복 제출은 막힌다.
+        "status": "IN_FLIGHT",
         "game_id": game_id,
         "command": command,
         "idempotency_key": str(uuid4()),
@@ -411,7 +436,7 @@ def _render_pending_feedback(*, pending: dict[str, Any] | None) -> None:
     elif status == "RETRYABLE_UNKNOWN":
         st.warning("제출 결과를 확인하지 못했습니다. 같은 요청으로 다시 확인할 수 있습니다.")
         if st.button("같은 요청 다시 확인", key="action.retry_pending"):
-            st.session_state["game.command_pending"] = {**pending, "status": "PENDING_TO_RENDER"}
+            st.session_state["game.command_pending"] = {**pending, "status": "IN_FLIGHT"}
             st.rerun()
     elif status == "REJECTED":
         st.error("현재 게임 상태가 바뀌어 요청이 처리되지 않았습니다. 최신 상태를 기다려 주세요.")

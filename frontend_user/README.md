@@ -10,9 +10,14 @@ Backend 공개 API 요청에는 `X-User-Id`와 `X-Request-Id` header만 전달�
 성공 후 Backend snapshot을 조회합니다.
 
 홈과 새 게임 설정 화면은 공통 dark header, breadcrumb, 반응형 카드 레이아웃과
-게임 방식 안내를 사용하며, 실제 입력은 기존 UUID·인원 선택·Backend 생성 계약만
-사용합니다. 새 게임 설정의 인원 카드는 6~9명 선택과 기존 `ROLE_COUNTS` preview를
-표현하고 생성 중에는 선택·취소 입력을 잠급니다.
+게임 방식 안내를 사용합니다. 사용자용 시각 테마는 긴장감 있는 짙은 퍼플을 기준으로
+하며 primary 버튼은 어두운 퍼플 그라데이션과 흰색 글자를 사용합니다. 역할·추리·토론·투표
+맥락에는 `🕶️`, `🔍`, `💬`, `🗳️` 등 의미가 분명한 이모지만 사용합니다. 입력창은 흰색
+배경·어두운 글자·명확한 테두리로 고정해 배경이나 버튼 상태에 관계없이 입력 내용을
+읽을 수 있습니다. 장식 이모지는 제거하고 사건 파일·야간 구역·최종 보고서 텍스트
+비주얼을 사용하며 외부 이미지 파일에는 의존하지 않습니다. 실제 입력은 기존 UUID·
+인원 선택·Backend 생성 계약만 사용합니다. 새 게임 설정의 인원 카드는 6~9명 선택과
+기존 `ROLE_COUNTS` preview를 표현하고 생성 중에는 선택·취소 입력을 잠급니다.
 
 `WU-F3`에서는 역할 공개·게임 shell을, `WU-F4`에서는 snapshot의 `legal_actions`와
 `valid_targets`에 따른 발언·밤 행동·투표 panel을 제공합니다. Front는 승패나 자동
@@ -23,7 +28,8 @@ UUID v4 `Idempotency-Key`를 포함해 게임 시작 command를 제출합니다.
 phase를 변경하지 않고 command 성공 뒤 authoritative snapshot을 다시 조회합니다.
 역할 공개 UI는 사건 정보, 본인 역할·능력·승리 조건, 알리바이·관찰 정보와 인원 정보를
 하나의 반응형 private card에 표시하며, Backend 문자열은 unsafe HTML에 삽입하지 않습니다.
-게임 시작은 `PENDING_TO_RENDER → IN_FLIGHT → terminal` 순서로 처리합니다.
+게임 시작과 주요 command는 버튼 한 번으로 `IN_FLIGHT → terminal` 처리를 시작합니다.
+요청 본문과 Idempotency-Key는 rerun·재시도에도 유지해 중복 제출을 막습니다.
 
 F4 command는 `legal_actions`, `action_window`, `valid_targets`, `state_version`을
 기준으로 구성하며, 마감·stale·중복 제출은 Backend가 최종 거부해야 합니다. Front는

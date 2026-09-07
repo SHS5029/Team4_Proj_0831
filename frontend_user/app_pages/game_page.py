@@ -8,7 +8,7 @@ from uuid import uuid4
 import streamlit as st
 
 from frontend_user.components.action_panel import render as render_action_panel
-from frontend_user.components.sync_bridge import apply_sync, mount_sse
+from frontend_user.components.sync_bridge import apply_sync, mount_sse, poll_game_progress
 from frontend_user.core.api_client import ApiResponseError, ApiUnavailableError
 from frontend_user.core.sync import SyncEnvelopeError
 from frontend_user.core.view_models import own_private_view, public_players, public_timeline
@@ -93,7 +93,7 @@ GAME_PAGE_CSS = """
   background: radial-gradient(circle at 72% 25%, #355987 0 2%, transparent 3%),
               linear-gradient(145deg, #07162b, #163d68);
 }
-.game-scene::after { content: "📡  🖥️  🔴 ON AIR  🖥️  🕰️"; color: #dceaff; font-size: 1.25rem; }
+.game-scene::after { content: "LIVE FEED  /  NIGHT DISTRICT  /  23:40"; color: #d6a9f2; font:600 .72rem/1.2 monospace; letter-spacing:.1rem; }
 .game-private-banner {
   margin-bottom: .85rem; padding: .55rem .7rem; border-radius: .45rem;
   color: #51617b; background: #f5f7fb; font-size: .76rem; text-align: center;
@@ -176,10 +176,10 @@ PHASE_LABELS = {
 }
 
 ROLE_PRESENTATION = {
-    "MAFIA": ("마피아", "🥷"),
+    "MAFIA": ("마피아", "🕶️"),
     "DETECTIVE": ("탐정", "🕵️"),
     "DOCTOR": ("의사", "🩺"),
-    "CITIZEN": ("시민", "🧑"),
+    "CITIZEN": ("시민", "👤"),
 }
 
 
@@ -197,6 +197,7 @@ def render(snapshot: dict[str, Any]) -> None:
         user_id=client.user_id,
         last_sequence=int(game.get("last_sequence", 0)),
     )
+    received_from_sse = envelope is not None
     if envelope is None:
         try:
             envelope = client.get_sync(
@@ -241,7 +242,11 @@ def render(snapshot: dict[str, Any]) -> None:
         # 보존한다. 이 값을 저장하지 않으면 component 상태만 갱신되고, 다른 화면
         # 전환이나 재렌더링에서 이전 phase·action window가 다시 사용될 수 있다.
         st.session_state["game.latest_snapshot"] = snapshot
-        st.session_state["game.sync_status"] = "LIVE" if envelope else "POLLING"
+        st.session_state["game.sync_status"] = (
+            "LIVE" if received_from_sse else "POLLING" if envelope else "STALE"
+        )
+
+    poll_game_progress(game_id=str(game_id))
 
     game = snapshot.get("game", {})
     scenario = snapshot.get("scenario", {})
@@ -261,7 +266,7 @@ def render(snapshot: dict[str, Any]) -> None:
     st.markdown(
         '<header class="game-header"><div><span class="game-brand">AI 마피아</span>'
         f'<span class="game-status{connection_class}">{connection_label}</span></div>'
-        '<nav class="game-nav"><span>▣&nbsp; 피드백</span><span>⚙&nbsp; 설정</span></nav></header>',
+        '<nav class="game-nav"><span>피드백</span><span>설정</span></nav></header>',
         unsafe_allow_html=True,
     )
 
@@ -376,7 +381,7 @@ def _render_players(*, snapshot: dict[str, Any], me: dict[str, Any], phase: str)
                     st.caption(f"공개 역할: {revealed_role}")
         if phase == "NIGHT_ACTION":
             st.markdown(
-                '<div class="game-night-callout"><div><strong>🌙 밤이 되었습니다</strong>'
+                '<div class="game-night-callout"><div><strong>밤이 되었습니다</strong>'
                 "모두 조용히 행동을 선택하세요.</div></div>",
                 unsafe_allow_html=True,
             )
@@ -411,7 +416,7 @@ def _render_spectator_players(*, snapshot: dict[str, Any], me: dict[str, Any]) -
     alive_players = [player for player in players if player.get("alive")]
     dead_players = [player for player in players if not player.get("alive")]
     with st.container(key="spectator-player-panel", border=True):
-        st.markdown(f"### 🔵 생존자 ({len(alive_players)})")
+        st.markdown(f"### 👥 생존자 ({len(alive_players)})")
         st.caption("마을을 위해 토론하는 플레이어입니다.")
         for player in alive_players:
             _render_spectator_player_row(
@@ -432,7 +437,7 @@ def _render_spectator_player_row(*, player: dict[str, Any], mine: bool) -> None:
     with st.container(border=True):
         seat_col, icon_col, name_col, status_col = st.columns([0.45, 0.55, 1.8, 0.7])
         seat_col.write(f"{int(player.get('seat', 0)):02d}")
-        icon_col.write("🤖" if player.get("kind") == "AI" else "🧑")
+        icon_col.write("🤖" if player.get("kind") == "AI" else "👤")
         name = str(player.get("display_name", "플레이어"))
         name_col.write(f"**{name}**" + (" · 나" if mine else ""))
         status_col.write("🟢 생존" if alive else "⚫ 사망")
@@ -447,7 +452,7 @@ def _render_spectator_timeline(*, snapshot: dict[str, Any]) -> None:
         for player in public_players(snapshot)
     }
     with st.container(key="spectator-timeline-panel", border=True):
-        st.markdown("### ▣ 공개 타임라인")
+        st.markdown("### 💬 공개 타임라인")
         st.caption("게임의 공개 이벤트와 발언만 표시됩니다.")
         if not events:
             st.info("아직 표시할 공개 기록이 없습니다.")
@@ -455,7 +460,7 @@ def _render_spectator_timeline(*, snapshot: dict[str, Any]) -> None:
             with st.container(key=f"spectator-public-event-{index}", border=True):
                 speaker = _event_speaker(event=event, player_names=player_names)
                 if speaker:
-                    st.markdown(f"**💬 {speaker}**")
+                    st.markdown(f"**💬 {speaker}의 발언**")
                 else:
                     st.markdown(f"**{_event_heading(event)}**")
                 st.write(_event_text(event=event, player_names=player_names))
@@ -464,7 +469,7 @@ def _render_spectator_timeline(*, snapshot: dict[str, Any]) -> None:
 def _render_spectator_private(*, snapshot: dict[str, Any], me: dict[str, Any]) -> None:
     """관전 중에도 유지되는 본인의 역할·사망 시점·기존 private 정보만 표시한다."""
 
-    role_name, role_icon = ROLE_PRESENTATION.get(me.get("role"), ("확인 중", "❔"))
+    role_name, role_icon = ROLE_PRESENTATION.get(me.get("role"), ("확인 중", "?"))
     own_public = next(
         (
             player
@@ -487,7 +492,7 @@ def _render_spectator_private(*, snapshot: dict[str, Any], me: dict[str, Any]) -
         eliminated_phase = own_public.get("eliminated_phase")
         eliminated_round = own_public.get("eliminated_round")
         with st.container(border=True):
-            st.markdown("**◷ 기록**")
+            st.markdown("**📜 기록**")
             if eliminated_round is not None:
                 st.write(f"탈락 시점: {eliminated_round}번째 밤·낮 진행 중")
             if eliminated_phase:
@@ -558,10 +563,10 @@ def _render_private_panel(*, me: dict[str, Any]) -> None:
         st.markdown(f'<div class="game-role-name">{role_name}</div>', unsafe_allow_html=True)
         st.success("생존 중" if me.get("alive") else "관전 중")
         with st.container(key="game-alibi", border=True):
-            st.markdown("#### ◷ 나의 알리바이")
+            st.markdown("#### 🗝️ 나의 알리바이")
             st.write(str(me.get("alibi", "없음")))
         with st.container(key="game-observation", border=True):
-            st.markdown("#### ◉ 내가 본 것")
+            st.markdown("#### 👁️ 내가 본 것")
             st.write(str(me.get("observation", "없음")))
         private_events = me.get("private_events", [])
         if isinstance(private_events, list) and private_events:
@@ -682,7 +687,7 @@ def _render_spectator_controls(
             st.caption("남은 AI 발언·투표·밤 행동을 빠르게 진행합니다.")
             if requested and not enabled and not isinstance(pending, dict):
                 st.session_state["game.f6_pending"] = {
-                    "status": "PENDING_TO_RENDER",
+                    "status": "IN_FLIGHT",
                     "expected_state_version": game.get("state_version"),
                     "idempotency_key": str(uuid4()),
                     "game_id": game_id,
@@ -701,7 +706,7 @@ def _render_spectator_controls(
             if st.button("같은 요청 다시 확인", key="spectator.fast_forward.retry"):
                 st.session_state["game.f6_pending"] = {
                     **pending,
-                    "status": "PENDING_TO_RENDER",
+                    "status": "IN_FLIGHT",
                 }
                 st.rerun()
         elif pending_status == "REJECTED":
@@ -759,7 +764,7 @@ def _render_save_control(
 
     if "SAVE_AND_EXIT" not in snapshot.get("legal_actions", []):
         return
-    if st.button("💾 저장", key="game.save_exit", use_container_width=True):
+    if st.button("💾 저장하고 나가기", key="game.save_exit", use_container_width=True):
         try:
             client.submit_command(
                 game_id=game_id,

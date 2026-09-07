@@ -8,7 +8,7 @@ from uuid import UUID
 
 import streamlit as st
 
-from frontend_user.core.sync import SyncEnvelopeError, apply_envelope
+from frontend_user.core.sync import SyncEnvelopeError, SyncPolicy, apply_envelope
 
 ASSET_DIR = Path(__file__).with_name("browser_components") / "sync"
 SYNC_COMPONENT = st.components.v2.component(
@@ -52,3 +52,39 @@ def apply_sync(*, snapshot: dict[str, Any], envelope: dict[str, Any] | None) -> 
     if updated is None:
         raise SyncEnvelopeError("SYNC_EMPTY")
     return updated
+
+
+@st.fragment(run_every=SyncPolicy().foreground_poll_ms / 1000)
+def poll_game_progress(*, game_id: str) -> None:
+    """SSE 무응답에도 읽기 동기화를 유지하며 실제 변경 때만 전체 화면을 갱신한다."""
+
+    snapshot = st.session_state.get("game.latest_snapshot", {})
+    game = snapshot.get("game", {})
+    # 이전 게임의 타이머가 다른 게임의 화면이나 종료 화면을 갱신하지 않게 한다.
+    if game.get("game_id") != game_id or game.get("status") != "IN_PROGRESS":
+        return
+    client = st.session_state["game.client"]
+    try:
+        envelope = client.get_sync(
+            game_id=game_id,
+            after_state_version=int(game.get("state_version", 0)),
+            after_sequence=int(game.get("last_sequence", 0)),
+        )
+        try:
+            updated = apply_sync(snapshot=snapshot, envelope=envelope)
+        except SyncEnvelopeError:
+            updated = None
+        if updated == snapshot:
+            return
+        # 공개 delta만으로 개인별 행동 권한을 추측하지 않는다. GET까지 성공해야
+        # cursor를 확정하므로 GET 실패 후에도 다음 주기에 같은 변경을 복구한다.
+        response = client.get_game(game_id)
+        refreshed = response.get("data", response)
+        if not isinstance(refreshed, dict) or refreshed.get("game", {}).get("game_id") != game_id:
+            raise ValueError("SYNC_SNAPSHOT_INVALID")
+        st.session_state["game.latest_snapshot"] = refreshed
+        st.session_state["game.sync_status"] = "POLLING"
+    except Exception:
+        st.warning("게임 상태 확인에 실패했습니다. 자동으로 다시 확인합니다.")
+        return
+    st.rerun()

@@ -8,6 +8,18 @@
 uv run streamlit run frontend_admin/app.py --server.port 8502
 ```
 
+Backend와 관리자 UUID allowlist 없이 화면만 확인하려면 PowerShell에서 개발용
+가상 메타데이터 모드를 명시적으로 켭니다. 이 모드는 합성된 운영 지표와 게임
+요약만 사용하며 기본값은 꺼져 있습니다.
+
+```powershell
+$env:ADMIN_DEMO_MODE = "true"
+uv run streamlit run frontend_admin/app.py --server.port 8502
+```
+
+실제 운영 데이터를 확인할 때는 `$env:ADMIN_DEMO_MODE = "false"`로 바꾸고,
+Backend의 `ADMIN_USER_IDS` allowlist 검증을 사용합니다.
+
 관리자 entrypoint가 저장소 루트를 Python import 경로에 등록하므로, 위 명령을
 저장소 루트에서 실행하면 `frontend_admin` 패키지 절대 import가 정상적으로
 해석됩니다.
@@ -16,6 +28,15 @@ uv run streamlit run frontend_admin/app.py --server.port 8502
 사용자 Frontend의 내부 identity 서명을 관리자 권한 증명으로 사용하지 않습니다.
 목표 MVP는 [화면 흐름도](../docs/개발상세플랜/AI_MAFIA_SCREEN_FLOW.md)의 UUID allowlist
 기반 read-only 화면이며 loopback 또는 사설망에서만 활성화합니다.
+
+현재 관리자 센터는 다음 세 탭으로 구성됩니다.
+
+- **운영 현황**: 전체 게임·종료 게임·종료율·시민/마피아 승률 KPI와 최근 게임 목록
+- **통계 분석**: 시민/마피아 승리 횟수 그래프와 평균 라운드 등 운영 지표
+- **피드백 · 로그**: 평균 피드백 점수와 향후 목록·감사 로그 연동 영역
+
+직업별 승률, 피드백 목록, 감사 로그 목록은 현재 Backend 조회 계약에 포함되어 있지
+않아 임의의 데이터를 표시하지 않고 준비 상태 안내를 표시합니다.
 
 ## 팀 전달 사항
 

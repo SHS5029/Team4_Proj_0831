@@ -60,7 +60,7 @@ FEEDBACK_PAGE_CSS = """
               linear-gradient(155deg, #07162b, #1b4e82);
 }
 .feedback-scene::after {
-  content: "🤖  🕵️  🤖  🤖  🤖  🤖"; font-size: 1.35rem; letter-spacing: .25rem;
+  content: "CASE CLOSED  /  YOUR REPORT"; font:600 .72rem/1.2 monospace; letter-spacing: .12rem;
 }
 [class*="st-key-feedback-stars"] [data-testid="stFeedback"] button { transform: scale(1.2); }
 [class*="st-key-feedback-form-card"] textarea { min-height: 8rem; }
@@ -110,7 +110,7 @@ def render(
     st.markdown(
         '<header class="feedback-header"><div><span class="feedback-brand">AI 마피아</span>'
         '<span class="feedback-status">연결됨</span></div><nav class="feedback-nav">'
-        "<span>▣&nbsp; 피드백</span><span>⚙&nbsp; 설정</span></nav></header>",
+        "<span>💬 피드백</span><span>🔐 설정</span></nav></header>",
         unsafe_allow_html=True,
     )
     is_game_feedback = feedback_type == "GAME"
@@ -188,12 +188,12 @@ def _render_game_summary(
 
     with st.container(key="feedback-game-summary", border=True):
         st.markdown('<div class="feedback-scene" aria-hidden="true"></div>', unsafe_allow_html=True)
-        st.markdown(f"## {title}")
+        st.markdown(f"## 💬 {title}")
         st.success(winner)
         st.write(f"🚩 진행 라운드: {game.get('round', '-')}회")
         st.write(f"👥 플레이어 수: {len(players) if players else game.get('player_count', '-')}명")
         if isinstance(finished_at, str):
-            st.write(f"▣ 완료 시간: {finished_at.replace('T', ' ').removesuffix('Z')}")
+            st.write(f"완료 시간: {finished_at.replace('T', ' ').removesuffix('Z')}")
         st.caption("게임 정보는 읽기 전용이며 피드백 본문에 포함되지 않습니다.")
 
 
@@ -290,7 +290,8 @@ def _queue_feedback(
         st.error(str(error))
         return
     st.session_state["feedback.pending"] = {
-        "status": "PENDING_TO_RENDER",
+        # 한 번의 클릭으로 요청을 시작하되, 재실행 시 같은 key를 재사용한다.
+        "status": "IN_FLIGHT",
         "body": body,
         "idempotency_key": str(uuid4()),
     }
@@ -340,7 +341,7 @@ def _render_pending_feedback(pending: Any) -> None:
         if st.button("같은 요청 다시 확인", key="feedback.retry"):
             st.session_state["feedback.pending"] = {
                 **pending,
-                "status": "PENDING_TO_RENDER",
+                "status": "IN_FLIGHT",
             }
             st.rerun()
     elif status == "REJECTED":

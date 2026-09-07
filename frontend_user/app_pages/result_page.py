@@ -47,7 +47,7 @@ RESULT_PAGE_CSS = """
               linear-gradient(165deg, #17406f, #5c88bf 62%, #efad75) !important;
 }
 [class*="st-key-result-hero"]::after {
-  content: "🤖  🕵️  🤖  🤖  🤖  🤖"; position: absolute; right: 1.5rem; bottom: 1rem;
+  content: "CASE CLOSED  /  FINAL REPORT"; position: absolute; right: 1.5rem; bottom: 1rem;
   color: #fff; font-size: clamp(1.1rem, 2.5vw, 2rem); letter-spacing: .35rem;
 }
 [class*="st-key-result-hero"] h1,
@@ -58,6 +58,25 @@ RESULT_PAGE_CSS = """
   border: 1px solid var(--result-border) !important;
   border-radius: .85rem !important; background: #fff !important;
   box-shadow: 0 .5rem 1.5rem rgba(20, 42, 81, .05);
+}
+[class*="st-key-result-summary"] [data-testid="stMetricLabel"],
+[class*="st-key-result-summary"] [data-testid="stMetricLabel"] p,
+[class*="st-key-result-summary"] [data-testid="stMetricValue"],
+[class*="st-key-result-summary"] [data-testid="stMetricValue"] div {
+  color: #24152f !important; -webkit-text-fill-color: #24152f !important;
+}
+[class*="st-key-result-summary"] [data-testid="stMetricValue"] div {
+  font-size: 1.6rem; white-space: normal; overflow: visible;
+  text-overflow: clip; overflow-wrap: anywhere;
+}
+[class*="st-key-result-summary"] [data-testid="stAlert"] {
+  background: #e3f3e9 !important; color: #165c36 !important;
+}
+[class*="st-key-result-summary"] [data-testid="stAlert"] p {
+  color: #165c36 !important;
+}
+[class*="st-key-result-summary"] [data-testid="stCaptionContainer"] p {
+  color: #526078 !important;
 }
 [class*="st-key-result-player-"] {
   min-height: 8.5rem; padding: .9rem !important; border: 1px solid var(--result-border) !important;
@@ -87,10 +106,10 @@ RESULT_PAGE_CSS = """
 """
 
 ROLE_PRESENTATION = {
-    "MAFIA": ("마피아", "🥷", "🔴"),
+    "MAFIA": ("마피아", "🕶️", "🔴"),
     "DETECTIVE": ("탐정", "🕵️", "🔵"),
     "DOCTOR": ("의사", "🩺", "🟢"),
-    "CITIZEN": ("시민", "🧑", "⚪"),
+    "CITIZEN": ("시민", "👤", "⚪"),
 }
 
 WINNER_PRESENTATION = {
@@ -115,7 +134,7 @@ def render(snapshot: dict[str, Any]) -> None:
     scenario = snapshot.get("scenario") if isinstance(snapshot.get("scenario"), dict) else {}
     st.markdown(RESULT_PAGE_CSS, unsafe_allow_html=True)
     st.markdown(
-        '<header class="result-header"><div><span class="result-brand">게임 종료</span>'
+        '<header class="result-header"><div><span class="result-brand">🩸 게임 종료</span>'
         '<span class="result-status">연결됨</span></div>'
         '<span class="result-settings">⚙&nbsp; 설정</span></header>',
         unsafe_allow_html=True,
@@ -135,7 +154,7 @@ def render(snapshot: dict[str, Any]) -> None:
     hero_col, summary_col = st.columns([1.4, 1])
     with hero_col:
         with st.container(key="result-hero", border=True):
-            st.markdown(f"# {winner_title}")
+            st.markdown(f"# 🩸 {winner_title}")
             st.markdown(f"### {winner_caption}")
             st.caption(str(scenario.get("title", "AI 마피아 게임")))
     with summary_col:
@@ -207,7 +226,7 @@ def _render_records(*, result: dict[str, Any]) -> None:
         for player in players
     }
     with st.container(key="result-records", border=True):
-        with st.expander("▣ 게임 기록 보기", expanded=True):
+        with st.expander("📜 게임 기록 보기", expanded=True):
             night_col, vote_col = st.columns(2)
             with night_col:
                 st.markdown("#### 밤별 주요 기록")
@@ -271,7 +290,7 @@ def _render_actions(*, show_feedback: bool) -> None:
         next_index = 0
         if show_feedback:
             if columns[0].button(
-                "▣ 게임별 피드백",
+                "💬 게임별 피드백",
                 key="result.feedback",
                 type="primary",
                 use_container_width=True,
@@ -288,7 +307,7 @@ def _render_actions(*, show_feedback: bool) -> None:
             st.session_state.pop("game.game_id", None)
             st.rerun()
         if columns[next_index + 1].button(
-            "⌂ 홈으로",
+            "🏙️ 홈으로",
             key="result.home",
             use_container_width=True,
         ):

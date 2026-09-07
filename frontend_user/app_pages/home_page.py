@@ -7,6 +7,7 @@ from html import escape
 from typing import Any
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from frontend_user.core.api_client import ApiClient, ApiResponseError, ApiUnavailableError
 
@@ -27,8 +28,8 @@ HOME_CSS = """
 .home-hero h1 { margin:0; color:var(--home-ink); font-size:clamp(2rem,4vw,3rem); line-height:1.15; letter-spacing:-.055em; }
 .home-hero p { margin:.8rem 0 1.5rem; color:var(--home-muted); font-size:1rem; }
 .home-hero-art { min-height:13.5rem; overflow:hidden; position:relative; border-radius:.65rem; background:linear-gradient(160deg,#102e5c,#061327 65%,#1b3152); box-shadow:0 1rem 2rem rgba(20,42,81,.14); }
-.home-hero-art::before { content:"☾"; position:absolute; top:.75rem; right:24%; color:#8ec8fa; font-size:3rem; }
-.home-hero-art::after { content:"🤖  🤖  🤖  🤖  🤖  🤖"; position:absolute; right:1rem; bottom:.85rem; color:#f6f8fb; font-size:2.1rem; letter-spacing:-.5rem; filter:saturate(.8); }
+.home-hero-art::before { content:"CASE 07"; position:absolute; top:1rem; right:1.2rem; color:#d6a9f2; font:700 .72rem/1.2 monospace; letter-spacing:.18rem; }
+.home-hero-art::after { content:"SILENCE  /  SUSPICION  /  TRUTH"; position:absolute; right:1rem; bottom:1.1rem; color:#f6f1fa; font:600 .72rem/1.2 monospace; letter-spacing:.12rem; }
 .home-hero-scene { position:absolute; right:1rem; bottom:4.1rem; color:#80a6d6; font-size:.75rem; letter-spacing:.35rem; }
 .home-section-title { margin:1.3rem 0 .7rem; color:var(--home-ink); font-size:1.25rem; font-weight:800; }
 .home-player-box { padding:1rem 1.15rem; border:1px solid var(--home-border); border-radius:.65rem; background:#fff; }
@@ -70,19 +71,19 @@ def render(client: ApiClient) -> None:
 
     st.markdown(HOME_CSS, unsafe_allow_html=True)
     st.markdown(
-        '<header class="home-header"><div><span class="home-brand">AI 마피아</span>'
+        '<header class="home-header"><div><span class="home-brand">🕶️ AI 마피아</span>'
         '<span class="home-status">연결됨</span></div>'
-        '<nav class="home-nav"><span>▣&nbsp; 피드백</span><span>⚙&nbsp; 설정</span></nav></header>',
+        '<nav class="home-nav"><span>💬 피드백</span><span>🔐 설정</span></nav></header>',
         unsafe_allow_html=True,
     )
     st.markdown(
         '<section class="home-hero"><div class="home-hero-copy">'
-        "<h1>AI와 함께 시작하는 추리 게임</h1>"
+        "<h1>🌙 AI와 함께 시작하는 추리 게임</h1>"
         "<p>한 명의 플레이어와 개성 있는 AI들이 펼치는 마피아 게임</p>"
-        '</div><div class="home-hero-art"><span class="home-hero-scene">▰ ▰ ▰ ▰ ▰</span></div></section>',
+        '</div><div class="home-hero-art"><span class="home-hero-scene">NIGHT DISTRICT / 23:40</span></div></section>',
         unsafe_allow_html=True,
     )
-    if st.button("새 게임 시작  ›", type="primary", key="home.new_game", width="stretch"):
+    if st.button("🕶️ 새 게임 시작", type="primary", key="home.new_game", width="stretch"):
         st.session_state["navigation.page"] = "create"
         st.rerun()
     st.caption("6~9명 · 약 15분")
@@ -90,10 +91,17 @@ def render(client: ApiClient) -> None:
         st.markdown('<div class="home-player-title">플레이어 정보</div>', unsafe_allow_html=True)
         st.caption("현재 구조에서는 UUID를 게임 식별자로 사용합니다. 닉네임은 저장하지 않습니다.")
         user_id = st.session_state.get("identity.user_id")
-        st.text_input(
-            "게임 식별자 (UUID)", value=str(user_id or ""), disabled=True, key="home.user_id"
-        )
-    st.markdown('<div class="home-section-title">게임 불러오기</div>', unsafe_allow_html=True)
+        identifier_col, copy_col = st.columns([4, 1], vertical_alignment="bottom")
+        with identifier_col:
+            st.text_input(
+                "게임 식별자 (UUID)",
+                value=str(user_id or ""),
+                disabled=True,
+                key="home.user_id",
+            )
+        with copy_col:
+            _render_copy_button(str(user_id or ""))
+    st.markdown('<div class="home-section-title">🔍 게임 불러오기</div>', unsafe_allow_html=True)
     st.markdown(
         '<div class="home-tabs"><span class="home-tab home-tab-active">진행 중</span><span class="home-tab">저장됨</span><span class="home-tab">완료</span></div>',
         unsafe_allow_html=True,
@@ -114,6 +122,44 @@ def render(client: ApiClient) -> None:
         st.info("아직 게임이 없어요. 새 게임을 시작해 보세요.")
         return
     _render_group([g for g in games if g.get("status") in {"IN_PROGRESS", "SAVED"}][:3])
+
+
+def _render_copy_button(value: str) -> None:
+    """현재 UUID만 브라우저 클립보드에 복사하는 좁은 범위의 버튼을 표시한다.
+
+    Streamlit 기본 버튼은 브라우저 클립보드 API를 직접 호출할 수 없으므로 작은
+    컴포넌트 안에서 사용자 클릭 시에만 UUID 문자열을 복사한다. 게임 snapshot,
+    인증 정보와 다른 session state는 컴포넌트로 전달하지 않는다.
+    """
+
+    safe_value = escape(value, quote=True)
+    disabled = " disabled" if not value else ""
+    components.html(
+        f"""
+        <style>
+          body {{ margin:0; background:transparent; font-family:inherit; }}
+          button {{ width:100%; min-height:44px; border:1px solid #4b176f; border-radius:10px;
+            color:#fff; background:#4b176f; font-weight:700; cursor:pointer; }}
+          button:hover:not(:disabled) {{ background:#64258c; }}
+          button:disabled {{ opacity:.45; cursor:not-allowed; }}
+        </style>
+        <button type="button" onclick="copyIdentifier(this)"{disabled}>복사</button>
+        <script>
+          async function copyIdentifier(button) {{
+            const value = "{safe_value}";
+            try {{
+              await navigator.clipboard.writeText(value);
+              button.textContent = "복사됨";
+              window.setTimeout(() => button.textContent = "복사", 1400);
+            }} catch (_) {{
+              button.textContent = "복사 실패";
+            }}
+          }}
+        </script>
+        """,
+        height=50,
+        scrolling=False,
+    )
 
 
 def load_games(client: ApiClient) -> None:
@@ -146,7 +192,7 @@ def _render_group(games: list[dict[str, Any]]) -> None:
             status = game.get("status")
             title = escape(str(game.get("scenario_title", "사건 정보 없음")))
             thumb_class = " snow" if "SNOW" in str(game.get("scenario_id", "")) else ""
-            icon = "❄️" if thumb_class else "📺"
+            icon = "❄️ SNOW CASE" if thumb_class else "📁 OPEN CASE"
             label = "저장됨" if status == "SAVED" else "토론 중"
             badge_class = " saved" if status == "SAVED" else ""
             st.markdown(
@@ -158,7 +204,7 @@ def _render_group(games: list[dict[str, Any]]) -> None:
             )
             action = "계속하기" if game.get("can_resume") else "불러오기"
             if st.button(
-                action + "  ›", key=f"home.game.{game.get('game_id')}", width="stretch"
+                action, key=f"home.game.{game.get('game_id')}", width="stretch"
             ):
                 game_id = game.get("game_id")
                 if isinstance(game_id, str):

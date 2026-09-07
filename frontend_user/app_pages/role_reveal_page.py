@@ -104,7 +104,7 @@ ROLE_REVEAL_CSS = """
 ROLE_PRESENTATION = {
     "MAFIA": (
         "마피아",
-        "🥷",
+        "🕶️",
         "밤에 다른 플레이어를 제거합니다. 마피아가 생존 비마피아 이상이면 승리합니다.",
     ),
     "DETECTIVE": (
@@ -119,7 +119,7 @@ ROLE_PRESENTATION = {
     ),
     "CITIZEN": (
         "시민",
-        "🧑",
+        "👤",
         "대화와 투표로 마피아를 찾습니다. 마피아가 모두 제거되면 승리합니다.",
     ),
 }
@@ -133,9 +133,9 @@ def render(snapshot: dict[str, Any]) -> None:
     # 다른 플레이어 정보의 우발적 노출을 함께 방지한다.
     st.markdown(ROLE_REVEAL_CSS, unsafe_allow_html=True)
     st.markdown(
-        '<header class="role-header"><div><span class="role-brand">AI 마피아</span>'
+        '<header class="role-header"><div><span class="role-brand">🕶️ AI 마피아</span>'
         '<span class="role-status">연결됨</span></div>'
-        '<nav class="role-nav"><span>▣&nbsp; 피드백</span><span>⚙&nbsp; 설정</span></nav></header>',
+        '<nav class="role-nav"><span>💬 피드백</span><span>🔐 설정</span></nav></header>',
         unsafe_allow_html=True,
     )
 
@@ -153,7 +153,7 @@ def render(snapshot: dict[str, Any]) -> None:
     }
 
     with st.container(key="role-reveal-card", border=True):
-        st.markdown('<div class="role-pill">🎭 &nbsp; 역할 공개</div>', unsafe_allow_html=True)
+        st.markdown('<div class="role-pill">🔐 역할 공개</div>', unsafe_allow_html=True)
         st.markdown(f"## 당신은 **{role_name}**입니다")
         st.markdown(f'<div class="role-avatar" aria-hidden="true">{role_icon}</div>', unsafe_allow_html=True)
         st.markdown(
@@ -171,13 +171,13 @@ def render(snapshot: dict[str, Any]) -> None:
         )
         st.info(role_text)
         with st.container(key="role-alibi", border=True):
-            st.markdown("#### ◷ 나의 알리바이")
+            st.markdown("#### 🗝️ 나의 알리바이")
             st.write(str(me.get("alibi", "없음")))
         with st.container(key="role-observation", border=True):
-            st.markdown("#### ◉ 내가 본 것")
+            st.markdown("#### 👁️ 내가 본 것")
             st.write(str(me.get("observation", "없음")))
         st.markdown(
-            '<div class="role-private-note">🔒 &nbsp; 이 정보는 나에게만 보여요</div>',
+            '<div class="role-private-note">🔒 이 정보는 나에게만 보여요</div>',
             unsafe_allow_html=True,
         )
 
@@ -186,14 +186,15 @@ def render(snapshot: dict[str, Any]) -> None:
             game_id = str(game.get("game_id"))
             with st.container(key="role-begin"):
                 if st.button(
-                    "게임 시작  ›",
+                    "🌙 게임 시작",
                     type="primary",
                     key="game.begin",
                     disabled=locked,
                     use_container_width=True,
                 ):
                     st.session_state["game.begin_pending"] = {
-                        "status": "PENDING_TO_RENDER",
+                        # idempotency key를 유지한 채 즉시 요청 처리 단계로 진입한다.
+                        "status": "IN_FLIGHT",
                         "game_id": game_id,
                         "expected_state_version": int(game.get("state_version", 0)),
                         "idempotency_key": str(uuid4()),

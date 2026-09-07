@@ -36,7 +36,7 @@ from frontend_user.components.theme import render_app_theme  # noqa: E402
 def main() -> None:
     """UUID를 한 번 bootstrap한 뒤 Backend 연동 준비 화면을 표시한다."""
 
-    st.set_page_config(page_title="AI 마피아", page_icon="🕵️", layout="wide")
+    st.set_page_config(page_title="AI 마피아", page_icon="🕶️", layout="wide")
     render_app_theme()
     if (
         get_identity(st.session_state) is None

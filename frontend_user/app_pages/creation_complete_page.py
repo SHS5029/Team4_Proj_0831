@@ -38,7 +38,7 @@ def render(pending: dict[str, object]) -> None:
     names = PLAYER_NAMES[:player_count]
 
     st.markdown(
-        f'<section class="complete-card"><div class="complete-icon">🎉</div>'
+        f'<section class="complete-card"><div class="complete-icon">🎭 CASE READY</div>'
         f'<h1>게임이 만들어졌어요</h1><p>{player_count}명의 플레이어가 사건 현장에 모였습니다.</p>'
         f'<div class="complete-id">게임 식별자<br>{game_id}</div>'
         f'<div class="complete-players">{"".join(f"<span class=\"complete-player\">{name}</span>" for name in names)}</div>'
