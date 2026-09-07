@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 from typing import Any, Protocol
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
+
+from mafia_game.schemas.common import RESOURCE_SCOPE_ORDER, WireContractError, canonical_uuid
 
 
 class BackendContextError(RuntimeError):
@@ -68,14 +70,27 @@ class MinimalBackendContextClient:
         return payload
 
     async def read_resource(self, uri: str) -> dict[str, Any]:
-        """최소 Resource URI를 Backend context endpoint로 전달한다."""
+        """URI 형식·UUID·scope를 검증한 뒤 Backend에 전달하며 projection은 재구성하지 않는다."""
 
         parts = uri.split("/")
-        if len(parts) != 6 or parts[:4] != ["mafia:", "", "context", "current"]:
+        current = len(parts) == 6 and parts[:4] == ["mafia:", "", "context", "current"]
+        scoped = len(parts) == 8 and parts[:4] == ["mafia:", "", "context", "scoped"]
+        if not (current or scoped):
             raise BackendContextError
+        try:
+            parameters = {
+                "game_id": canonical_uuid(parts[4]),
+                "user_id": canonical_uuid(parts[5]),
+            }
+            if scoped:
+                parameters["player_id"] = canonical_uuid(parts[6])
+                if parts[7] not in RESOURCE_SCOPE_ORDER:
+                    raise WireContractError
+            parameters["scope"] = parts[7] if scoped else "public"
+        except WireContractError as error:
+            raise BackendContextError from error
         return await self._request(
-            "GET",
-            f"/internal/mcp/context?game_id={quote(parts[4], safe='-._~')}&user_id={quote(parts[5], safe='-._~')}"
+            "GET", f"/internal/mcp/context?{urlencode(parameters)}"
         )
 
     async def get_prompt(self, name: str, arguments: dict[str, str]) -> str:
@@ -83,23 +98,34 @@ class MinimalBackendContextClient:
 
         if name != "agent_instruction":
             raise BackendContextError
+        # FastMCP의 생략된 선택 인자는 빈 문자열이므로 UUID query에 보내지 않는다.
+        # 값이 있는 인자는 그대로 전달해 Backend의 형식 검증을 우회하지 않는다.
+        arguments = {
+            key: value for key, value in arguments.items()
+            if key not in {"game_id", "user_id"} or value != ""
+        }
         query = ""
         if arguments:
             query = "?" + "&".join(
                 f"{quote(key, safe='-._~')}={quote(value, safe='-._~')}"
                 for key, value in arguments.items()
             )
-        payload = await self._request("GET", f"/internal/mcp/prompts/{quote(name, safe='-._~')}{query}")
+        payload = await self._request(
+            "GET", f"/internal/mcp/prompts/{quote(name, safe='-._~')}{query}"
+        )
         prompt = payload.get("prompt")
         if not isinstance(prompt, str):
             raise BackendContextError
         return prompt
 
     async def submit_action(self, **payload: str | None) -> dict[str, Any]:
-        """행동 payload를 Backend 최소 endpoint에 그대로 전달한다."""
+        """Backend가 명시적으로 승인한 응답만 반환해 HTTP 200과 행동 성공을 구분한다."""
 
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-        return await self._request("POST", "/internal/mcp/actions", body=body)
+        result = await self._request("POST", "/internal/mcp/actions", body=body)
+        if result.get("accepted") is not True or result.get("error") is not None:
+            raise BackendContextError
+        return result
 
     async def aclose(self) -> None:
         """adapter가 생성한 HTTP client만 닫는다."""

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from html import escape
+
 import streamlit as st
 
-
-# MOCK ONLY: 실제 시나리오·player preset 연결 시 이 목록을 제거한다.
-PLAYER_NAMES = ["민수", "철수", "영희", "태경", "지효", "성주", "환석", "유빈", "태웅", "지혜", "지토"]
+from frontend_user.components.theme import render_page_navigation
 
 
 def render(pending: dict[str, object]) -> None:
@@ -27,19 +28,30 @@ def render(pending: dict[str, object]) -> None:
         """,
         unsafe_allow_html=True,
     )
-    game_id = str(pending.get("game_id", "확인 중"))
+    render_page_navigation(current_page="creation_complete")
+    game_id = escape(str(pending.get("game_id", "확인 중")))
     snapshot = pending.get("snapshot")
-    game = snapshot.get("data", {}).get("game", {}) if isinstance(snapshot, dict) else {}
-    player_count = game.get("player_count", pending.get("player_count", 6)) if isinstance(game, dict) else pending.get("player_count", 6)
-    try:
-        player_count = max(6, min(9, int(player_count)))
-    except (TypeError, ValueError):
-        player_count = 6
-    names = PLAYER_NAMES[:player_count]
+    data = snapshot.get("data", snapshot) if isinstance(snapshot, Mapping) else {}
+    players = data.get("players") if isinstance(data, Mapping) else None
+    # 참가자 이름은 생성 직후 조회한 공개 snapshot만 사용한다. 응답이 손상되었을 때
+    # 가짜 이름을 보충하지 않고 안내를 표시하며, HTML 삽입 전에는 문자열을 escape한다.
+    names = [
+        escape(player["display_name"])
+        for player in players
+        if isinstance(player, Mapping)
+        and isinstance(player.get("display_name"), str)
+        and player["display_name"].strip()
+    ] if isinstance(players, list) else []
+    if not names or len(names) != len(players):
+        st.warning("참가자 정보를 확인하지 못했어요. 역할 공개 화면에서 다시 확인해 주세요.")
+    description = (
+        f"{len(names)}명의 플레이어가 사건 현장에 모였습니다."
+        if names else "역할 공개 화면에서 참가자를 확인해 주세요."
+    )
 
     st.markdown(
-        f'<section class="complete-card"><div class="complete-icon">🎭 CASE READY</div>'
-        f'<h1>게임이 만들어졌어요</h1><p>{player_count}명의 플레이어가 사건 현장에 모였습니다.</p>'
+        f'<section class="complete-card"><div class="complete-icon">🎉</div>'
+        f'<h1>게임이 만들어졌어요</h1><p>{description}</p>'
         f'<div class="complete-id">게임 식별자<br>{game_id}</div>'
         f'<div class="complete-players">{"".join(f"<span class=\"complete-player\">{name}</span>" for name in names)}</div>'
         f'<p>역할은 다음 화면에서 비공개로 공개됩니다.</p></section>',

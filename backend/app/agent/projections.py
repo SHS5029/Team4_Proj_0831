@@ -8,10 +8,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from math import isfinite
 from typing import Any, Mapping, Sequence
-from uuid import UUID, uuid4
+from types import SimpleNamespace
+from uuid import UUID
 
-from backend.app.models.enums import GamePhase, GameStatus, NightActionType, PlayerRole
+from backend.app.models.enums import GamePhase, GameStatus, PlayerRole
 from backend.app.models.game_state import GameState
 
 
@@ -50,6 +52,10 @@ def build_context(
     facts: Mapping[str, str] | None = None,
     persona: Mapping[str, Any] | None = None,
     now: datetime | None = None,
+    window: Mapping[str, Any] | None = None,
+    eliminated: Mapping[UUID, tuple[str, int]] | None = None,
+    last_sequence: int = 0,
+    valid_target_ids: Sequence[UUID] | None = None,
 ) -> dict[str, Any]:
     """정본의 context envelope와 scope별 허용 data를 만든다."""
 
@@ -63,6 +69,10 @@ def build_context(
         if player is None or player.kind.value != "AI":
             raise PermissionError("CAPABILITY_DENIED")
 
+    if deadline_at is not None and (window is None or deadline_at != window.get("deadline_at")):
+        raise PermissionError("CAPABILITY_DENIED")
+    if window_id is None:
+        raise PermissionError("CAPABILITY_DENIED")
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
@@ -73,16 +83,16 @@ def build_context(
         "subject_id": str(expected_subject),
         "phase": state.phase.value,
         "state_version": state.state_version,
-        "window_id": str(window_id or uuid4()),
+        "window_id": str(window_id),
         "scope": scope,
         "data": {},
     }
     if scope == "public":
-        envelope["data"] = _public_data(state, scenario, public_events)
+        envelope["data"] = _public_data(state, scenario, public_events, eliminated or {}, last_sequence)
     elif scope == "me":
         envelope["data"] = _me_data(state, subject_id, facts, private_events)
     elif scope == "turn":
-        envelope["data"] = _turn_data(state, subject_id, envelope["window_id"], current, deadline_at)
+        envelope["data"] = _turn_data(state, subject_id, envelope["window_id"], current, window, valid_target_ids)
     elif scope == "persona":
         envelope["data"] = _persona_data(persona)
     else:
@@ -94,15 +104,23 @@ def _public_data(
     state: GameState,
     scenario: Mapping[str, Any] | None,
     public_events: Sequence[Mapping[str, Any]],
+    eliminated: Mapping[UUID, tuple[str, int]],
+    last_sequence: int,
 ) -> dict[str, Any]:
     """모든 subject가 같은 상태에서 동일하게 받는 공개 projection."""
 
-    scenario_data = dict(scenario or {})
-    scenario_data.setdefault("scenario_id", "unknown")
-    scenario_data.setdefault("title", "시나리오 준비 중")
-    scenario_data.setdefault("background", "공개 시나리오 정보가 없습니다.")
-    scenario_data.setdefault("victim", "미정")
-    scenario_data.setdefault("locations", [])
+    if not scenario:
+        raise PermissionError("CAPABILITY_DENIED")
+    scenario_data = {
+        name: _text(scenario.get(name), maximum)
+        for name, maximum in {"scenario_id": 64, "title": 120, "background": None, "victim": 120}.items()
+    }
+    locations = scenario.get("locations")
+    if not isinstance(locations, list) or not 4 <= len(locations) <= 5:
+        raise PermissionError("CAPABILITY_DENIED")
+    scenario_data["locations"] = [_text(location, 80) for location in locations]
+    if len(set(scenario_data["locations"])) != len(locations):
+        raise PermissionError("CAPABILITY_DENIED")
     return {
         "game": {
             "game_id": str(state.game_id),
@@ -111,31 +129,35 @@ def _public_data(
             "round": state.round,
             "day_number": state.day_number,
             "state_version": state.state_version,
-            "last_sequence": 0,
+            "last_sequence": last_sequence,
             "ruleset_version": "mystery-v1",
             "scenario_version": "scenario-v1",
             "player_count": len(state.players),
-            "mafia_count": sum(player.role is PlayerRole.MAFIA for player in state.players),
-            "fast_forward_enabled": not state.human_alive,
-            "updated_at": state.updated_at.isoformat(),
+            # 인원별 공개 규칙으로 계산해 비공개 role 변경에 영향을 받지 않는다.
+            "mafia_count": 1 if len(state.players) <= 7 else 2,
+            "fast_forward_enabled": state.fast_forward_enabled,
+            "updated_at": state.updated_at.astimezone(timezone.utc).isoformat(),
         },
         "scenario": scenario_data,
         "players": [
             {
                 "player_id": str(player.player_id),
                 "seat": player.seat,
-                "display_name": player.display_name or f"플레이어 {player.seat}",
+                "display_name": _text(player.display_name, 40),
                 "kind": player.kind.value,
                 "alive": player.alive,
-                "revealed_role": player.role.value if state.status is GameStatus.COMPLETED else None,
-                "eliminated_phase": None,
-                "eliminated_round": None,
+                "revealed_role": player.role.value if state.status is GameStatus.COMPLETED or (
+                    not player.alive and eliminated.get(player.player_id, (None,))[0]
+                    in {"DAY_VOTE", "REVOTE", "FINAL_ACCUSATION"}
+                ) else None,
+                "eliminated_phase": eliminated.get(player.player_id, (None, None))[0],
+                "eliminated_round": eliminated.get(player.player_id, (None, None))[1],
             }
             for player in sorted(state.players, key=lambda item: item.seat)
         ],
         # caller가 이미 PUBLIC으로 분류한 event만 복사한다. private payload를 이
         # projection 함수가 새로 만들지 않는 것이 audience 혼입을 막는 핵심이다.
-        "public_events": [dict(event) for event in public_events],
+        "public_events": _closed_events(state, public_events),
     }
 
 
@@ -148,14 +170,16 @@ def _me_data(
     """AI 자기 자신의 role·fact·private event만 반환한다."""
 
     player = state.player_by_id[subject_id]
-    given = facts or {}
+    if not facts:
+        raise PermissionError("CAPABILITY_DENIED")
+    given = facts
     return {
         "player_id": str(subject_id),
         "role": player.role.value,
         "alive": player.alive,
-        "alibi": given.get("alibi", "등록된 알리바이가 없습니다."),
-        "observation": given.get("observation", "등록된 관찰이 없습니다."),
-        "private_events": [dict(event) for event in private_events],
+        "alibi": _text(given.get("alibi"), 240),
+        "observation": _text(given.get("observation"), 240),
+        "private_events": _closed_events(state, private_events, player_id=subject_id),
     }
 
 
@@ -164,42 +188,57 @@ def _turn_data(
     subject_id: UUID,
     window_id: str,
     now: datetime,
-    deadline_at: datetime | None,
+    window: Mapping[str, Any] | None,
+    valid_target_ids: Sequence[UUID] | None,
 ) -> dict[str, Any]:
-    """현재 AI job에 필요한 도구와 공개 대상만 계산한다."""
+    """서비스가 확정한 후보만 투영하며 만료·중복·다른 차례를 거부한다.
+
+    Agent projection은 규칙 엔진을 호출하거나 후보를 추정하지 않는다. 전달된
+    ID를 같은 상태의 공개 참가자로만 변환하고 누락·다른 게임·사망자는 거부한다.
+    """
 
     player = state.player_by_id[subject_id]
-    window_kind = WINDOW_BY_PHASE.get(state.phase)
-    if window_kind is None:
+    kind = WINDOW_BY_PHASE.get(state.phase)
+    if not window or not player.alive or state.status is not GameStatus.IN_PROGRESS:
         raise PermissionError("CAPABILITY_DENIED")
-    if window_kind != "SPEECH" and deadline_at is None:
+    if kind is None or window.get("window_kind") != kind or str(window.get("id")) != window_id:
         raise PermissionError("CAPABILITY_DENIED")
-    if not player.alive:
+    if valid_target_ids is None or any(not isinstance(identifier, UUID) for identifier in valid_target_ids):
         raise PermissionError("CAPABILITY_DENIED")
-    targets = []
-    if window_kind == "NIGHT" and player.role in {
-        PlayerRole.MAFIA,
-        PlayerRole.DETECTIVE,
-        PlayerRole.DOCTOR,
-    }:
-        targets = [
-            candidate
-            for candidate in state.alive_players
-            if candidate.player_id != subject_id or player.role is PlayerRole.DOCTOR
-        ]
-    elif window_kind in {"VOTE", "REVOTE", "FINAL_VOTE"}:
-        targets = [candidate for candidate in state.alive_players if candidate.player_id != subject_id]
+    identifiers = set(valid_target_ids)
+    targets = [candidate for candidate in state.alive_players if candidate.player_id in identifiers]
+    if len(identifiers) != len(valid_target_ids) or len(targets) != len(identifiers):
+        raise PermissionError("CAPABILITY_DENIED")
+    if subject_id in identifiers and not (kind == "NIGHT" and player.role is PlayerRole.DOCTOR):
+        raise PermissionError("CAPABILITY_DENIED")
+    if kind == "SPEECH":
+        if targets or str(window.get("turn_player_id")) != str(subject_id) or (window.get("deadline_at") is None and subject_id in state.speech_actors):
+            raise PermissionError("CAPABILITY_DENIED")
+    elif kind == "NIGHT":
+        if player.role not in {PlayerRole.MAFIA, PlayerRole.DETECTIVE, PlayerRole.DOCTOR} or subject_id in state.night_actions:
+            raise PermissionError("CAPABILITY_DENIED")
+    else:
+        if subject_id in state.votes:
+            raise PermissionError("CAPABILITY_DENIED")
+    deadline = window.get("deadline_at")
+    if kind == "SPEECH" and deadline is not None and (not isinstance(deadline, datetime) or deadline.utcoffset() is None or deadline <= now):
+        raise PermissionError("CAPABILITY_DENIED")
+    if kind != "SPEECH" and (
+        not isinstance(deadline, datetime) or deadline.utcoffset() is None
+        or deadline <= now or not targets
+    ):
+        raise PermissionError("CAPABILITY_DENIED")
     return {
         "window_id": window_id,
-        "window_kind": window_kind,
-        "cycle": 1,
-        "opened_state_version": state.state_version,
-        "server_time": now.isoformat(),
-        "deadline_at": deadline_at.isoformat() if window_kind != "SPEECH" else None,
-        "turn_player_id": str(subject_id) if window_kind == "SPEECH" else None,
-        "allowed_tools": TOOL_BY_WINDOW[window_kind] if targets or window_kind == "SPEECH" else [],
+        "window_kind": kind,
+        "cycle": window["cycle"],
+        "opened_state_version": window["opened_state_version"],
+        "server_time": now.astimezone(timezone.utc).isoformat(),
+        "deadline_at": deadline.astimezone(timezone.utc).isoformat() if deadline is not None else None,
+        "turn_player_id": str(subject_id) if kind == "SPEECH" else None,
+        "allowed_tools": list(TOOL_BY_WINDOW[kind]),
         "valid_targets": [
-            {"player_id": str(candidate.player_id), "display_name": candidate.display_name or f"플레이어 {candidate.seat}"}
+            {"player_id": str(candidate.player_id), "display_name": _text(candidate.display_name, 40)}
             for candidate in targets
         ],
     }
@@ -210,19 +249,69 @@ def _persona_data(persona: Mapping[str, Any] | None) -> dict[str, Any]:
 
     if not persona:
         raise PermissionError("CAPABILITY_DENIED")
-    allowed = {"persona_id", "version", "display_name", "speech_style", "backstory", "parameters"}
-    result = {key: persona[key] for key in allowed if key in persona}
-    if set(result) != allowed:
+    limits = {"persona_id": 64, "version": 32, "display_name": 40, "speech_style": 240, "backstory": 500}
+    result = {name: _text(persona.get(name), maximum) for name, maximum in limits.items()}
+    keys = {"sociability", "assertiveness", "suspicion", "deception", "risk_tolerance",
+            "memory_recall", "reasoning_skill", "emotionality", "cooperativeness", "verbosity"}
+    parameters = persona.get("parameters")
+    if not isinstance(parameters, Mapping) or set(parameters) != keys or any(
+        type(value) not in {int, float} or not isfinite(value) or not 0 <= value <= 1
+        for value in parameters.values()
+    ) or parameters["reasoning_skill"] != 0.5:
         raise PermissionError("CAPABILITY_DENIED")
+    result["parameters"] = dict(parameters)
     return result
+
+
+def _text(value: Any, maximum: int | None) -> str:
+    """저장 문자열의 공백을 정규화하고 누락·잘못된 타입을 대체 문구 없이 거부한다."""
+
+    if not isinstance(value, str):
+        raise PermissionError("CAPABILITY_DENIED")
+    value = " ".join(value.split())
+    if not value or (maximum is not None and len(value) > maximum):
+        raise PermissionError("CAPABILITY_DENIED")
+    return value
 
 
 def _gm_guide_data(state: GameState, public_events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """GM에게 공개 진행 지침만 제공한다. role·행동·조사 결과는 제외한다."""
 
-    source = dict(public_events[-1]) if public_events else None
+    events = _closed_events(state, public_events)
+    source = events[-1] if events else None
     return {
         "narration_kind": "PUBLIC_EVENT" if source else "FIXED_MESSAGE",
         "source_public_event": source,
         "fixed_message_key": None if source else "GAME_INTRO",
     }
+
+
+
+def _closed_events(state: GameState, events: Sequence[Mapping[str, Any]], *, player_id: UUID | None = None) -> list[dict[str, Any]]:
+    """조회 계층에서 audience를 거른 event도 마지막 직렬화에서 필드·중복을 제한한다.
+
+    원장 수신자 검증은 read service가 담당한다. 여기서는 중첩 data의 추가 비공개
+    필드와 중복 ID가 재사용된 dict를 통해 envelope 안에 들어오는 것을 막는다.
+    """
+
+    from backend.app.services.game.game_read_service import _public_event_data
+    from backend.app.services.game.actor_context import private_event_data
+
+    result, seen = [], set()
+    for event in events:
+        try:
+            identifier = str(UUID(str(event["event_id"])))
+            if identifier in seen:
+                continue
+            created = datetime.fromisoformat(event["created_at"].replace("Z", "+00:00"))
+            if created.utcoffset() is None:
+                continue
+            event_type = event["event_type"]
+            data = (_public_event_data(event_type, event["data"], SimpleNamespace(state=state))
+                    if player_id is None else private_event_data(state, event_type, event["data"], player_id=player_id))
+            seen.add(identifier)
+            result.append({"event_id": identifier, "event_type": event_type,
+                           "created_at": created.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"), "data": data})
+        except (KeyError, TypeError, ValueError, AttributeError):
+            continue
+    return result

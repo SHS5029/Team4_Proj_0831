@@ -316,3 +316,75 @@ async def test_local_provider_rejects_non_json_model_content(
         await LocalProvider("http://127.0.0.1:1234/v1", "synthetic-model").generate(
             _llm_request()
         )
+
+
+@pytest.mark.asyncio
+async def test_openai_reasoning_has_room_for_final_json_and_classifies_incomplete(monkeypatch):
+    """400토큰을 추론에서 소진한 응답을 빈 JSON 오류로 뭉개지 않는다."""
+
+    from types import SimpleNamespace
+    from backend.app.llm_provider.openai_provider import OpenAIProvider
+    calls = []
+    response = SimpleNamespace(status="completed", output_text='{"type":"PASS"}', usage=None, id="synthetic")
+    async def create(**kwargs):
+        calls.append(kwargs)
+        return response
+    def factory(**kwargs):
+        assert kwargs["max_retries"] == 0
+        return SimpleNamespace(responses=SimpleNamespace(create=create))
+    monkeypatch.setattr("openai.AsyncOpenAI", factory)
+    provider = OpenAIProvider("synthetic-key", "gpt-5.6-luna")
+    assert (await provider.generate(_llm_request())).output == {"type": "PASS"}
+    assert calls[0]["reasoning"] == {"effort": "high"}
+    assert calls[0]["max_output_tokens"] >= 4096
+    assert calls[0]["store"] is False
+    response.status = "incomplete"
+    response.incomplete_details = SimpleNamespace(reason="max_output_tokens")
+    with pytest.raises(LLMResponseError) as caught:
+        await provider.generate(_llm_request())
+    assert caught.value.code == "LLM_INCOMPLETE"
+
+
+@pytest.mark.parametrize("basis", ["PUBLIC_EVIDENCE", "NO_NEW_INFORMATION"])
+def test_pass_accepts_only_public_basis_codes(basis):
+    """자발적 PASS 사유는 허용 코드만 사용해 공개 추론 원문을 만들지 않는다."""
+
+    assert normalize_agent_proposal({"type": "PASS", "public_rationale": basis}).public_rationale == basis
+    with pytest.raises(LLMResponseError):
+        normalize_agent_proposal({"type": "PASS", "public_rationale": "합성 비공개 원문"})
+
+
+@pytest.mark.parametrize("name,code,expected", [
+    ("AuthenticationError", None, "PROVIDER_AUTHENTICATION"),
+    ("RateLimitError", None, "PROVIDER_RATE_LIMIT"),
+    ("APITimeoutError", None, "PROVIDER_TIMEOUT"),
+    ("NotFoundError", None, "PROVIDER_MODEL_UNAVAILABLE"),
+    ("BadRequestError", "model_not_found", "PROVIDER_MODEL_UNAVAILABLE"),
+])
+def test_openai_failure_codes_preserve_safe_cause(name, code, expected):
+    """SDK 오류 원문 대신 운영자가 구분할 수 있는 고정 원인만 전달한다."""
+
+    from backend.app.agent.orchestrator import AgentOrchestrator
+    from backend.app.llm_provider.errors import LLMProviderError
+    from backend.app.llm_provider.openai_provider import _raise_openai_error
+    error = type(name, (Exception,), {"code": code})("synthetic private payload")
+    with pytest.raises(LLMProviderError) as caught:
+        _raise_openai_error(error)
+    assert "private" not in str(caught.value)
+    assert AgentOrchestrator._failure_code(caught.value) == expected
+
+
+@pytest.mark.asyncio
+async def test_openai_non_reasoning_keeps_existing_request_contract(monkeypatch):
+    """비추론 모델에는 지원하지 않는 reasoning 옵션을 보내지 않는다."""
+
+    from types import SimpleNamespace
+    from backend.app.llm_provider.openai_provider import OpenAIProvider
+    calls = []
+    async def create(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(status="completed", output_text='{"type":"PASS"}', usage=None, id="synthetic")
+    monkeypatch.setattr("openai.AsyncOpenAI", lambda **kwargs: SimpleNamespace(responses=SimpleNamespace(create=create)))
+    await OpenAIProvider("synthetic-key", "gpt-4.1-mini").generate(_llm_request())
+    assert "reasoning" not in calls[0]
+    assert calls[0]["max_output_tokens"] == 128

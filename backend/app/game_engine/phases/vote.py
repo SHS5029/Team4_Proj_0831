@@ -9,7 +9,7 @@ from backend.app.game_engine.errors import RuleViolation
 from backend.app.game_engine.fallback import auto_vote_target
 from backend.app.game_engine.phases.transition import after_vote, touch
 from backend.app.game_engine.rules.player_rules import eliminate_player, find_player, require_alive_player
-from backend.app.game_engine.rules.vote_rules import leaders
+from backend.app.game_engine.rules.vote_rules import leaders, valid_targets
 from backend.app.models.enums import GamePhase
 from backend.app.models.game_state import GameState, Vote
 
@@ -30,6 +30,8 @@ def submit(state: GameState, actor_id: UUID, target_id: UUID) -> GameState:
         raise RuleViolation("TARGET_DEAD")
     if actor.player_id == target.player_id:
         raise RuleViolation("SELF_TARGET_INVALID")
+    if target not in valid_targets(state, actor):
+        raise RuleViolation("TARGET_INVALID")
     state.votes[actor.player_id] = Vote(actor.player_id, target_id)
     touch(state)
     return state
@@ -50,6 +52,7 @@ def resolve(state: GameState, *, force: bool = False) -> GameState:
             state.votes[actor.player_id] = Vote(actor.player_id, target.player_id)
     vote_leaders = leaders(state.votes)
     if len(vote_leaders) > 1 and state.phase is GamePhase.DAY_VOTE:
+        state.revote_candidates = set(vote_leaders)
         state.phase = GamePhase.REVOTE
         state.votes.clear()
         touch(state)
@@ -57,6 +60,7 @@ def resolve(state: GameState, *, force: bool = False) -> GameState:
     if len(vote_leaders) == 1:
         eliminate_player(state, vote_leaders[0])
     state.votes.clear()
+    state.revote_candidates.clear()
     touch(state)
     after_vote(state)
     return state

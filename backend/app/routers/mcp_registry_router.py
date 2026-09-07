@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from backend.app.core.errors import ApiError
 from backend.app.schemas.command_schema import GameCommandRequest
+from backend.app.services.game.actor_context import read_actor_context
 
 router = APIRouter(prefix="/internal/mcp", tags=["mcp"])
 
@@ -33,11 +34,16 @@ def read_context(
     request: Request,
     game_id: UUID = Query(...),
     user_id: UUID = Query(...),
+    player_id: UUID | None = Query(default=None),
+    scope: str = Query(default="public"),
 ) -> dict[str, Any]:
-    """요청 사용자가 소유한 실제 PostgreSQL 게임 snapshot을 반환한다."""
+    """같은 게임의 AI actor와 scope를 고정해 인간 개인 정보 없이 8.2 envelope를 반환한다."""
 
-    snapshot = request.app.state.game_runtime.snapshot(user_id, game_id)
-    return {"status": "ok", "source": "backend", "context": snapshot}
+    runtime = request.app.state.game_runtime
+    return read_actor_context(
+        runtime._read, owner_user_id=user_id, game_id=game_id,
+        player_id=player_id, scope=scope, agents=runtime._agent_repository,
+    )
 
 
 @router.get("/prompts/{name}")

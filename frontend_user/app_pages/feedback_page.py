@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import streamlit as st
 
+from frontend_user.components.theme import render_page_navigation
 from frontend_user.core.api_client import ApiClient, ApiResponseError, ApiUnavailableError
 from frontend_user.core.feedback import ALLOWED_TAGS, build_feedback
 
@@ -114,6 +115,9 @@ def render(
         unsafe_allow_html=True,
     )
     is_game_feedback = feedback_type == "GAME"
+    render_page_navigation(
+        current_page="game_feedback" if is_game_feedback else "feedback"
+    )
     st.markdown(
         '<div class="feedback-title">게임 피드백</div>'
         if is_game_feedback

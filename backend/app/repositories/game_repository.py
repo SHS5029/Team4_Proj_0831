@@ -349,6 +349,8 @@ class PostgresGameRepository:
 
         if state.state_version != expected_state_version + 1:
             raise ValueError("Game state version must increase by exactly one")
+        if type(state.fast_forward_enabled) is not bool or (state.fast_forward_enabled and state.human_alive):
+            raise ValueError("빠른 진행 선택은 사망한 인간에게만 허용됩니다.")
         cursor.execute(
             """
             UPDATE public.games
@@ -366,7 +368,7 @@ class PostgresGameRepository:
                 state.round,
                 state.day_number,
                 state.state_version,
-                not state.human_alive,
+                state.fast_forward_enabled,
                 state.winner.value if state.winner else None,
                 state.win_reason.value if state.win_reason else None,
                 state.updated_at if state.status.value == "SAVED" else None,

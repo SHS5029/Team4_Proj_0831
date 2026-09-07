@@ -364,7 +364,7 @@ class PostgresGameSaveService(PostgresBeginGameService):
                 "round": state.round,
                 "day_number": state.day_number,
                 "state_version": state.state_version,
-                "fast_forward_enabled": not state.human_alive,
+                "fast_forward_enabled": state.fast_forward_enabled,
             },
         )
         saved_event = self._events.append(
@@ -449,7 +449,7 @@ class PostgresGameResumeService(PostgresBeginGameService):
                 "round": state.round,
                 "day_number": state.day_number,
                 "state_version": state.state_version,
-                "fast_forward_enabled": not state.human_alive,
+                "fast_forward_enabled": state.fast_forward_enabled,
             },
         )
         resumed_event = self._events.append(
@@ -585,9 +585,9 @@ class PostgresDiscussionCommandService(PostgresBeginGameService):
         )
         state.speech_actors = {UUID(str(row["actor_player_id"])) for row in submissions}
         state.speech_had_content = any(row["action_type"] == "SPEAK" for row in submissions)
-        # 첫날 추가 질문 순환은 DB window의 cycle=2가 원본이다. 메모리 기본값을
+        # 둘째 날 이후 추가 질문 순환은 DB window의 cycle=2가 원본이다. 메모리 기본값을
         # 믿으면 서버 재시작 뒤 같은 질문을 여러 번 열 수 있다.
-        state.speech_question_cycle_used = state.day_number == 1 and cycle == 2
+        state.speech_question_cycle_used = state.day_number >= 2 and cycle == 2
 
     def _append_discussion_events(
         self,
@@ -621,26 +621,27 @@ class PostgresDiscussionCommandService(PostgresBeginGameService):
                     "round": state.round,
                     "day_number": state.day_number,
                     "state_version": state.state_version,
-                    "fast_forward_enabled": not state.human_alive,
+                    "fast_forward_enabled": state.fast_forward_enabled,
                 },
             )
         )
-        event_payload: dict[str, Any] = {"player_id": str(actor_player_id)}
-        if command_type == "SPEAK":
-            event_payload["message"] = message
-        events.append(
-            self._events.append(
-                cursor,
-                game_id=game_id,
-                state_version=state.state_version,
-                event_type="PLAYER_SPOKE" if command_type == "SPEAK" else "PLAYER_PASSED",
-                audience="PUBLIC",
-                front_sequence=front_sequence,
-                operation_index=1,
-                operation_type="APPEND_PUBLIC_EVENT",
-                payload=event_payload,
+        if command_type != "END_DISCUSSION":
+            event_payload: dict[str, Any] = {"player_id": str(actor_player_id)}
+            if command_type == "SPEAK":
+                event_payload["message"] = message
+            events.append(
+                self._events.append(
+                    cursor,
+                    game_id=game_id,
+                    state_version=state.state_version,
+                    event_type="PLAYER_SPOKE" if command_type == "SPEAK" else "PLAYER_PASSED",
+                    audience="PUBLIC",
+                    front_sequence=front_sequence,
+                    operation_index=1,
+                    operation_type="APPEND_PUBLIC_EVENT",
+                    payload=event_payload,
+                )
             )
-        )
         if next_window is None:
             window_operation = "CLEAR_ACTION_WINDOW"
             window_payload: dict[str, Any] = {"window_id": None}
@@ -678,7 +679,7 @@ class PostgresDiscussionCommandService(PostgresBeginGameService):
                 event_type="TURN_OPENED",
                 audience="PUBLIC",
                 front_sequence=front_sequence,
-                operation_index=2,
+                operation_index=len(events),
                 operation_type=window_operation,
                 payload=window_payload,
             )

@@ -12,12 +12,12 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from backend.app.game_engine.engine import GameEngine
 from backend.app.game_engine.rng import DeterministicRng
+from backend.app.game_engine.rules.night_rules import required_actors, role_action
 from backend.app.models.enums import (
     GamePhase,
     GameStatus,
     NightActionType,
     PlayerKind,
-    PlayerRole,
 )
 from backend.app.models.game_state import GameState, PlayerState
 
@@ -28,8 +28,11 @@ class SimulationResult:
 
     player_count: int
     winner: str
+    win_reason: str
     round: int
     operation_count: int
+    revote_count: int
+    final_accusation_target: UUID | None
     signature: tuple[object, ...]
 
 
@@ -45,12 +48,13 @@ def _players(player_count: int, seed: str) -> list[tuple[UUID, PlayerKind]]:
 def _target(
     state: GameState, actor: PlayerState, purpose: str, *, allow_self: bool = False
 ) -> UUID:
-    """숨은 role을 읽지 않고 생존 후보 중 하나를 결정한다."""
+    """숨은 역할 없이 생존·재투표 후보의 교집합에서 한 명을 결정한다."""
 
     candidates = [
         player
         for player in state.alive_players
-        if allow_self or player.player_id != actor.player_id
+        if (allow_self or player.player_id != actor.player_id)
+        and (state.phase is not GamePhase.REVOTE or player.player_id in state.revote_candidates)
     ]
     return DeterministicRng(state.seed).choice(candidates, purpose).player_id
 
@@ -68,20 +72,10 @@ def _pass_discussion(engine: GameEngine, state: GameState) -> None:
 def _resolve_heuristic_night(engine: GameEngine, state: GameState) -> None:
     """각 역할이 자기 역할에 맞는 대상만 제출한 뒤 밤을 해소한다."""
 
-    living = state.alive_players
-    mafia = next((player for player in living if player.role is PlayerRole.MAFIA), None)
-    actors = ([mafia] if mafia else []) + [
-        player for player in living if player.role in {PlayerRole.DETECTIVE, PlayerRole.DOCTOR}
-    ]
-    action_by_role = {
-        PlayerRole.MAFIA: NightActionType.ATTACK,
-        PlayerRole.DETECTIVE: NightActionType.INVESTIGATE,
-        PlayerRole.DOCTOR: NightActionType.PROTECT,
-    }
-    for actor in actors:
-        if actor is None:
+    for actor in required_actors(state):
+        if actor.player_id in state.night_actions:
             continue
-        action = action_by_role[actor.role]
+        action = role_action(state, actor.player_id)
         target = _target(
             state,
             actor,
@@ -93,16 +87,22 @@ def _resolve_heuristic_night(engine: GameEngine, state: GameState) -> None:
 
 
 def _resolve_heuristic_vote(engine: GameEngine, state: GameState) -> None:
-    """생존자가 숨은 role 없이 투표하고, 동률이면 같은 방식으로 재투표한다."""
+    """일반·재투표·최종 지목 모두 생존자 전원의 첫 유효 표를 제출한다."""
 
+    final_accusation = state.phase is GamePhase.FINAL_ACCUSATION
+    submit = engine.submit_final_accusation if final_accusation else engine.submit_vote
     for actor in state.alive_players:
+        if actor.player_id in state.votes:
+            continue
         target = _target(
             state,
             actor,
             f"b9-vote:{state.round}:{state.phase.value}:{actor.player_id}",
         )
-        engine.submit_vote(state, actor.player_id, target)
-    engine.resolve_vote(state)
+        submit(state, actor.player_id, target)
+    # 최종 지목은 마지막 유효 표가 들어오면 엔진이 즉시 판정하므로 이중 해소하지 않는다.
+    if not final_accusation:
+        engine.resolve_vote(state)
 
 
 def _signature(state: GameState) -> tuple[object, ...]:
@@ -121,7 +121,17 @@ def _signature(state: GameState) -> tuple[object, ...]:
         )
         for operation in state.operations
     )
-    return (players, state.winner.value if state.winner else None, state.round, operations)
+    return (
+        players,
+        state.phase.value,
+        state.status.value,
+        state.winner.value if state.winner else None,
+        state.win_reason.value if state.win_reason else None,
+        state.round,
+        state.final_accusation_target,
+        tuple(sorted(state.last_detective_result.items())),
+        operations,
+    )
 
 
 def run_heuristic_game(player_count: int, seed: str) -> SimulationResult:
@@ -144,25 +154,22 @@ def run_heuristic_game(player_count: int, seed: str) -> SimulationResult:
             _pass_discussion(engine, state)
         elif state.phase is GamePhase.NIGHT_ACTION:
             _resolve_heuristic_night(engine, state)
-        elif state.phase in {GamePhase.DAY_VOTE, GamePhase.REVOTE}:
+        elif state.phase in {GamePhase.DAY_VOTE, GamePhase.REVOTE, GamePhase.FINAL_ACCUSATION}:
             _resolve_heuristic_vote(engine, state)
         elif state.phase is GamePhase.FINAL_DISCUSSION:
             engine.advance_final_discussion(state)
-        elif state.phase is GamePhase.FINAL_ACCUSATION:
-            actor = state.alive_players[0]
-            target = next(
-                player for player in state.alive_players if player.player_id != actor.player_id
-            )
-            engine.submit_final_accusation(state, actor.player_id, target.player_id)
         else:
             raise AssertionError(f"unexpected simulation phase: {state.phase}")
-    if state.status is not GameStatus.COMPLETED or state.winner is None:
+    if state.status is not GameStatus.COMPLETED or state.winner is None or state.win_reason is None:
         raise AssertionError("synthetic game did not finish within 100 steps")
     return SimulationResult(
         player_count=player_count,
         winner=state.winner.value,
+        win_reason=state.win_reason.value,
         round=state.round,
         operation_count=len(state.operations),
+        revote_count=sum(operation.command == "RESOLVE_REVOTE" for operation in state.operations),
+        final_accusation_target=state.final_accusation_target,
         signature=_signature(state),
     )
 

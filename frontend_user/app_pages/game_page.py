@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import re
+from datetime import datetime, timedelta
+from html import escape
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import streamlit as st
 
 from frontend_user.components.action_panel import render as render_action_panel
-from frontend_user.components.sync_bridge import apply_sync, mount_sse, poll_game_progress
+from frontend_user.components.sync_bridge import apply_sync, mount_sse
+from frontend_user.components.theme import render_page_navigation
 from frontend_user.core.api_client import ApiResponseError, ApiUnavailableError
 from frontend_user.core.sync import SyncEnvelopeError
 from frontend_user.core.view_models import own_private_view, public_players, public_timeline
@@ -53,6 +57,7 @@ GAME_PAGE_CSS = """
   letter-spacing: -.045em;
 }
 .game-phase-caption { margin: .35rem 0 1rem; color: var(--game-muted); }
+[class*="st-key-current-action-region"] { margin-bottom: 1.1rem; }
 [class*="st-key-game-player-panel"],
 [class*="st-key-game-timeline-panel"],
 [class*="st-key-game-my-panel"] {
@@ -93,7 +98,7 @@ GAME_PAGE_CSS = """
   background: radial-gradient(circle at 72% 25%, #355987 0 2%, transparent 3%),
               linear-gradient(145deg, #07162b, #163d68);
 }
-.game-scene::after { content: "LIVE FEED  /  NIGHT DISTRICT  /  23:40"; color: #d6a9f2; font:600 .72rem/1.2 monospace; letter-spacing:.1rem; }
+.game-scene::after { content: "📡  🖥️  🔴 ON AIR  🖥️  🕰️"; color: #dceaff; font-size: 1.25rem; }
 .game-private-banner {
   margin-bottom: .85rem; padding: .55rem .7rem; border-radius: .45rem;
   color: #51617b; background: #f5f7fb; font-size: .76rem; text-align: center;
@@ -163,6 +168,15 @@ GAME_PAGE_CSS = """
     transition-duration: .01ms !important; animation-duration: .01ms !important;
   }
 }
+[data-testid="stChatMessage"] {
+  background: #fff2a8;
+  border: 1px solid #e8ce61;
+  border-radius: 18px;
+  color: #332b16;
+}
+[data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] {
+  color: #332b16;
+}
 </style>
 """
 
@@ -176,10 +190,10 @@ PHASE_LABELS = {
 }
 
 ROLE_PRESENTATION = {
-    "MAFIA": ("마피아", "🕶️"),
+    "MAFIA": ("마피아", "🥷"),
     "DETECTIVE": ("탐정", "🕵️"),
     "DOCTOR": ("의사", "🩺"),
-    "CITIZEN": ("시민", "👤"),
+    "CITIZEN": ("시민", "🧑"),
 }
 
 
@@ -191,14 +205,16 @@ def render(snapshot: dict[str, Any]) -> None:
     client = st.session_state["game.client"]
     game = snapshot.get("game", {})
     game_id = game.get("game_id")
+    _process_shell_pending(client=client, game_id=str(game_id))
     envelope = mount_sse(
         backend_url=client.config.api_url,
         game_id=str(game.get("game_id")),
         user_id=client.user_id,
         last_sequence=int(game.get("last_sequence", 0)),
+        after_state_version=int(game.get("state_version", 0)),
     )
-    received_from_sse = envelope is not None
-    if envelope is None:
+    tick = st.session_state.get("game.sync_tick", 0)
+    if envelope is None and (not tick or st.session_state.get("game.sync_component_failed")):
         try:
             envelope = client.get_sync(
                 game_id=str(game.get("game_id")),
@@ -209,17 +225,28 @@ def render(snapshot: dict[str, Any]) -> None:
             envelope = None
     try:
         snapshot = apply_sync(snapshot=snapshot, envelope=envelope)
-        if _has_delta_operations(envelope):
+        tick = st.session_state.get("game.sync_tick")
+        tick_changed = tick is not None and tick != st.session_state.get("game.activity_tick")
+        if _has_sync_updates(envelope) or tick_changed:
             # SSE delta는 공통 공개 operation 중심이므로 사용자별 legal_actions와
-            # valid_targets가 비어 있을 수 있다. 변경 batch를 받은 직후 같은
-            # game_id의 authoritative snapshot으로 전체 projection을 보강한다.
+            # valid_targets가 비어 있을 수 있고, sync SNAPSHOT에는 메모리의 AI
+            # 기록이 없을 수 있다. 실제 수신 때 같은 사용자·게임의 GET으로 보강하며
+            # 재시작 전 run의 기록을 복사하지 않고 최신 응답의 빈 배열도 그대로 따른다.
             try:
                 response = client.get_game(str(game.get("game_id")))
                 refreshed = response.get("data") if isinstance(response.get("data"), dict) else response
                 if isinstance(refreshed, dict) and isinstance(refreshed.get("game"), dict):
+                    refreshed_game = refreshed["game"]
+                    if (refreshed_game.get("game_id") != game_id
+                            or refreshed.get("me", {}).get("player_id") != snapshot.get("me", {}).get("player_id")
+                            or any(type(refreshed_game.get(key)) is not int
+                                   or refreshed_game[key] < snapshot["game"][key]
+                                   for key in ("state_version", "last_sequence"))):
+                        raise ValueError("INVALID_RESPONSE")
                     snapshot = refreshed
+                    st.session_state["game.activity_tick"] = tick
             except Exception:
-                # delta는 이미 원자적으로 반영했으므로 재조회 일시 실패 시에도
+                # sync는 이미 원자적으로 반영했으므로 재조회 일시 실패 시에도
                 # 화면을 비우지 않고 다음 event 또는 polling에서 다시 시도한다.
                 pass
     except SyncEnvelopeError:
@@ -242,11 +269,7 @@ def render(snapshot: dict[str, Any]) -> None:
         # 보존한다. 이 값을 저장하지 않으면 component 상태만 갱신되고, 다른 화면
         # 전환이나 재렌더링에서 이전 phase·action window가 다시 사용될 수 있다.
         st.session_state["game.latest_snapshot"] = snapshot
-        st.session_state["game.sync_status"] = (
-            "LIVE" if received_from_sse else "POLLING" if envelope else "STALE"
-        )
-
-    poll_game_progress(game_id=str(game_id))
+        st.session_state.setdefault("game.sync_status", "POLLING")
 
     game = snapshot.get("game", {})
     scenario = snapshot.get("scenario", {})
@@ -266,9 +289,18 @@ def render(snapshot: dict[str, Any]) -> None:
     st.markdown(
         '<header class="game-header"><div><span class="game-brand">AI 마피아</span>'
         f'<span class="game-status{connection_class}">{connection_label}</span></div>'
-        '<nav class="game-nav"><span>피드백</span><span>설정</span></nav></header>',
+        '<nav class="game-nav"><span>▣&nbsp; 피드백</span><span>⚙&nbsp; 설정</span></nav></header>',
         unsafe_allow_html=True,
     )
+    render_page_navigation(current_page="game")
+    # 응답 유실 뒤 서버가 phase를 변경했어도 기존 요청의 재시도 UI를 유지한다.
+    # 정상 시작 버튼은 역할 공개 화면에서만 표시한다.
+    for command_type in ("BEGIN_GAME", "RESUME"):
+        pending = st.session_state.get(SHELL_COMMANDS[command_type][2])
+        if (isinstance(pending, dict) and pending.get("game_id") == str(game_id)
+                and pending.get("status") in SHELL_LOCKED
+                and not (command_type == "RESUME" and game.get("status") == "SAVED")):
+            _render_shell_command(client=client, game_id=str(game_id), snapshot=snapshot, command_type=command_type)
 
     day_number = game.get("day_number", 1)
     phase = game.get("phase", "확인 중")
@@ -299,6 +331,20 @@ def render(snapshot: dict[str, Any]) -> None:
                 snapshot=snapshot,
             )
 
+    if game.get("status") == "SAVED":
+        if spectating:
+            _render_save_control(client=client, game_id=str(game_id), snapshot=snapshot)
+        render_saved_control(client=client, snapshot=snapshot)
+        left, center, right = st.columns([1, 1.65, 1.08])
+        with left:
+            _render_players(snapshot=snapshot, me=me, phase=str(phase))
+        with center:
+            _render_agent_activity(snapshot=snapshot)
+            _render_timeline(snapshot=snapshot, scenario=scenario, phase=str(phase), day_number=day_number)
+        with right:
+            _render_private_panel(snapshot=snapshot, me=me)
+        return
+
     if spectating:
         _render_spectator_layout(
             client=client,
@@ -308,45 +354,54 @@ def render(snapshot: dict[str, Any]) -> None:
         )
         return
 
+    # 살아 있는 사용자의 현재 행동은 phase 제목 바로 다음에 한 번만 렌더링한다.
+    # 긴 누적 타임라인이나 AI 진행 기록을 읽고 있어도 하단 요약이 행동 window를
+    # 알리며, 브라우저 component가 새 window에서만 이 영역으로 이동·focus한다.
+    with st.container(key="current-action-region"):
+        _render_visible_action_panel(
+            client=client,
+            game_id=str(game.get("game_id")),
+            snapshot=snapshot,
+        )
+
     left, center, right = st.columns([1, 1.65, 1.08])
     with left:
         _render_players(snapshot=snapshot, me=me, phase=str(phase))
     with center:
-        if phase in {"NIGHT_ACTION", "DAY_VOTE", "REVOTE", "FINAL_ACCUSATION"}:
-            render_action_panel(
-                client=client,
-                game_id=str(game.get("game_id")),
-                snapshot=snapshot,
-            )
-        else:
-            _render_timeline(
-                snapshot=snapshot,
-                scenario=scenario,
-                phase=str(phase),
-                day_number=day_number,
-            )
-            if me.get("alive", False):
-                render_action_panel(
-                    client=client,
-                    game_id=str(game.get("game_id")),
-                    snapshot=snapshot,
-                )
+        _render_agent_activity(snapshot=snapshot)
+        _render_timeline(
+            snapshot=snapshot,
+            scenario=scenario,
+            phase=str(phase),
+            day_number=day_number,
+        )
     with right:
-        _render_private_panel(me=me)
+        _render_private_panel(snapshot=snapshot, me=me)
 
     # 사망자는 위의 전용 분기에서 반환되므로 이 아래에는 생존자 입력만 존재한다.
 
 
-def _has_delta_operations(envelope: dict[str, Any] | None) -> bool:
-    """실제 SSE 변경 batch가 있어 개인 projection 재조회가 필요한지 판단한다."""
+def _render_visible_action_panel(**kwargs: Any) -> None:
+    """백그라운드에서 복귀한 상태를 확인하기 전에는 오래된 행동 입력을 표시하지 않는다."""
+
+    if st.session_state.get("game.sync_hidden"):
+        st.info("최신 게임 상태를 확인한 뒤 행동을 선택할 수 있습니다.")
+        return
+    render_action_panel(**kwargs)
+
+
+def _has_sync_updates(envelope: dict[str, Any] | None) -> bool:
+    """검증된 sync 교체·변경 수신 때만 GET으로 부가 projection을 보강한다."""
 
     if not isinstance(envelope, dict):
         return False
     data = envelope.get("data", envelope)
-    if not isinstance(data, dict) or data.get("mode") != "DELTA":
+    if not isinstance(data, dict):
         return False
+    if data.get("mode") == "SNAPSHOT":
+        return True
     operations = data.get("operations")
-    return isinstance(operations, list) and bool(operations)
+    return data.get("mode") == "DELTA" and isinstance(operations, list) and bool(operations)
 
 
 def _render_players(*, snapshot: dict[str, Any], me: dict[str, Any], phase: str) -> None:
@@ -381,7 +436,7 @@ def _render_players(*, snapshot: dict[str, Any], me: dict[str, Any], phase: str)
                     st.caption(f"공개 역할: {revealed_role}")
         if phase == "NIGHT_ACTION":
             st.markdown(
-                '<div class="game-night-callout"><div><strong>밤이 되었습니다</strong>'
+                '<div class="game-night-callout"><div><strong>🌙 밤이 되었습니다</strong>'
                 "모두 조용히 행동을 선택하세요.</div></div>",
                 unsafe_allow_html=True,
             )
@@ -404,6 +459,7 @@ def _render_spectator_layout(
             st.markdown("### ℹ️ 플레이어가 사망하여 관전 모드로 전환되었습니다.")
             st.caption("게임은 AI 플레이어끼리 계속 진행되며 공개 범위의 정보만 표시됩니다.")
         _render_spectator_timeline(snapshot=snapshot)
+        _render_agent_activity(snapshot=snapshot)
         _render_spectator_controls(client=client, game_id=game_id, snapshot=snapshot)
     with right:
         _render_spectator_private(snapshot=snapshot, me=me)
@@ -416,7 +472,7 @@ def _render_spectator_players(*, snapshot: dict[str, Any], me: dict[str, Any]) -
     alive_players = [player for player in players if player.get("alive")]
     dead_players = [player for player in players if not player.get("alive")]
     with st.container(key="spectator-player-panel", border=True):
-        st.markdown(f"### 👥 생존자 ({len(alive_players)})")
+        st.markdown(f"### 🔵 생존자 ({len(alive_players)})")
         st.caption("마을을 위해 토론하는 플레이어입니다.")
         for player in alive_players:
             _render_spectator_player_row(
@@ -437,7 +493,7 @@ def _render_spectator_player_row(*, player: dict[str, Any], mine: bool) -> None:
     with st.container(border=True):
         seat_col, icon_col, name_col, status_col = st.columns([0.45, 0.55, 1.8, 0.7])
         seat_col.write(f"{int(player.get('seat', 0)):02d}")
-        icon_col.write("🤖" if player.get("kind") == "AI" else "👤")
+        icon_col.write("🤖" if player.get("kind") == "AI" else "🧑")
         name = str(player.get("display_name", "플레이어"))
         name_col.write(f"**{name}**" + (" · 나" if mine else ""))
         status_col.write("🟢 생존" if alive else "⚫ 사망")
@@ -452,24 +508,19 @@ def _render_spectator_timeline(*, snapshot: dict[str, Any]) -> None:
         for player in public_players(snapshot)
     }
     with st.container(key="spectator-timeline-panel", border=True):
-        st.markdown("### 💬 공개 타임라인")
+        st.markdown("### ▣ 공개 타임라인")
         st.caption("게임의 공개 이벤트와 발언만 표시됩니다.")
         if not events:
             st.info("아직 표시할 공개 기록이 없습니다.")
-        for index, event in enumerate(events):
-            with st.container(key=f"spectator-public-event-{index}", border=True):
-                speaker = _event_speaker(event=event, player_names=player_names)
-                if speaker:
-                    st.markdown(f"**💬 {speaker}의 발언**")
-                else:
-                    st.markdown(f"**{_event_heading(event)}**")
-                st.write(_event_text(event=event, player_names=player_names))
+        with st.container(key="spectator-chat-scroll", height=480, border=False, autoscroll=True):
+            for event in events:
+                _render_public_chat_event(event=event, player_names=player_names)
 
 
 def _render_spectator_private(*, snapshot: dict[str, Any], me: dict[str, Any]) -> None:
     """관전 중에도 유지되는 본인의 역할·사망 시점·기존 private 정보만 표시한다."""
 
-    role_name, role_icon = ROLE_PRESENTATION.get(me.get("role"), ("확인 중", "?"))
+    role_name, role_icon = ROLE_PRESENTATION.get(me.get("role"), ("확인 중", "❔"))
     own_public = next(
         (
             player
@@ -489,10 +540,11 @@ def _render_spectator_private(*, snapshot: dict[str, Any], me: dict[str, Any]) -
             st.write(f"역할: {role_name}")
             st.write(f"알리바이: {str(me.get('alibi', '없음'))}")
             st.write(f"관찰: {str(me.get('observation', '없음'))}")
+        _render_investigation_results(snapshot=snapshot)
         eliminated_phase = own_public.get("eliminated_phase")
         eliminated_round = own_public.get("eliminated_round")
         with st.container(border=True):
-            st.markdown("**📜 기록**")
+            st.markdown("**◷ 기록**")
             if eliminated_round is not None:
                 st.write(f"탈락 시점: {eliminated_round}번째 밤·낮 진행 중")
             if eliminated_phase:
@@ -535,15 +587,31 @@ def _render_timeline(
             str(player.get("player_id")): str(player.get("display_name", "플레이어"))
             for player in public_players(snapshot)
         }
-        for index, event in enumerate(events):
-            with st.container(key=f"game-public-event-{index}", border=True):
-                speaker = _event_speaker(event=event, player_names=player_names)
-                if speaker:
-                    st.markdown(f"**{speaker}**")
-                st.write(_event_text(event=event, player_names=player_names))
+        with st.container(key="game-chat-scroll", height=480, border=False, autoscroll=True):
+            for event in events:
+                _render_public_chat_event(event=event, player_names=player_names)
 
 
-def _render_private_panel(*, me: dict[str, Any]) -> None:
+def _render_public_chat_event(*, event: dict[str, Any], player_names: dict[str, str]) -> None:
+    """공개 발언은 말풍선, 행동은 작은 알림으로 표현하고 외부 문자열을 escape한다."""
+
+    speaker = _event_speaker(event=event, player_names=player_names)
+    message = _event_text(event=event, player_names=player_names)
+    if event.get("event_type") == "PLAYER_SPOKE":
+        with st.chat_message(speaker or "플레이어", avatar="💬"):
+            st.markdown(f"<strong>{escape(speaker or '플레이어')}</strong> · 발언", unsafe_allow_html=True)
+            st.markdown(f"<div style='white-space:pre-wrap;overflow-wrap:anywhere'>{escape(message)}</div>", unsafe_allow_html=True)
+    else:
+        st.markdown(
+            '<div style="margin:.35rem 0;padding:.65rem 1rem;border-left:3px solid #8b9bb5;'
+            'border-radius:8px;background:#edf1f7;color:#334155;overflow-wrap:anywhere">'
+            f'<small>◈ 행동 · {escape(_event_heading(event))}</small>'
+            f'<div style="white-space:pre-wrap">{escape(message)}</div></div>',
+            unsafe_allow_html=True,
+        )
+
+
+def _render_private_panel(*, snapshot: dict[str, Any], me: dict[str, Any]) -> None:
     """본인에게 허용된 role·사실·private event만 오른쪽 패널에 표시한다."""
 
     role_name, role_icon = ROLE_PRESENTATION.get(
@@ -563,17 +631,99 @@ def _render_private_panel(*, me: dict[str, Any]) -> None:
         st.markdown(f'<div class="game-role-name">{role_name}</div>', unsafe_allow_html=True)
         st.success("생존 중" if me.get("alive") else "관전 중")
         with st.container(key="game-alibi", border=True):
-            st.markdown("#### 🗝️ 나의 알리바이")
+            st.markdown("#### ◷ 나의 알리바이")
             st.write(str(me.get("alibi", "없음")))
         with st.container(key="game-observation", border=True):
-            st.markdown("#### 👁️ 내가 본 것")
+            st.markdown("#### ◉ 내가 본 것")
             st.write(str(me.get("observation", "없음")))
-        private_events = me.get("private_events", [])
-        if isinstance(private_events, list) and private_events:
-            st.markdown("#### 나에게만 공개된 결과")
-            for event in private_events:
-                if isinstance(event, dict) and isinstance(event.get("message"), str):
-                    st.write(event["message"])
+        _render_investigation_results(snapshot=snapshot)
+
+
+def _validated_investigation_results(
+    snapshot: dict[str, Any], *, expected_game_id: Any,
+) -> list[str]:
+    """현재 게임의 인간 탐정에게 허용된 조사 결과만 공개 이름과 고정 문구로 투영한다.
+
+    PrivateEvent에는 actor를 추가하지 않는다. 소유권 검사를 거친 snapshot의 me와
+    같은 게임의 유일한 인간 player를 연결하고, 폐쇄형 event·data 계약 밖의 필드는
+    거부한다. 이미 확정된 과거 결과이므로 현재 본인이나 대상의 생존 여부는 묻지 않는다.
+    """
+
+    game = snapshot.get("game")
+    me = own_private_view(snapshot)
+    players = snapshot.get("players")
+    events = me.get("private_events")
+    own_id = _canonical_uuid(me.get("player_id"))
+    if (not isinstance(game, dict) or not isinstance(players, list)
+            or not isinstance(events, list) or me.get("role") != "DETECTIVE"
+            or own_id is None or own_id != me.get("player_id")):
+        return []
+    game_id = _canonical_uuid(game.get("game_id"))
+    current_round = game.get("round")
+    if (game_id is None or game_id != game.get("game_id") or game_id != expected_game_id
+            or type(current_round) is not int or not 0 <= current_round <= 5):
+        return []
+    names = {}
+    human_ids = []
+    for player in players:
+        if not isinstance(player, dict):
+            return []
+        player_id = _canonical_uuid(player.get("player_id"))
+        name = player.get("display_name")
+        if (player_id is None or player_id != player.get("player_id") or player_id in names
+                or not isinstance(name, str) or not name.strip()):
+            return []
+        names[player_id] = " ".join(name.split())
+        if player.get("kind") == "HUMAN":
+            human_ids.append(player_id)
+    if human_ids != [own_id]:
+        return []
+
+    results = []
+    seen = set()
+    for event in events:
+        if (not isinstance(event, dict)
+                or set(event) != {"event_id", "event_type", "created_at", "data"}
+                or event.get("event_type") != "INVESTIGATION_RESULT"):
+            continue
+        event_id = _canonical_uuid(event.get("event_id"))
+        created_at = event.get("created_at")
+        data = event.get("data")
+        if (event_id is None or event_id != event.get("event_id")
+                or not isinstance(created_at, str)
+                or re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|\+00:00)", created_at) is None
+                or not isinstance(data, dict) or set(data) != {"round", "target_player_id", "is_mafia"}):
+            continue
+        try:
+            datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        target_id = _canonical_uuid(data.get("target_player_id"))
+        night = data.get("round")
+        if (target_id is None or target_id != data.get("target_player_id")
+                or target_id not in names or target_id == own_id
+                or type(night) is not int or not 1 <= night <= current_round
+                or type(data.get("is_mafia")) is not bool):
+            continue
+        if event_id in seen:
+            return []
+        seen.add(event_id)
+        verdict = "마피아입니다" if data["is_mafia"] else "마피아가 아닙니다"
+        results.append(f"밤 {night} 조사 결과 · {names[target_id]}: {verdict}.")
+    return results
+
+
+def _render_investigation_results(*, snapshot: dict[str, Any]) -> None:
+    """생존·저장·관전 패널에서 동일한 검증을 거쳐 본인 조사 결과만 표시한다."""
+
+    results = _validated_investigation_results(
+        snapshot, expected_game_id=st.session_state.get("game.game_id"),
+    )
+    if results:
+        st.markdown("#### 나에게만 공개된 결과")
+        for result in results:
+            # 공개 이름에 Markdown·HTML이 있어도 링크나 이미지로 해석하지 않는다.
+            st.text(result)
 
 
 def _event_text(*, event: dict[str, Any], player_names: dict[str, str]) -> str:
@@ -582,10 +732,25 @@ def _event_text(*, event: dict[str, Any], player_names: dict[str, str]) -> str:
     # PublicEvent는 본문을 data 아래에 두는 폐쇄형 union이다. 다른 player의 선택이나
     # 비공개 payload를 추측해 표시하지 않고 정본에 정의된 공개 필드만 읽는다.
     data = event.get("data") if isinstance(event.get("data"), dict) else {}
+    event_type = event.get("event_type")
+    if event_type == "GAME_SAVED":
+        created_at = event.get("created_at")
+        if isinstance(created_at, str):
+            try:
+                saved_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                if saved_at.utcoffset() == timedelta(0):
+                    return f"게임을 저장했습니다. (저장 시각: {saved_at:%Y-%m-%d %H:%M:%S} UTC)"
+            except ValueError:
+                pass
+        return "게임을 저장했습니다. 저장한 지점부터 이어서 진행할 수 있습니다."
+    if event_type == "GAME_RESUMED":
+        return "게임을 재개했습니다. 저장한 지점부터 이어서 진행합니다."
+    if event_type == "VOTE_RESOLVED":
+        vote_result = _vote_result_text(data=data, player_names=player_names)
+        return vote_result or "공개 투표 집계를 확인할 수 없습니다."
     message = data.get("message")
     if isinstance(message, str):
         return message
-    event_type = event.get("event_type")
     player_name = player_names.get(str(data.get("player_id")), "플레이어")
     if event_type == "PLAYER_PASSED":
         return f"{player_name}님이 발언을 넘겼습니다."
@@ -607,11 +772,75 @@ def _event_text(*, event: dict[str, Any], player_names: dict[str, str]) -> str:
         executed_name = player_names.get(str(data.get("player_id")), "플레이어")
         revealed_role = ROLE_PRESENTATION.get(data.get("revealed_role"), ("역할 확인", ""))[0]
         return f"{executed_name}님이 처형되었습니다. 공개 역할은 {revealed_role}입니다."
-    if event_type == "VOTE_RESOLVED":
-        return "공개 투표 집계가 확정되었습니다."
     if event_type == "FAST_FORWARD_ENABLED":
         return "남은 AI 행동을 빠르게 진행합니다."
     return "공개 사건 기록이 갱신되었습니다."
+
+
+def _vote_result_text(*, data: dict[str, Any], player_names: dict[str, str]) -> str | None:
+    """폐쇄형 공개 투표 집계만 후보 이름과 고정 결과 문구로 변환한다.
+
+    개별 ballot, 자동 선택 여부와 actor는 게임 종료 전 공개 대상이 아니다. 계약 밖
+    필드나 알 수 없는 UUID가 하나라도 섞이면 원문을 일부 표시하지 않고 전체 집계를
+    거부해 비공개 payload가 화면으로 새는 일을 막는다.
+    """
+
+    if set(data) != {"round", "phase", "counts", "tied", "needs_revote"}:
+        return None
+    round_number = data.get("round")
+    phase = data.get("phase")
+    tied = data.get("tied")
+    needs_revote = data.get("needs_revote")
+    counts = data.get("counts")
+    if (
+        type(round_number) is not int
+        or not 1 <= round_number <= 5
+        or phase not in {"DAY_VOTE", "REVOTE", "FINAL_ACCUSATION"}
+        or type(tied) is not bool
+        or type(needs_revote) is not bool
+        or needs_revote != (phase == "DAY_VOTE" and tied)
+        or not isinstance(counts, list)
+        or not counts
+    ):
+        return None
+
+    labels = []
+    seen = set()
+    for item in counts:
+        if not isinstance(item, dict) or set(item) != {"target_player_id", "vote_count"}:
+            return None
+        player_id = _canonical_uuid(item.get("target_player_id"))
+        vote_count = item.get("vote_count")
+        if (
+            player_id is None
+            or player_id != item.get("target_player_id")
+            or player_id not in player_names
+            or player_id in seen
+            or type(vote_count) is not int
+            or not 0 <= vote_count <= len(player_names)
+        ):
+            return None
+        seen.add(player_id)
+        labels.append(f"{player_names[player_id]} {vote_count}표")
+
+    maximum = max(item["vote_count"] for item in counts)
+    computed_tied = sum(item["vote_count"] == maximum for item in counts) > 1
+    if tied != computed_tied or sum(item["vote_count"] for item in counts) > len(player_names):
+        return None
+
+    phase_label = {
+        "DAY_VOTE": "낮 투표",
+        "REVOTE": "재투표",
+        "FINAL_ACCUSATION": "최종 지목",
+    }[phase]
+    outcome = (
+        "최다 득표 동률 · 재투표를 진행합니다."
+        if needs_revote
+        else "최다 득표 동률 · 재투표 없이 다음 단계로 진행합니다."
+        if tied
+        else "동률 없이 집계가 확정됐습니다."
+    )
+    return f"밤 {round_number} 이후 {phase_label} · {', '.join(labels)} · {outcome}"
 
 
 def _event_speaker(*, event: dict[str, Any], player_names: dict[str, str]) -> str | None:
@@ -678,7 +907,8 @@ def _render_spectator_controls(
             requested = st.toggle(
                 "빠른 진행 켜기",
                 value=enabled,
-                disabled=enabled
+                disabled=bool(st.session_state.get("game.sync_hidden"))
+                or enabled
                 or "FAST_FORWARD" not in snapshot.get("legal_actions", [])
                 or pending_status
                 in {"PENDING_TO_RENDER", "IN_FLIGHT", "SUCCEEDED", "RETRYABLE_UNKNOWN"},
@@ -687,7 +917,7 @@ def _render_spectator_controls(
             st.caption("남은 AI 발언·투표·밤 행동을 빠르게 진행합니다.")
             if requested and not enabled and not isinstance(pending, dict):
                 st.session_state["game.f6_pending"] = {
-                    "status": "IN_FLIGHT",
+                    "status": "PENDING_TO_RENDER",
                     "expected_state_version": game.get("state_version"),
                     "idempotency_key": str(uuid4()),
                     "game_id": game_id,
@@ -703,15 +933,15 @@ def _render_spectator_controls(
             st.info("요청이 접수되었습니다. Backend 상태 반영을 기다리고 있습니다.")
         elif pending_status == "RETRYABLE_UNKNOWN":
             st.warning("빠른 진행 요청 결과를 확인하지 못했습니다.")
-            if st.button("같은 요청 다시 확인", key="spectator.fast_forward.retry"):
+            if st.button("같은 요청 다시 확인", key="spectator.fast_forward.retry", disabled=bool(st.session_state.get("game.sync_hidden"))):
                 st.session_state["game.f6_pending"] = {
                     **pending,
-                    "status": "IN_FLIGHT",
+                    "status": "PENDING_TO_RENDER",
                 }
                 st.rerun()
         elif pending_status == "REJECTED":
             st.error("게임 상태가 바뀌어 빠른 진행을 켜지 못했습니다.")
-            if st.button("최신 상태 다시 확인", key="spectator.fast_forward.refresh"):
+            if st.button("최신 상태 다시 확인", key="spectator.fast_forward.refresh", disabled=bool(st.session_state.get("game.sync_hidden"))):
                 st.session_state.pop("game.f6_pending", None)
                 st.rerun()
 
@@ -762,20 +992,288 @@ def _render_save_control(
 ) -> None:
     """Backend legal_actions가 허용한 저장 command만 표시한다."""
 
-    if "SAVE_AND_EXIT" not in snapshot.get("legal_actions", []):
-        return
-    if st.button("💾 저장하고 나가기", key="game.save_exit", use_container_width=True):
+    _render_shell_command(client=client, game_id=game_id, snapshot=snapshot, command_type="SAVE_AND_EXIT")
+
+
+ACTIVITY_STAGES = {
+    "STARTED": "정보 확인 준비", "CONTEXT_READY": "정보 확인 완료", "DECIDING": "판단 중",
+    "DECIDED": "행동 선택 완료", "APPLIED": "적용 완료", "FALLBACK": "기본 행동 선택",
+    "FAILED": "적용 실패", "SKIPPED": "지난 작업 건너뜀",
+}
+PUBLIC_ACTIVITY_PHASES = {"DAY_DISCUSSION", "FINAL_DISCUSSION"}
+PRIVATE_ACTIVITY_PHASES = {"NIGHT_ACTION", "NIGHT_RESOLUTION", "DAY_VOTE", "REVOTE", "FINAL_ACCUSATION"}
+ACTIVITY_FIELDS = {"sequence", "run_id", "created_at", "player_id", "phase", "state_version", "stage", "action", "summary"}
+ACTIVITY_OPTIONAL_FIELDS = {"decision_source", "reason_code", "decision_basis"}
+ACTIVITY_SOURCES = {"MODEL": "모델 판단", "DUMMY": "더미 모드", "FALLBACK": "규칙 대체"}
+ACTIVITY_REASONS = {
+    "PROVIDER_TIMEOUT": "모델 응답 시간 초과", "PROVIDER_AUTHENTICATION": "모델 인증 실패",
+    "PROVIDER_RATE_LIMIT": "모델 요청 한도 초과", "PROVIDER_MODEL_UNAVAILABLE": "설정한 모델에 접근할 수 없음",
+    "PROVIDER_INCOMPLETE": "응답 생성 미완료", "PROVIDER_UNAVAILABLE": "모델 연결 불가",
+    "PROPOSAL_INVALID": "응답 형식·행동 검증 실패", "MCP_UNAVAILABLE": "게임 정보 조회 실패",
+    "MCP_SUBMISSION_FAILED": "선택한 행동 전달 실패", "AGENT_DEPENDENCY_ERROR": "AI 처리 의존성 오류",
+}
+ACTIVITY_BASES = {
+    "PUBLIC_EVIDENCE": "공개 단서 검토 · 공개된 사건 단서를 근거로 의견을 냈습니다.",
+    "COMPARE_STATEMENTS": "진술 비교 · 공개 발언과 알리바이를 비교했습니다.",
+    "ASK_FOR_CLARIFICATION": "확인 질문 · 불분명한 진술을 확인하기 위해 질문했습니다.",
+    "INSUFFICIENT_EVIDENCE": "근거 부족 · 판단할 공개 근거가 아직 부족하다고 보았습니다.",
+    "NO_NEW_INFORMATION": "추가 의견 없음 · 이미 나온 의견 외에 추가할 내용이 없다고 보았습니다.",
+}
+
+
+def _canonical_uuid(value: Any) -> str | None:
+    """외부 식별자를 UUID 문자열로 정규화하고 임의 객체·손상된 값은 거부한다."""
+
+    if not isinstance(value, str):
+        return None
+    try:
+        return str(UUID(value))
+    except ValueError:
+        return None
+
+
+def _validated_agent_activity(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    """같은 게임 AI의 공개 처리 기록만 제한 크기로 투영한다.
+
+    서버의 자유 문자열을 판단 내용으로 신뢰하지 않는다. summary는 계약 형식만
+    확인한 뒤 버리고 화면 설명은 허용된 stage·action enum으로만 생성한다.
+    """
+
+    raw = snapshot.get("agent_activity", [])
+    version = snapshot.get("game", {}).get("state_version")
+    if not isinstance(raw, list) or type(version) is not int or version < 1:
+        return []
+    ai_ids = {_canonical_uuid(p.get("player_id")) for p in public_players(snapshot) if p.get("kind") == "AI"}
+    ai_ids.discard(None)
+    records = []
+    for item in raw[-50:]:
+        if (not isinstance(item, dict) or not ACTIVITY_FIELDS <= set(item)
+                or set(item) - ACTIVITY_FIELDS - ACTIVITY_OPTIONAL_FIELDS):
+            continue
+        if any(item.get(key) is not None and (
+            not isinstance(item[key], str) or item[key] not in allowed
+        ) for key, allowed in (("decision_source", ACTIVITY_SOURCES), ("reason_code", ACTIVITY_REASONS),
+                               ("decision_basis", ACTIVITY_BASES))):
+            continue
+        actor = _canonical_uuid(item.get("player_id"))
+        run_id = _canonical_uuid(item.get("run_id"))
+        sequence, observed = item.get("sequence"), item.get("state_version")
+        stage, action, phase = item.get("stage"), item.get("action"), item.get("phase")
+        summary, created_at = item.get("summary"), item.get("created_at")
+        if (actor not in ai_ids or run_id is None or type(sequence) is not int or sequence < 1
+                or type(observed) is not int or not 1 <= observed <= version
+                or not isinstance(stage, str) or stage not in ACTIVITY_STAGES
+                or not isinstance(phase, str) or phase not in PUBLIC_ACTIVITY_PHASES
+                or (action is not None and (not isinstance(action, str) or action not in {"SPEAK", "PASS"}))
+                or not isinstance(summary, str) or not 1 <= len(summary) <= 200
+                or not isinstance(created_at, str)
+                or re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|\+00:00)", created_at) is None):
+            continue
         try:
-            client.submit_command(
-                game_id=game_id,
-                command={
-                    "type": "SAVE_AND_EXIT",
-                    "expected_state_version": snapshot["game"]["state_version"],
-                },
-                idempotency_key=uuid4(),
-            )
+            if datetime.fromisoformat(created_at.replace("Z", "+00:00")).utcoffset() != timedelta(0):
+                continue
+        except ValueError:
+            continue
+        dummy_summary = "더미 제공자의 고정 행동을 처리하고 있습니다."
+        if stage == "DECIDED" and action:
+            dummy_summary += f" ({'발언' if action == 'SPEAK' else '차례 넘김'})"
+        # 더미 안내도 Backend가 정본 enum으로 만든 정확한 문구일 때만 허용한다.
+        # 유사한 자유 문장이나 임의 suffix로 내부 사고가 화면에 섞이지 않게 한다.
+        dummy = item.get("decision_source") == "DUMMY" or (stage in {"DECIDING", "DECIDED"} and summary == dummy_summary)
+        records.append({key: value for key, value in item.items() if key != "summary"}
+                       | {"player_id": actor, "run_id": run_id, "dummy": dummy})
+    # 한 응답에는 현재 실행의 단조 증가 기록만 존재해야 한다. 서로 다른 실행이나
+    # 역순·중복 sequence가 섞이면 현재 진행을 잘못 추측하지 않도록 모두 숨긴다.
+    if len({item["run_id"] for item in records}) > 1:
+        return []
+    if any(a["sequence"] >= b["sequence"] for a, b in zip(records, records[1:])):
+        return []
+    return records
+
+
+def _is_current_activity(item: dict[str, Any], snapshot: dict[str, Any]) -> bool:
+    """과거 window의 적용 완료를 새 차례의 진행 상태로 오인하지 않게 한다."""
+
+    game = snapshot.get("game", {})
+    window = snapshot.get("action_window")
+    return (game.get("status") == "IN_PROGRESS" and isinstance(window, dict)
+            and window.get("paused") is False
+            and _canonical_uuid(window.get("turn_player_id")) == item["player_id"]
+            and window.get("kind") == "SPEECH"
+            and item["phase"] == game.get("phase")
+            and item["state_version"] == game.get("state_version"))
+
+
+def _activity_label(item: dict[str, Any]) -> str:
+    """처리 단계와 공개 행동 enum만 사용하여 내부 사고 없는 고정 안내를 만든다."""
+
+    action = {"SPEAK": "발언", "PASS": "차례 넘김"}.get(item["action"])
+    suffix = f" · {action}" if action else ""
+    if action and item["stage"] != "APPLIED":
+        suffix += " (미적용)"
+    label = ACTIVITY_STAGES[item["stage"]]
+    if item.get("dummy") and item["stage"] in {"DECIDING", "DECIDED"}:
+        label = "더미 · 고정 행동 처리 중" if item["stage"] == "DECIDING" else "더미 · 고정 행동 선택 완료"
+    source = ACTIVITY_SOURCES.get(item.get("decision_source"))
+    if source:
+        label = source + " · " + label
+    return label + suffix
+
+
+def _render_agent_activity(*, snapshot: dict[str, Any]) -> None:
+    """밤·투표는 공통 안내만, 공개 발언은 현재 진행과 접힌 과거 이력을 표시한다."""
+
+    phase = snapshot.get("game", {}).get("phase")
+    with st.expander("AI 판단과 실행", expanded=False):
+        if phase in PRIVATE_ACTIVITY_PHASES:
+            st.info("비공개 단계가 진행 중입니다. 각 AI의 역할·대상·응답 여부는 공개하지 않습니다.")
+            return
+        if phase not in PUBLIC_ACTIVITY_PHASES:
+            st.caption("공개 발언 단계에서 AI 진행을 확인할 수 있습니다.")
+            return
+        st.caption("정보 확인 → 판단 → 선택 → 적용")
+        st.caption("모델이 선택한 공개 판단 근거와 실제 처리 결과입니다. 내부 사고 원문은 표시하지 않습니다.")
+        records = _validated_agent_activity(snapshot)
+        players = [p for p in public_players(snapshot) if p.get("kind") == "AI"]
+        names = {_canonical_uuid(p.get("player_id")): str(p.get("display_name", "AI")) for p in players}
+        for player in players:
+            actor = _canonical_uuid(player.get("player_id"))
+            if actor is None:
+                continue
+            current = next((item for item in reversed(records) if item["player_id"] == actor and _is_current_activity(item, snapshot)), None)
+            latest = next((item for item in reversed(records) if item["player_id"] == actor), None)
+            window = snapshot.get("action_window")
+            my_turn = (snapshot.get("game", {}).get("status") == "IN_PROGRESS"
+                       and isinstance(window, dict) and window.get("kind") == "SPEECH"
+                       and window.get("paused") is False
+                       and _canonical_uuid(window.get("turn_player_id")) == actor)
+            if player.get("alive") is False:
+                label = "탈락"
+            elif current:
+                label = "현재 차례 · " + _activity_label(current)
+            else:
+                label = "현재 차례 · 처리 기록 대기" if my_turn else "대기"
+                if latest:
+                    label += " · 이전 기록: " + _activity_label(latest)
+            st.markdown(f"<div><strong>{escape(names[actor])}</strong> · {escape(label)}</div>", unsafe_allow_html=True)
+            detail = current or latest
+            if detail:
+                reason = ACTIVITY_REASONS.get(detail.get("reason_code"))
+                basis = ACTIVITY_BASES.get(detail.get("decision_basis"))
+                if detail.get("decision_source") == "FALLBACK" or detail["stage"] == "FALLBACK":
+                    reason = reason or "정상적인 모델 응답을 사용할 수 없음"
+                    scope = "현재 차례" if current else "이전 차례"
+                    st.warning(f"{scope} · {reason}. 게임 규칙의 기본 행동으로 처리했습니다.")
+                elif detail.get("dummy"):
+                    st.warning("더미 모드: 실제 모델 추론 없이 고정 행동을 사용하고 있습니다.")
+                elif basis:
+                    st.markdown(f"<div style='margin:.3rem 0 .8rem;color:#4b5870'>판단 근거 · {escape(basis)}</div>", unsafe_allow_html=True)
+                elif detail["stage"] in {"DECIDED", "APPLIED"}:
+                    st.caption("이번 선택에는 공개 판단 근거가 제공되지 않았습니다.")
+        if not records:
+            st.caption("최근 처리 기록이 없습니다. 서버 재시작 뒤에는 새 기록부터 표시됩니다.")
+        else:
+            with st.container():
+                st.caption("최근 공개 처리 기록")
+                for item in records:
+                    scope = "현재 차례" if _is_current_activity(item, snapshot) else "이전 기록"
+                    time = datetime.fromisoformat(item["created_at"].replace("Z", "+00:00")).strftime("%H:%M:%S UTC")
+                    text = f"{time} · {scope} · {names[item['player_id']]} · {_activity_label(item)}"
+                    explanation = ACTIVITY_REASONS.get(item.get("reason_code")) or ACTIVITY_BASES.get(item.get("decision_basis"))
+                    if explanation:
+                        text += f" · {explanation}"
+                    st.markdown(f"<div>{escape(text)}</div>", unsafe_allow_html=True)
+
+
+SHELL_COMMANDS = {
+    "SAVE_AND_EXIT": ("💾 저장", "game.save_exit", "game.save_pending"),
+    "RESUME": ("불러오기", "game.resume", "game.resume_pending"),
+    "BEGIN_GAME": ("게임 시작  ›", "game.begin", "game.begin_pending"),
+}
+SHELL_LOCKED = {"PENDING_TO_RENDER", "IN_FLIGHT", "RETRYABLE_UNKNOWN", "REFRESH_REQUIRED", "REFRESH_FAILED"}
+
+
+def _process_shell_pending(*, client: Any, game_id: str) -> None:
+    """화면 phase가 바뀌어도 이미 제출한 시작·저장·재개 요청의 결과를 처리한다."""
+
+    for command_type, (_, _, pending_key) in SHELL_COMMANDS.items():
+        pending = st.session_state.get(pending_key)
+        if not isinstance(pending, dict) or pending.get("game_id") != game_id:
+            continue
+        if pending.get("status") in {"PENDING_TO_RENDER", "IN_FLIGHT"}:
+            try:
+                client.submit_command(game_id=game_id, command={
+                    "type": command_type, "expected_state_version": pending["expected_state_version"],
+                }, idempotency_key=pending["idempotency_key"])
+                pending = {**pending, "status": "REFRESH_REQUIRED", "accepted": True}
+            except ApiResponseError as error:
+                uncertain = isinstance(error, ApiUnavailableError) or error.status_code >= 500
+                pending = {**pending, "status": "RETRYABLE_UNKNOWN" if uncertain else "REFRESH_REQUIRED", "accepted": False}
+            except ValueError:
+                pending = {**pending, "status": "RETRYABLE_UNKNOWN"}
+            st.session_state[pending_key] = pending
+        if pending.get("status") != "REFRESH_REQUIRED":
+            continue
+        try:
+            response = client.get_game(game_id)
+            refreshed = response.get("data", response)
+            game = refreshed.get("game") if isinstance(refreshed, dict) else None
+            if (not isinstance(game, dict) or game.get("game_id") != game_id
+                    or game.get("status") not in {"SAVED", "IN_PROGRESS", "COMPLETED", "FAILED"}
+                    or type(game.get("state_version")) is not int or game["state_version"] < 1):
+                raise ValueError("INVALID_RESPONSE")
+        except (ApiResponseError, ValueError, AttributeError):
+            st.session_state[pending_key] = {**pending, "status": "REFRESH_FAILED"}
+            continue
+        st.session_state["game.latest_snapshot"] = refreshed
+        # 홈 목록만 무효화하여 다음 방문 시 서버 상태를 조회한다. UUID와 다른
+        # 페이지의 결과 불명 요청은 지우지 않는다.
+        for key in ("home.games", "home.games_error", "home.games_loaded_at", "home.games_loading"):
+            st.session_state.pop(key, None)
+        st.session_state[pending_key] = {**pending, "status": "SUCCEEDED" if pending.get("accepted") else "REJECTED"}
+        if command_type == "SAVE_AND_EXIT" and game["status"] == "SAVED":
             st.session_state["navigation.page"] = "home"
-            st.session_state.pop("game.game_id", None)
+            for key in ("game.game_id", "game.latest_snapshot", "game.activity_tick", "game.sync_status", pending_key):
+                st.session_state.pop(key, None)
+        else:
+            st.session_state["navigation.page"] = "game"
+        st.rerun()
+
+
+def _render_shell_command(*, client: Any, game_id: str, snapshot: dict[str, Any], command_type: str) -> None:
+    """결과 불명일 때 신규 요청을 잠그고 동일 key 재전송 또는 GET 재조회만 제공한다."""
+
+    _process_shell_pending(client=client, game_id=game_id)
+    label, button_key, pending_key = SHELL_COMMANDS[command_type]
+    pending = st.session_state.get(pending_key)
+    if not isinstance(pending, dict) or pending.get("game_id") != game_id:
+        pending = {}
+    status = pending.get("status")
+    allowed = command_type in snapshot.get("legal_actions", [])
+    locked = bool(st.session_state.get("game.sync_hidden")) or any(isinstance(p := st.session_state.get(key), dict)
+                 and p.get("game_id") == game_id and p.get("status") in SHELL_LOCKED
+                 for _, _, key in SHELL_COMMANDS.values())
+    if allowed or status in SHELL_LOCKED:
+        if st.button(label, key=button_key, type="primary" if command_type != "SAVE_AND_EXIT" else "secondary",
+                     disabled=locked or not allowed, use_container_width=True):
+            st.session_state[pending_key] = {"status": "IN_FLIGHT", "game_id": game_id,
+                "expected_state_version": snapshot["game"]["state_version"], "idempotency_key": str(uuid4())}
             st.rerun()
-        except Exception:
-            st.error("게임을 저장하지 못했어요.")
+    if status == "RETRYABLE_UNKNOWN":
+        st.warning("요청 결과를 확인하지 못했습니다. 같은 요청으로 다시 확인해 주세요.")
+    elif status == "REFRESH_FAILED":
+        st.warning("요청 응답은 확인했지만 최신 게임 상태를 불러오지 못했습니다.")
+    elif status == "REJECTED" and allowed:
+        st.warning("게임 상태가 바뀌어 요청이 거부되었습니다. 최신 상태를 확인한 뒤 다시 선택해 주세요.")
+    if status in {"RETRYABLE_UNKNOWN", "REFRESH_FAILED"}:
+        if st.button("같은 요청 다시 확인" if status == "RETRYABLE_UNKNOWN" else "최신 상태 다시 확인",
+                     key=f"{button_key}_retry", disabled=bool(st.session_state.get("game.sync_hidden"))):
+            st.session_state[pending_key] = {**pending, "status": "IN_FLIGHT" if status == "RETRYABLE_UNKNOWN" else "REFRESH_REQUIRED"}
+            st.rerun()
+
+
+def render_saved_control(*, client: Any, snapshot: dict[str, Any]) -> None:
+    """저장된 window를 실행하지 않고 명시적인 서버 RESUME을 통해서만 복원한다."""
+
+    st.info("저장된 게임입니다. 불러오기를 누르면 같은 단계에서 계속합니다. 남은 시간은 일시 정지되어 있습니다.")
+    _render_shell_command(client=client, game_id=str(snapshot["game"]["game_id"]), snapshot=snapshot, command_type="RESUME")

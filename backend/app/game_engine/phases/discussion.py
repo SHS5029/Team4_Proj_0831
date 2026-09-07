@@ -26,7 +26,18 @@ def advance_if_done(state: GameState) -> None:
         state.phase = GamePhase.FINAL_ACCUSATION
         state.speech_actors.clear()
         return
-    state.phase = GamePhase.NIGHT_ACTION if state.day_number == 1 else GamePhase.DAY_VOTE
+    if state.day_number > 1 and not state.speech_had_content and not state.speech_question_cycle_used:
+        # 둘째 날 이후 기본 순환이 전원 PASS일 때만 추가 기회를 한 번 연다.
+        # 첫날과 최종 토론은 내용에 관계없이 한 순환으로 끝내야 한다.
+        state.speech_question_cycle_used = True
+        state.speech_actors.clear()
+        return
+    if state.day_number == 1:
+        # round는 해소 횟수가 아니라 현재 밤 번호이므로 첫 입력 창을 열 때 1이 된다.
+        state.round = 1
+        state.phase = GamePhase.NIGHT_ACTION
+    else:
+        state.phase = GamePhase.DAY_VOTE
     state.speech_actors.clear()
 
 

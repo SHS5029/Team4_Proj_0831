@@ -24,3 +24,5 @@ class CanonicalGameRecord:
     public_events: list[dict[str, Any]] = field(default_factory=list)
     eliminated: dict[UUID, tuple[str, int]] = field(default_factory=dict)
     action_window: dict[str, Any] | None = None
+    private_events: list[dict[str, Any]] = field(default_factory=list)
+    resolutions: list[dict[str, Any]] = field(default_factory=list)

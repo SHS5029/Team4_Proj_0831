@@ -28,14 +28,25 @@ def test_frontend_consumes_create_snapshot_command_and_sync_contract() -> None:
                 "data": {
                     "game_id": GAME,
                     "mode": "DELTA",
+                    "from_state_version": 1,
                     "state_version": 2,
                     "last_sequence": 1,
+                    "snapshot": None,
                     "operations": [
                         {
+                            "schema_version": 1,
                             "front_sequence": 1,
                             "operation_index": 0,
+                            "state_version": 2,
                             "type": "SET_GAME_STATE",
-                            "payload": {"phase": "DAY_DISCUSSION", "state_version": 2},
+                            "payload": {
+                                "status": "IN_PROGRESS",
+                                "phase": "DAY_DISCUSSION",
+                                "round": 1,
+                                "day_number": 1,
+                                "state_version": 2,
+                                "fast_forward_enabled": False,
+                            },
                         }
                     ],
                 }
@@ -59,3 +70,7 @@ def test_frontend_consumes_create_snapshot_command_and_sync_contract() -> None:
     assert command["data"]["result_state_version"] == 2
     assert mode == "DELTA"
     assert updated["game"]["state_version"] == 2
+    assert updated["game"]["last_sequence"] == 1
+    assert updated["game"]["phase"] == "DAY_DISCUSSION"
+    assert snapshot["game"]["state_version"] == 1
+    assert snapshot["game"]["last_sequence"] == 0

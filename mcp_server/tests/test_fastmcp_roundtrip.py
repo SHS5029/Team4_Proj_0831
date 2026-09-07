@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import httpx
 import pytest
 
+from mafia_game.integrations.engine_http import MinimalBackendContextClient
 from mafia_game.main import create_fastmcp_server
 
 
@@ -32,7 +34,7 @@ class RoundtripBackend:
         **payload: str | None,
     ) -> dict[str, object]:
         self.calls.append(("tool", str(payload["action"])))
-        return {"status": "accepted", "action": payload["action"]}
+        return {"status": "accepted", "accepted": True, "action": payload["action"]}
 
 
 def initialize_body(request_id: int = 1) -> dict[str, Any]:
@@ -52,7 +54,21 @@ def initialize_body(request_id: int = 1) -> dict[str, Any]:
 
 @pytest.mark.anyio
 async def test_fastmcp_asgi_initialize_and_capability_roundtrip() -> None:
-    backend = RoundtripBackend()
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/internal/mcp/context":
+            return httpx.Response(200, json={"fixture_query": dict(request.url.params)})
+        if request.url.path == "/internal/mcp/prompts/agent_instruction":
+            assert not request.url.query
+            return httpx.Response(200, json={"prompt": "fixture agent instruction"})
+        assert request.url.path == "/internal/mcp/actions"
+        assert json.loads(request.content)["action"] == "PASS"
+        return httpx.Response(200, json={"accepted": True})
+
+    backend_http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    backend = MinimalBackendContextClient("http://127.0.0.1:8000", client=backend_http)
     headers = {"Accept": "application/json, text/event-stream"}
 
     server = create_fastmcp_server(backend)
@@ -86,6 +102,36 @@ async def test_fastmcp_asgi_initialize_and_capability_roundtrip() -> None:
                 "00000000-0000-4000-8000-000000000002"
             )
             resource = await rpc("resources/read", {"uri": resource_uri})
+            assert resource.status_code == 200
+            resource_content = resource.json()["result"]["contents"][0]
+            assert resource_content["uri"] == resource_uri
+            assert resource_content["mimeType"] == "application/json"
+            assert json.loads(resource_content["text"]) == {
+                "fixture_query": {
+                    "game_id": "00000000-0000-4000-8000-000000000001",
+                    "user_id": "00000000-0000-4000-8000-000000000002",
+                    "scope": "public",
+                },
+            }
+            for scope in ("public", "me", "turn", "persona"):
+                scoped_uri = (
+                    "mafia://context/scoped/00000000-0000-4000-8000-000000000001/"
+                    "00000000-0000-4000-8000-000000000002/"
+                    f"00000000-0000-4000-8000-000000000003/{scope}"
+                )
+                scoped = await rpc("resources/read", {"uri": scoped_uri})
+                assert scoped.status_code == 200
+                scoped_content = scoped.json()["result"]["contents"][0]
+                assert scoped_content["uri"] == scoped_uri
+                assert scoped_content["mimeType"] == "application/json"
+                assert json.loads(scoped_content["text"]) == {
+                    "fixture_query": {
+                        "game_id": "00000000-0000-4000-8000-000000000001",
+                        "user_id": "00000000-0000-4000-8000-000000000002",
+                        "player_id": "00000000-0000-4000-8000-000000000003",
+                        "scope": scope,
+                    },
+                }
             tool = await rpc(
                 "tools/call",
                 {
@@ -102,17 +148,20 @@ async def test_fastmcp_asgi_initialize_and_capability_roundtrip() -> None:
             )
             prompt = await rpc("prompts/get", {"name": "agent_instruction", "arguments": {}})
 
-            assert resource.status_code == 200
-            assert resource.json()["result"]["contents"][0]["uri"] == resource_uri
             assert tool.status_code == 200
-            assert "accepted" in tool.text
+            tool_result = tool.json()["result"]
+            assert tool_result.get("isError") is False
+            assert json.loads(tool_result["content"][0]["text"])["accepted"] is True
             assert prompt.status_code == 200
-            assert "fixture agent instruction" in prompt.text
-            assert backend.calls == [
-                ("resource", resource_uri),
-                ("tool", "PASS"),
-                ("prompt", "agent_instruction"),
+            assert prompt.json()["result"]["messages"][0]["content"]["text"] == (
+                "fixture agent instruction"
+            )
+            assert [request.url.path for request in requests] == [
+                *(["/internal/mcp/context"] * 5),
+                "/internal/mcp/actions",
+                "/internal/mcp/prompts/agent_instruction",
             ]
+    await backend_http.aclose()
 
 
 @pytest.mark.anyio
@@ -133,12 +182,12 @@ async def test_fastmcp_backend_failure_returns_jsonrpc_error() -> None:
                 headers={**headers, "Mcp-Session-Id": session_id},
                 json={
                     "jsonrpc": "2.0",
-                "id": "resource-failure",
-                "method": "resources/read",
-                "params": {
-                    "uri": "mafia://context/current/00000000-0000-4000-8000-000000000001/"
-                    "00000000-0000-4000-8000-000000000002"
-                },
+                    "id": "resource-failure",
+                    "method": "resources/read",
+                    "params": {
+                        "uri": "mafia://context/current/00000000-0000-4000-8000-000000000001/"
+                        "00000000-0000-4000-8000-000000000002"
+                    },
                 },
             )
 

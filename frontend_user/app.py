@@ -11,9 +11,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from frontend_user.app_pages.creation_complete_page import (  # noqa: E402
+    render as render_creation_complete,
+)
 from frontend_user.app_pages.feedback_page import render as render_feedback  # noqa: E402
 from frontend_user.app_pages.game_create_page import render as render_create  # noqa: E402
-from frontend_user.app_pages.creation_complete_page import render as render_creation_complete  # noqa: E402
 from frontend_user.app_pages.game_page import render as render_game  # noqa: E402
 from frontend_user.app_pages.home_page import load_games, should_load_games  # noqa: E402
 from frontend_user.app_pages.home_page import render as render_home  # noqa: E402
@@ -24,13 +26,18 @@ from frontend_user.components.identity_bridge import (  # noqa: E402
     IDENTITY_COMPONENT_CHANGED_SESSION_KEY,
     load_identity,
 )
+from frontend_user.components.theme import render_app_theme, sync_page_navigation  # noqa: E402
 from frontend_user.core.api_client import ApiClient  # noqa: E402
+from frontend_user.core.identity import parse_uuid_v4  # noqa: E402
 from frontend_user.core.session import (  # noqa: E402
+    IDENTITY_PERSISTENCE_SESSION_KEY,
+    IDENTITY_SCOPE_SESSION_KEY,
     IDENTITY_WARNING_SESSION_KEY,
+    IDENTITY_WRITE_SESSION_KEY,
     get_identity,
+    request_identity_write,
     set_identity,
 )
-from frontend_user.components.theme import render_app_theme  # noqa: E402
 
 
 def main() -> None:
@@ -38,21 +45,41 @@ def main() -> None:
 
     st.set_page_config(page_title="AI 마피아", page_icon="🕶️", layout="wide")
     render_app_theme()
-    if (
-        get_identity(st.session_state) is None
-        or st.session_state.get(IDENTITY_COMPONENT_CHANGED_SESSION_KEY) is True
-    ):
-        user_id, persistence, error_code = load_identity()
-        set_identity(user_id=user_id, persistence=persistence, session_state=st.session_state)
-        st.session_state.pop(IDENTITY_COMPONENT_CHANGED_SESSION_KEY, None)
-        if error_code:
-            st.session_state[IDENTITY_WARNING_SESSION_KEY] = True
+    # bridge는 매 rerun에서 같은 key로 유지한다. 교체 확인 후에도 저장 응답 전에는
+    # 이전 UUID로 API를 호출하거나 이전 홈·게임 화면을 다시 표시하지 않는다.
+    write_request = st.session_state.get(IDENTITY_WRITE_SESSION_KEY)
+    user_id, persistence, error_code = load_identity(
+        scope_version=st.session_state.get(IDENTITY_SCOPE_SESSION_KEY, "1"),
+        current_user_id=get_identity(st.session_state),
+        current_persistence=st.session_state.get(IDENTITY_PERSISTENCE_SESSION_KEY),
+        replacement=parse_uuid_v4(write_request.get("user_id")) if isinstance(write_request, dict) else None,
+        reset_stored=isinstance(write_request, dict) and write_request.get("user_id") is None,
+    )
+    st.session_state.pop(IDENTITY_COMPONENT_CHANGED_SESSION_KEY, None)
+    if user_id is None:
+        if error_code == "INVALID_STORED_UUID":
+            st.error("저장된 게임 식별자가 손상됐어요. 새 UUID를 생성해 주세요.")
+            if st.button("새 UUID 생성", key="identity.reset_stored"):
+                request_identity_write(user_id=None, session_state=st.session_state)
+                st.rerun()
+        elif error_code:
+            st.error("게임 식별자를 확인하지 못했어요. 브라우저를 새로고침해 주세요.")
+        else:
+            st.info("게임 식별자를 확인하고 있어요.")
+        return
+    set_identity(user_id=user_id, persistence=persistence, session_state=st.session_state)
+    if isinstance(write_request, dict):
+        st.session_state.pop(IDENTITY_WRITE_SESSION_KEY, None)
+        st.session_state.pop("identity.replacement_input", None)
+        st.session_state["navigation.page"] = "home"
 
     client = ApiClient(user_id=get_identity(st.session_state))
     st.session_state["game.client"] = client
     if st.session_state.get(IDENTITY_WARNING_SESSION_KEY):
         st.warning("브라우저 저장소를 사용할 수 없어 이번 세션에서만 게임을 복구할 수 있어요.")
     page = st.session_state.get("navigation.page", "home")
+    page = sync_page_navigation(page)
+    load_home_games = False
     if page == "feedback":
         render_feedback(client=client, feedback_type="GENERAL")
     elif page == "game_feedback":
@@ -96,14 +123,20 @@ def main() -> None:
             else:
                 render_game(snapshot)
     else:
-        if should_load_games(st.session_state):
+        load_home_games = should_load_games(st.session_state) or bool(
+            st.session_state.get("home.games_loading")
+        )
+        # 기존 카드를 loading 화면으로 가리면 TTL 만료와 함께 도착한 카드 클릭을
+        # 읽지 못한다. 최초 조회만 loading으로 표시하고 캐시가 있으면 입력부터 처리한다.
+        if load_home_games and "home.games" not in st.session_state:
             st.session_state["home.games_loading"] = True
-            st.rerun()
-        if st.session_state.get("home.games_loading"):
-            load_games(client)
-            st.rerun()
         render_home(client)
     render_settings()
+    # TTL 만료 때 먼저 rerun하면 이번 요청의 버튼 trigger가 초기화된다.
+    # 카드·홈 이동·UUID 최종 확인을 먼저 처리하고, 남아 있는 목록 조회만 수행한다.
+    if load_home_games:
+        load_games(client)
+        st.rerun()
 
 
 if __name__ == "__main__":

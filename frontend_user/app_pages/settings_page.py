@@ -5,7 +5,7 @@ from __future__ import annotations
 import streamlit as st
 
 from frontend_user.core.identity import parse_uuid_v4
-from frontend_user.core.session import get_identity, reset_identity_scope, set_identity
+from frontend_user.core.session import get_identity, request_identity_write
 
 
 def render() -> None:
@@ -35,10 +35,8 @@ def render() -> None:
             if st.button("확인하고 교체", key="identity.confirm_replace"):
                 candidate = parse_uuid_v4(pending)
                 if candidate is not None:
-                    reset_identity_scope(st.session_state)
-                    set_identity(user_id=candidate, persistence="LOCAL", session_state=st.session_state)
+                    request_identity_write(user_id=candidate, session_state=st.session_state)
                     st.session_state.pop("identity.pending_replacement", None)
-                    st.session_state.pop("identity.replacement_input", None)
                     st.rerun()
             if st.button("취소", key="identity.cancel_replace"):
                 st.session_state.pop("identity.pending_replacement", None)

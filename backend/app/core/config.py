@@ -10,10 +10,11 @@ database path를 그대로 사용하고, 로컬 fallback일 때만 ``database_na
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, unquote, urlsplit, urlunsplit
 
 from dotenv import load_dotenv
 
@@ -25,12 +26,19 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 # 명시한다. 두 값은 PostgreSQL에서 통용되는 URI 스킴 표기다.
 POSTGRES_SCHEMES = frozenset({"postgres", "postgresql"})
 
+# libpq는 query의 연결 매개변수로 URL 경로·계정을 덮어쓸 수 있다. migration
+# 검증에서는 두 DSN 모두 이러한 우회를 거부하고 일반 TLS·timeout 옵션만 보존한다.
+MIGRATION_TARGET_QUERY_KEYS = frozenset({
+    "dbname", "host", "hostaddr", "port", "user", "password", "passfile", "service",
+    "servicefile",
+})
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
     """인증 영속성 계층이 사용하는 검증 완료 설정.
 
-    ``database_url``은 비밀번호를 포함할 수 있으므로 데이터 클래스 ``repr``에서
+    두 DB URL은 비밀번호를 포함할 수 있으므로 데이터 클래스 ``repr``에서
     제외한다. ``preserve_database_path``가 거짓이면 ``database_name``을 URL 경로로
     사용하고, 원격 ``TEAM_DATABASE_URL``에서 읽은 설정이면 원격 URL의 경로를
     보존한다.
@@ -64,10 +72,13 @@ class Settings:
     gemini_api_key: str = field(default="", repr=False)
     gemini_model: str = "gemini-2.5-flash"
     llm_timeout_seconds: int = 30
-    llm_max_output_tokens: int = 400
+    llm_max_output_tokens: int = 8192
     game_max_total_tokens: int = 60_000
     llm_input_cost_per_million_usd: float = 0.0
     llm_output_cost_per_million_usd: float = 0.0
+    # 일반 환경 loader는 DDL 자격 증명을 읽지 않는다. runner 전용 loader 또는
+    # 명시적 생성자 주입만 허용하며 전용 속성에서 필수·대상 검증을 수행한다.
+    database_migration_url: str = field(default="", repr=False)
 
     def __post_init__(self) -> None:
         """불변 설정이 만들어지는 시점에 URL과 DB 이름을 한 번 검증한다.
@@ -86,8 +97,8 @@ class Settings:
             # 낼 수 있어 URL 분해와 함께 같은 안전한 오류로 변환한다.
             parsed = urlsplit(raw_url)
             port = parsed.port
-        except ValueError as exc:
-            raise ValueError("DATABASE_URL is not a valid PostgreSQL URL") from exc
+        except ValueError:
+            raise ValueError("DATABASE_URL is not a valid PostgreSQL URL") from None
 
         if parsed.scheme.lower() not in POSTGRES_SCHEMES:
             raise ValueError("DATABASE_URL must use the postgres or postgresql scheme")
@@ -111,9 +122,9 @@ class Settings:
             raise ValueError("CORS_ALLOWED_ORIGINS must contain absolute origins")
         keyring_file = self.game_state_keyring_file.strip()
         active_key_id = self.game_state_active_key_id.strip()
-        # 아직 DB 게임 저장 기능을 사용하지 않는 개발 환경은 두 설정을 모두
-        # 비워 둘 수 있다. 단, 하나만 설정하면 암호화가 불완전하므로 시작부터
-        # 명확하게 거부한다.
+        # 기존 로컬 runtime은 둘 다 비어 있으면 legacy 평문 저장을 사용한다.
+        # 이 호환 경로는 유지하되 하나만 설정한 불완전한 암호화 구성은 거부한다.
+        # keyring을 추가해도 기존 평문 데이터가 자동으로 암호화되지는 않는다.
         if bool(keyring_file) != bool(active_key_id):
             raise ValueError(
                 "GAME_STATE_KEYRING_FILE and GAME_STATE_ACTIVE_KEY_ID must be set together"
@@ -144,6 +155,7 @@ class Settings:
         # frozen 데이터 클래스이므로 검증한 정규화 값은 object.__setattr__로
         # 한 번만 저장한다. 이후 요청 처리 중 설정이 바뀌지 않는다.
         object.__setattr__(self, "database_url", raw_url)
+        object.__setattr__(self, "database_migration_url", self.database_migration_url.strip())
         object.__setattr__(self, "database_name", self.database_name.strip())
         object.__setattr__(self, "redis_url", self.redis_url.strip())
         object.__setattr__(self, "mcp_server_url", self.mcp_server_url.strip().rstrip("/"))
@@ -178,6 +190,28 @@ class Settings:
             (parsed.scheme, parsed.netloc, database_path, parsed.query, parsed.fragment)
         )
 
+    @property
+    def effective_migration_database_url(self) -> str:
+        """두 DSN의 실제 DB 경로를 검증한 뒤 지정 DDL URL을 그대로 반환한다.
+
+        DDL DSN은 필수이며 runtime으로 대체하거나 DATABASE_NAME으로 재작성하지
+        않는다. percent-decoding한 경로를 대소문자까지 비교하되 프록시를 허용하기
+        위해 host·port 일치는 강제하지 않는다. 따라서 같은 물리 서버인지 확인하는
+        일과 DDL 계정의 실제 권한 검증은 실행 담당자의 책임으로 남는다.
+        """
+
+        ddl_path = _migration_database_path(
+            self.database_migration_url, name="DATABASE_MIGRATION_URL"
+        )
+        runtime_path = _migration_database_path(
+            self.effective_database_url, name="runtime DATABASE_URL"
+        )
+        if ddl_path != runtime_path:
+            raise ValueError(
+                "DATABASE_MIGRATION_URL database path must match runtime database path"
+            )
+        return self.database_migration_url
+
     @classmethod
     def from_env(cls, env_file: Path | None = None) -> Settings:
         """환경 변수 우선순위를 지키면서 ``.env``에서 설정을 불러온다.
@@ -185,6 +219,8 @@ class Settings:
         운영 환경이 주입한 값을 ``.env``가 덮어쓰지 않도록 ``override=False``를
         사용한다. 파일을 따로 지정하지 않으면 저장소 루트의 ``.env``를 읽고,
         ``DATABASE_NAME``이 없을 때 ``Team4_Proj``를 기본 대상으로 강제한다.
+        ``DATABASE_MIGRATION_URL``은 조회하지 않아 Backend 설정에 DDL 자격 증명을
+        저장하지 않는다. migration 명령은 전용 ``from_migration_env``를 사용한다.
         """
 
         load_dotenv(env_file or PROJECT_ROOT / ".env", override=False)
@@ -194,7 +230,10 @@ class Settings:
             # 원격 DSN의 database path는 운영 대상의 일부이므로 DATABASE_NAME이나
             # 로컬 기본값으로 덮어쓰지 않는다. path가 없으면 PostgreSQL이 기본 DB를
             # 선택하게 두지 않고 설정 오류로 즉시 거부한다.
-            parsed_team_url = urlsplit(team_database_url)
+            try:
+                parsed_team_url = urlsplit(team_database_url)
+            except ValueError:
+                raise ValueError("TEAM_DATABASE_URL is not a valid PostgreSQL URL") from None
             remote_database_name = parsed_team_url.path.lstrip("/")
             if not remote_database_name:
                 raise ValueError("TEAM_DATABASE_URL must include a database path")
@@ -231,7 +270,7 @@ class Settings:
                 os.getenv("LLM_TIMEOUT_SECONDS", "30"), name="LLM_TIMEOUT_SECONDS"
             ),
             llm_max_output_tokens=_read_positive_int(
-                os.getenv("LLM_MAX_OUTPUT_TOKENS", "400"), name="LLM_MAX_OUTPUT_TOKENS"
+                os.getenv("LLM_MAX_OUTPUT_TOKENS", "8192"), name="LLM_MAX_OUTPUT_TOKENS"
             ),
             game_max_total_tokens=_read_positive_int(
                 os.getenv("GAME_MAX_TOTAL_TOKENS", "60000"), name="GAME_MAX_TOTAL_TOKENS"
@@ -245,6 +284,58 @@ class Settings:
                 name="LLM_OUTPUT_COST_PER_MILLION_USD",
             ),
         )
+
+    @classmethod
+    def from_migration_env(cls, env_file: Path | None = None) -> Settings:
+        """migration 명령에만 DDL 환경키를 읽어 별도의 설정 인스턴스를 만든다.
+
+        공통 loader의 파일·환경 우선순위와 runtime DSN 계산은 유지하되 Backend의
+        캐시를 재사용하거나 변경하지 않는다. 누락·대상 검증은 runner가 연결 전에
+        수행하므로 일반 runtime 설정에는 DDL 자격 증명이 필요하지 않다.
+        """
+
+        settings = cls.from_env(env_file)
+        return replace(
+            settings, database_migration_url=os.getenv("DATABASE_MIGRATION_URL", ""),
+        )
+
+
+def _migration_database_path(url: str, *, name: str) -> str:
+    """접속 대상 우회와 모호한 경로를 거부하고 비교용 DB 이름만 해석한다.
+
+    자격 증명은 디코딩하거나 오류에 넣지 않는다. 표준 파서가 원문 일부를 포함한
+    예외를 낼 수 있으므로 파싱 실패의 exception chain도 외부에 출력하지 않는다.
+    """
+
+    if not url:
+        raise ValueError(f"{name} must contain a PostgreSQL connection URL")
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+        database_path = unquote(parsed.path, encoding="utf-8", errors="strict")
+        query = parse_qsl(
+            parsed.query, keep_blank_values=True, strict_parsing=True,
+            encoding="utf-8", errors="strict",
+        )
+    except (ValueError, UnicodeError):
+        raise ValueError(f"{name} is not a valid PostgreSQL URL") from None
+    if parsed.scheme.lower() not in POSTGRES_SCHEMES or not parsed.hostname:
+        raise ValueError(f"{name} must include a PostgreSQL scheme and host")
+    if port is not None and not 1 <= port <= 65_535:
+        raise ValueError(f"{name} contains an invalid PostgreSQL port")
+    if parsed.fragment or any(ord(character) < 32 or ord(character) == 127 for character in url):
+        raise ValueError(f"{name} contains an invalid URL character or fragment")
+    if (
+        not database_path.startswith("/")
+        or not database_path[1:]
+        or "/" in database_path[1:]
+        or any(ord(character) < 32 or ord(character) == 127 for character in database_path)
+        or re.search(r"%(?![0-9a-fA-F]{2})", parsed.path + parsed.query)
+    ):
+        raise ValueError(f"{name} must include an unambiguous database path")
+    if any(key.lower() in MIGRATION_TARGET_QUERY_KEYS for key, _ in query):
+        raise ValueError(f"{name} query must not override connection targets or credentials")
+    return database_path[1:]
 
 
 def _read_positive_int(value: str, *, name: str) -> int:

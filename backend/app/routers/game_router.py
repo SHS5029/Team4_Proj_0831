@@ -167,7 +167,7 @@ async def events(
                 isinstance(next_sequence, int) and next_sequence > cursor_sequence
             )
             if changed:
-                yield f"event: game_sync\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                yield f"id: {int(next_sequence)}\nevent: game_sync\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
                 cursor_state_version = int(next_state_version)
                 cursor_sequence = int(next_sequence)
                 last_heartbeat = asyncio.get_running_loop().time()

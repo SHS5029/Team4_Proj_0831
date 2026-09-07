@@ -1,6 +1,91 @@
+import pytest
+from streamlit.testing.v1 import AppTest
+
 from frontend_user.app_pages.game_create_page import ROLE_COUNTS
 from frontend_user.app_pages.home_page import should_load_games
-from frontend_user.core.api_client import ApiClient
+from frontend_user.core.api_client import ApiClient, ApiUnavailableError
+
+
+GAME_ID = "00000000-0000-4000-8000-000000000201"
+
+
+class _Client:
+    """외부 서비스 없이 화면의 요청 횟수와 재시도 body를 관찰한다."""
+
+    def __init__(self):
+        self.created = []
+        self.loaded = []
+        self.items = []
+        self.create_error = False
+        self.list_error = False
+        self.list_response = None
+
+    def create_game(self, **body):
+        self.created.append(body)
+        if self.create_error:
+            raise ApiUnavailableError(status_code=503, code="DEPENDENCY_UNAVAILABLE")
+        return {"data": {"game_id": GAME_ID}}
+
+    def get_game(self, game_id):
+        count = self.created[-1]["player_count"]
+        return {"data": {
+            "game": {"game_id": game_id, "player_count": count},
+            "players": [{"display_name": f"참가자 {seat}"} for seat in range(1, count + 1)],
+        }}
+
+    def get_games(self, **query):
+        self.loaded.append(query)
+        if self.list_error:
+            raise ApiUnavailableError(status_code=503, code="DEPENDENCY_UNAVAILABLE")
+        if self.list_response is not None:
+            return self.list_response
+        return {"data": {"items": list(self.items)}}
+
+
+def _create_app(client):
+    """실제 dispatcher와 같은 경로 분기로 자동 rerun의 도착 화면을 확인한다."""
+
+    import streamlit as st
+    from frontend_user.app_pages import creation_complete_page, game_create_page
+
+    if st.session_state.get("navigation.page", "create") == "create":
+        game_create_page.render(client)
+    else:
+        creation_complete_page.render(st.session_state["game.create_pending"])
+
+
+def _home_app(client):
+    """홈의 기존 loading 단계와 목록 렌더링 순서를 재현한다."""
+
+    import streamlit as st
+    from frontend_user.app_pages import home_page
+
+    if st.session_state.get("navigation.page", "home") != "home":
+        st.write(st.session_state["navigation.page"])
+        return
+    if home_page.should_load_games(st.session_state):
+        st.session_state["home.games_loading"] = True
+        st.rerun()
+    if st.session_state.get("home.games_loading"):
+        home_page.load_games(client)
+        st.rerun()
+    home_page.render(client)
+
+
+def _completed_app(pending):
+    from frontend_user.app_pages.creation_complete_page import render
+
+    render(pending)
+
+
+def _home_render_app(client):
+    from frontend_user.app_pages.home_page import render
+
+    render(client)
+
+
+def _html(app):
+    return "\n".join(element.value for element in app.markdown)
 
 
 def test_role_preview_matches_mystery_v1_for_six_to_nine_players() -> None:
@@ -33,8 +118,209 @@ def test_create_game_posts_contract_and_idempotency_header() -> None:
     )
 
 
-def test_home_game_list_load_starts_only_without_data_or_error() -> None:
+def test_home_game_list_load_starts_without_fresh_data_or_error(monkeypatch) -> None:
+    monkeypatch.setattr("frontend_user.app_pages.home_page.monotonic", lambda: 100)
     assert should_load_games({}) is True
-    assert should_load_games({"home.games": []}) is False
+    assert should_load_games({"home.games": []}) is True
+    assert should_load_games({"home.games": [], "home.games_loaded_at": 100}) is False
+    assert should_load_games({"home.games": [], "home.games_loaded_at": 70}) is True
+    assert should_load_games({"home.games": [], "home.games_loaded_at": "invalid"}) is True
     assert should_load_games({"home.games_loading": True}) is False
     assert should_load_games({"home.games_error": "DEPENDENCY_UNAVAILABLE"}) is False
+
+
+@pytest.mark.parametrize("count", [6, 7, 8, 9])
+def test_create_success_reruns_to_complete_without_another_click(count):
+    client = _Client()
+    app = AppTest.from_function(_create_app, args=(client,)).run()
+    app.button(key=f"game.player_count.{count}").click().run()
+    app.button(key="game.create_submit").click().run()
+
+    assert not app.exception
+    assert app.session_state["navigation.page"] == "creation_complete"
+    assert "게임이 만들어졌어요" in _html(app)
+    assert f"참가자 {count}" in _html(app)
+    assert len(client.created) == 1
+    app.run()
+    assert len(client.created) == 1
+
+
+def test_new_create_entry_discards_previous_success():
+    client = _Client()
+    app = AppTest.from_function(_create_app, args=(client,))
+    app.session_state["game.create_pending"] = {
+        "status": "SUCCEEDED", "game_id": "previous-game", "snapshot": {},
+    }
+    app.session_state["navigation.page"] = "create"
+    app.run()
+
+    assert not app.exception
+    assert app.session_state["navigation.page"] == "create"
+    assert "game.create_pending" not in app.session_state
+    assert not client.created
+    app.button(key="game.create_submit").click().run()
+    assert app.session_state["game.create_pending"]["game_id"] == GAME_ID
+    assert len(client.created) == 1
+
+
+def test_creation_complete_uses_snapshot_names_and_escapes_public_fields():
+    pending = {
+        "game_id": "<b>synthetic-id</b>",
+        "snapshot": {"data": {
+            "game": {"player_count": 6},
+            "players": [{"display_name": "<script>참가자</script>"}],
+        }},
+    }
+    app = AppTest.from_function(_completed_app, args=(pending,)).run()
+
+    assert not app.exception
+    html = _html(app)
+    assert "&lt;script&gt;참가자&lt;/script&gt;" in html
+    assert "&lt;b&gt;synthetic-id&lt;/b&gt;" in html
+    assert "민수" not in html
+
+
+def test_home_displays_three_resumable_and_completed_games():
+    client = _Client()
+    client.items = [
+        {"game_id": f"{status}-{index}", "scenario_title": f"{status} 사건 {index}",
+         "status": status, "can_resume": status == "SAVED"}
+        for status in ("SAVED", "COMPLETED") for index in range(4)
+    ]
+    app = AppTest.from_function(_home_app, args=(client,)).run()
+
+    assert not app.exception
+    for status in ("SAVED", "COMPLETED"):
+        for index in range(3):
+            assert f"{status} 사건 {index}" in _html(app)
+        assert f"{status} 사건 3" not in _html(app)
+    assert app.button(key="home.game.COMPLETED-0").label == "결과 보기  ›"
+
+
+def test_unknown_create_keeps_body_and_key_until_same_request_retry():
+    client = _Client()
+    client.create_error = True
+    app = AppTest.from_function(_create_app, args=(client,)).run()
+    app.button(key="game.player_count.8").click().run()
+    app.button(key="game.create_submit").click().run()
+
+    assert not app.exception
+    assert app.session_state["game.create_pending"]["status"] == "RETRYABLE_UNKNOWN"
+    for key in ("game.create_submit", "game.create_cancel", "game.player_count.6"):
+        assert app.button(key=key).disabled
+    app.run()
+    assert len(client.created) == 1
+    client.create_error = False
+    app.button(key="game.create_retry").click().run()
+    assert not app.exception
+    assert client.created[0] == client.created[1]
+    assert client.created[1]["player_count"] == 8
+    assert "게임이 만들어졌어요" in _html(app)
+
+
+@pytest.mark.parametrize("snapshot", [None, {"data": None}, {"data": {"players": []}}])
+def test_creation_complete_does_not_fabricate_missing_players(snapshot):
+    app = AppTest.from_function(
+        _completed_app, args=({"game_id": GAME_ID, "snapshot": snapshot},),
+    ).run()
+
+    assert not app.exception
+    assert app.warning
+    assert "민수" not in _html(app)
+    assert "6명의 플레이어" not in _html(app)
+
+
+def test_home_empty_list_is_not_an_error():
+    client = _Client()
+    app = AppTest.from_function(_home_app, args=(client,)).run()
+
+    assert not app.exception
+    assert not app.error
+    assert "아직 게임이 없어요" in app.info[0].value
+    app.run()
+    assert client.loaded == [{"limit": 20}]
+
+
+def test_home_loading_state_does_not_show_empty_list():
+    app = AppTest.from_function(_home_render_app, args=(_Client(),))
+    app.session_state["home.games_loading"] = True
+    app.run()
+
+    assert not app.exception
+    assert app.info[0].value == "게임 목록을 불러오는 중이에요."
+
+
+def test_home_error_waits_for_retry_and_then_displays_latest_list():
+    client = _Client()
+    client.list_error = True
+    app = AppTest.from_function(_home_app, args=(client,)).run()
+
+    assert not app.exception
+    assert app.error
+    app.run()
+    assert len(client.loaded) == 1
+    client.list_error = False
+    client.items = [{"game_id": GAME_ID, "status": "COMPLETED", "scenario_title": "완료 사건"}]
+    app.button(key="home.retry").click().run()
+    assert not app.exception
+    assert not app.error
+    assert "완료 사건" in _html(app)
+    assert "진행 중이거나 저장된 게임이 없습니다." in [c.value for c in app.caption]
+    assert len(client.loaded) == 2
+
+
+@pytest.mark.parametrize("response", [
+    {}, {"data": {}}, {"data": {"items": "invalid"}},
+    {"data": {"items": [{"game_id": GAME_ID, "status": []}]}},
+    {"data": {"items": [{"game_id": "", "status": "SAVED"}]}},
+])
+def test_home_malformed_response_shows_error_instead_of_empty(response):
+    client = _Client()
+    client.list_response = response
+    app = AppTest.from_function(_home_app, args=(client,)).run()
+
+    assert not app.exception
+    assert app.error
+    assert not app.info
+
+
+def test_home_manual_refresh_replaces_cached_list():
+    client = _Client()
+    app = AppTest.from_function(_home_app, args=(client,)).run()
+    client.items = [{"game_id": GAME_ID, "status": "SAVED", "scenario_title": "저장 사건"}]
+    app.button(key="home.refresh").click().run()
+
+    assert not app.exception
+    assert "저장 사건" in _html(app)
+    assert len(client.loaded) == 2
+
+
+@pytest.mark.parametrize("status", ["IN_PROGRESS", "SAVED", "COMPLETED", "FAILED"])
+def test_home_game_navigation_invalidates_cache_for_next_home_entry(status):
+    client = _Client()
+    client.items = [{"game_id": GAME_ID, "status": status, "scenario_title": "변경 전 사건"}]
+    app = AppTest.from_function(_home_app, args=(client,)).run()
+    app.button(key=f"home.game.{GAME_ID}").click().run()
+
+    assert not app.exception
+    assert app.session_state["navigation.page"] == "game"
+    assert app.session_state["game.game_id"] == GAME_ID
+    assert "home.games" not in app.session_state
+    client.items = [{"game_id": GAME_ID, "status": "SAVED", "scenario_title": "저장 후 사건"}]
+    app.session_state["navigation.page"] = "home"
+    app.run()
+    assert not app.exception
+    assert "저장 후 사건" in _html(app)
+    assert "변경 전 사건" not in _html(app)
+    assert len(client.loaded) == 2
+
+
+@pytest.mark.parametrize("button, page", [("home.new_game", "create"), ("home.feedback", "feedback")])
+def test_home_navigation_reaches_create_or_general_feedback(button, page):
+    client = _Client()
+    app = AppTest.from_function(_home_app, args=(client,)).run()
+    app.button(key=button).click().run()
+
+    assert not app.exception
+    assert app.session_state["navigation.page"] == page
+    assert "home.games" not in app.session_state

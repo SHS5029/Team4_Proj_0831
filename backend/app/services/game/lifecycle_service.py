@@ -34,7 +34,7 @@ def _route_scope(game_id: UUID) -> str:
 def _remaining_ms(window: Mapping[str, Any] | None, now: datetime) -> int | None:
     """시간 제한 window의 저장 시점 잔여 시간을 계산한다."""
 
-    if window is None or window["window_kind"] == "SPEECH":
+    if window is None or (window["window_kind"] == "SPEECH" and window.get("deadline_at") is None):
         return None
     deadline = window["deadline_at"]
     if not isinstance(deadline, datetime):
@@ -51,11 +51,9 @@ def _saved_remaining_ms(window: Mapping[str, Any] | None) -> int | None:
         raise RuntimeError("Saved game action window is not paused")
     window_kind = str(window["window_kind"])
     remaining_ms = window.get("remaining_ms_on_save")
-    if window_kind == "SPEECH":
-        if remaining_ms is not None:
-            raise RuntimeError("Saved speech window contains a remaining time")
+    if window_kind == "SPEECH" and remaining_ms is None:
         return None
-    if window_kind not in {"NIGHT", "VOTE", "REVOTE", "FINAL_VOTE"}:
+    if window_kind not in {"SPEECH", "NIGHT", "VOTE", "REVOTE", "FINAL_VOTE"}:
         raise RuntimeError("Saved action window kind is invalid")
     if isinstance(remaining_ms, bool) or not isinstance(remaining_ms, int) or remaining_ms < 0:
         raise RuntimeError("Saved timed window remaining time is invalid")
@@ -91,7 +89,8 @@ def begin_game(service: Any, owner_user_id: UUID, game_id: UUID, payload: GameCo
                     raise rule_error(exc) from exc
                 service._games.update_game_state(cursor, state=state, expected_state_version=accepted_version)
                 front_sequence = service._games.next_front_sequence(cursor, game_id)
-                service._actions.open_window(cursor, ActionWindowInsert(window_id=uuid5_for_window(game_id, state.state_version), game_id=game_id, window_kind="SPEECH", phase=state.phase.value, round=state.round, cycle=1, turn_player_id=human_player_id, opened_state_version=state.state_version, deadline_at=None))
+                from backend.app.services.game.window_service import next_window
+                service._actions.open_window(cursor, next_window(state, datetime.now(UTC)))
                 service.append_front_events(cursor, game_id=game_id, state=state, front_sequence=front_sequence)
                 result = {"command_id": str(idempotency_key), "command_type": "BEGIN_GAME", "accepted_state_version": accepted_version, "result_state_version": state.state_version, "sync_url": f"/api/v1/games/{game_id}/sync"}
                 service._receipts.insert(cursor, principal_type="USER", principal_id=owner_user_id, idempotency_key=idempotency_key, route_scope=route_scope, game_id=game_id, request_hash=request_hash, result_state_version=state.state_version, http_status=200, result_body=result)

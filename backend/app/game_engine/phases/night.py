@@ -8,6 +8,7 @@ from uuid import UUID
 from backend.app.game_engine.errors import RuleViolation
 from backend.app.game_engine.fallback import auto_night_target
 from backend.app.game_engine.phases.transition import after_night, touch
+from backend.app.game_engine.rng import DeterministicRng
 from backend.app.game_engine.rules.night_rules import required_actors, role_action
 from backend.app.game_engine.rules.player_rules import eliminate_player, find_player, require_alive_player
 from backend.app.models.enums import NightActionType
@@ -38,10 +39,6 @@ def submit_action(
         raise RuleViolation("TARGET_DEAD")
     if action_type in {NightActionType.ATTACK, NightActionType.INVESTIGATE} and target.player_id == actor.player_id:
         raise RuleViolation("SELF_TARGET_INVALID")
-    if action_type is NightActionType.ATTACK and any(
-        action.action_type is NightActionType.ATTACK for action in state.night_actions.values()
-    ):
-        raise RuleViolation("FACTION_ACTION_ALREADY_SUBMITTED")
     state.night_actions[actor.player_id] = NightAction(actor.player_id, action_type, target_id)
     touch(state)
     return state
@@ -55,22 +52,39 @@ def resolve(state: GameState, *, force: bool = False) -> GameState:
     required = required_actors(state)
     if not force and any(player.player_id not in state.night_actions for player in required):
         raise RuleViolation("WINDOW_NOT_READY")
+    attack_submitted = any(
+        action.action_type is NightActionType.ATTACK for action in state.night_actions.values()
+    )
     for actor in required:
         if actor.player_id in state.night_actions:
             continue
         action_type = role_action(state, actor.player_id)
+        # 마피아 일부가 응답했다면 미응답자의 선택을 새로 만들지 않는다. 전원
+        # 무응답일 때만 좌석순 대표 한 명에 진영 단위 자동 선택을 한 번 기록한다.
+        if action_type is NightActionType.ATTACK and attack_submitted:
+            continue
         target = auto_night_target(state, actor, action_type)
         state.night_actions[actor.player_id] = NightAction(actor.player_id, action_type, target.player_id)
+        if action_type is NightActionType.ATTACK:
+            attack_submitted = True
 
-    attack = next((action for action in state.night_actions.values() if action.action_type is NightActionType.ATTACK), None)
+    # 도착 순서가 달라도 같은 seed와 제출 집합은 같은 결과를 내도록 UUID로 정렬한다.
+    attack_targets = sorted({
+        action.target_id
+        for action in state.night_actions.values()
+        if action.action_type is NightActionType.ATTACK
+    })
+    attack_target = (
+        DeterministicRng(state.seed).choice(attack_targets, f"night-attack:{state.round}")
+        if attack_targets else None
+    )
     protection = next((action for action in state.night_actions.values() if action.action_type is NightActionType.PROTECT), None)
-    if attack and (not protection or protection.target_id != attack.target_id):
-        eliminate_player(state, attack.target_id)
+    if attack_target and (not protection or protection.target_id != attack_target):
+        eliminate_player(state, attack_target)
     for action in state.night_actions.values():
         if action.action_type is NightActionType.INVESTIGATE:
             target = find_player(state, action.target_id)
             state.last_detective_result[action.actor_id] = target.role is PlayerRole.MAFIA
-    state.round += 1
     state.night_actions.clear()
     touch(state)
     after_night(state)

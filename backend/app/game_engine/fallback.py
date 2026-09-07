@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from backend.app.game_engine.rng import DeterministicRng
+from backend.app.game_engine.rules.vote_rules import valid_targets
 from backend.app.models.enums import NightActionType, PlayerRole
 from backend.app.models.game_state import GameState, PlayerState
 
@@ -15,30 +16,29 @@ def auto_night_target(state: GameState, actor: PlayerState, action_type: NightAc
     """
 
     candidates = [player for player in state.alive_players if player.player_id != actor.player_id]
-    if action_type is NightActionType.PROTECT:
-        candidates = state.alive_players
+    if action_type is NightActionType.ATTACK:
+        # 마피아 전원 무응답의 진영 fallback에만 쓴다. 수동 공격은 동료도 허용한다.
+        candidates = [player for player in candidates if player.role is not PlayerRole.MAFIA]
     if not candidates:
         raise ValueError("no valid night target")
     return DeterministicRng(state.seed).choice(
         candidates,
-        f"auto-night:{state.round}:{actor.player_id}:{action_type.value}",
+        (
+            f"auto-night:{state.round}:mafia-faction"
+            if action_type is NightActionType.ATTACK
+            else f"auto-night:{state.round}:{actor.player_id}:{action_type.value}"
+        ),
     )
 
 
 def auto_vote_target(state: GameState, actor: PlayerState) -> PlayerState:
-    """미제출 투표의 대상을 규칙 기반으로 고른다."""
+    """숨겨진 역할을 읽지 않고 해당 phase의 유효 후보 중 결정적으로 선택한다."""
 
-    candidates = [
-        player
-        for player in state.alive_players
-        if player.player_id != actor.player_id
-    ]
+    candidates = valid_targets(state, actor)
     if not candidates:
         raise ValueError("no valid vote target")
 
-    # 마피아가 아닌 생존자를 우선한다. 동률이나 후보가 없을 때만 전체 후보를 쓴다.
-    non_mafia = [player for player in candidates if player.role is not PlayerRole.MAFIA]
     return DeterministicRng(state.seed).choice(
-        non_mafia or candidates,
+        candidates,
         f"auto-vote:{state.round}:{state.phase.value}:{actor.player_id}",
     )

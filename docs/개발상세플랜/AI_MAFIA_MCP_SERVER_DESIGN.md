@@ -13,11 +13,17 @@
 
 > **현재 구현 기준 (2026-09-05):** 이 설계서의 bootstrap token, HMAC, nonce,
 > custom session registry, Engine consume와 다중 Resource·Tool WU는 아직 구현하지
-> 않는다. 현재 실행 경로는 [AI_MAFIA_MCP_FASTMCP_MINIMAL_CONNECTION_PLAN.md](../temp/AI_MAFIA_MCP_FASTMCP_MINIMAL_CONNECTION_PLAN.md)의
-> 최소 Resource·Prompt·Tool 등록부와 Backend synthetic endpoint뿐이다. 아래의
+> 않는다. 현재 실행 경로는 [API 명세](AI_MAFIA_API_SPEC.md) 상단 최소 프로파일의
+> Resource·Prompt·Tool 등록부와 Backend 내부 endpoint다. 아래의
 > 확장 설계는 후속 합의 전까지 실행 지시로 사용하지 않는다.
 
 ## 1. 목적과 정본 우선순위
+
+2026-09-07 보완은 기존 최소 FastMCP Resource에 AI actor·scope 전달을 추가한다.
+URI와 endpoint 계약은 API 명세의 `현재 FastMCP actor projection 보완` 절을 따른다.
+WU-M3의 기존 resources 등록부와 integrations/engine_http.py가 이를 담당하며
+다섯 data schema를 이 문서에 복제하지 않는다. 별도 인증 registry나 DB 직접 접근을
+추가하는 작업은 아니다.
 
 이 문서는 Mafia Game MCP runtime과 MCP·Data Infrastructure 작업 단위의 구현 구조,
 선행조건, 검증 방법과 완료 증거를 정의한다. 제품 규칙, 저장 계약과 wire schema를
@@ -522,7 +528,7 @@ host의 시작·종료 오류 처리까지 filter를 유지한다. 이 경계는
 |---|---|
 | Backend | `MAFIA_MCP_URL`, `MCP_REQUIRE_TLS`, `MCP_TLS_CA_FILE`, `MCP_SERVER_AUTH_SECRET`, `ENGINE_INTERNAL_API_SECRET` 등 Backend allowlist |
 | MCP runtime | `MCP_SERVER_AUTH_SECRET`, `ENGINE_INTERNAL_API_SECRET`, `ENGINE_API_URL`, 비밀이 아닌 listen·TLS 설정 |
-| migration | `DATABASE_MIGRATION_URL`, `DATABASE_NAME` |
+| migration | `DATABASE_MIGRATION_URL`, `DATABASE_NAME`, DB path 비교용 `TEAM_DATABASE_URL`/`DATABASE_URL` |
 
 - MCP runtime에는 DB·Redis·LLM 자격증명을 주입하지 않는다.
 - 실제 secret, DSN, token과 인증서 개인키를 문서·fixture·log·Git에 넣지 않는다.
@@ -709,3 +715,9 @@ no persistent spool과 fresh credential이다. Resource context no-cache는 이�
 - [ ] 위험도에 맞는 검증 결과와 생략 사유를 기록했는가
 - [ ] 루트 README와 package README가 실제 구현 상태·명령과 일치하는가
 - [ ] 사용자 승인 없이 commit·push하지 않았는가
+
+이번 단일 WU-M3 보완은 사용자가 요청한 운영 FastMCP 모델 입력 축약·게임 규칙 안내 추가다. 기존 Resource 등록 파일에서만 변환하며 상세 계약은 API 명세의 FastMCP 모델 입력 축약 절을 따른다. Backend MCP 소비 클라이언트는 기존·축약 응답을 함께 허용하는 최소 호환 변경을 포함한다. DB·게임 판정은 변경하지 않는다.
+
+## 2026-09-07 자유 토론 변경 (사용자 승인 WU-B4)
+
+이번 단일 WU-B4는 1분 45초 자유 토론과 연결되는 Front·MCP 표현의 변경이다. 이 절이 기존 좌석당 한 번 발언·전원 PASS 추가 순환 규칙보다 우선한다. 새 일반·최종 토론은 Backend deadline 105초까지 열리며 인간은 AI 처리 순서와 무관하게 발언한다. 플레이어별 최근 60초 SPEAK는 최대 7회이며 서버 게임 행 잠금 안에서 원장으로 검증한다. PASS는 조기 마감하지 않는다. AI 작업은 기존 단일 예약 창을 재사용해 공정하게 배분하고, 발언마다 새 window를 열되 토론 deadline은 보존한다. turn_player_id는 AI 스케줄링 힌트이며 인간의 발언 권한 제한이 아니다. SPEECH에도 deadline·remaining_ms가 제공된다. 저장 시 잔여 시간을 보존한다. 마감 뒤 첫날은 밤, 이후 낮은 투표, 최종 토론은 최종 지목으로 진행한다. 과거 deadline 없는 발언 창은 기존 방식으로 처리한다. DB 구조와 idempotency·게임 상태 버전 검증은 보존한다.

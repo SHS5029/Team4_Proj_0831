@@ -29,8 +29,15 @@ def _mark_identity_changed() -> None:
     st.session_state[IDENTITY_COMPONENT_CHANGED_SESSION_KEY] = True
 
 
-def load_identity(*, scope_version: str = "1") -> tuple[UUID, str, str | None]:
-    """bridge 결과를 읽고 실패 시 session-only identity로 안전하게 대체한다."""
+def load_identity(
+    *,
+    scope_version: str = "1",
+    current_user_id: UUID | None = None,
+    current_persistence: str | None = None,
+    replacement: UUID | None = None,
+    reset_stored: bool = False,
+) -> tuple[UUID | None, str | None, str | None]:
+    """현재 요청의 브라우저 응답만 채택하고 명시적 저장소 실패에만 임시 UUID를 쓴다."""
 
     try:
         result = IDENTITY_COMPONENT(
@@ -39,6 +46,10 @@ def load_identity(*, scope_version: str = "1") -> tuple[UUID, str, str | None]:
                 "component_instance_id": "identity-main",
                 "storage_key": STORAGE_KEY,
                 "scope_version": scope_version,
+                "current_user_id": str(current_user_id) if current_user_id else None,
+                "session_only": current_persistence == "SESSION_ONLY",
+                "replacement": str(replacement) if replacement else None,
+                "reset_stored": reset_stored,
             },
             default={"identity": None},
             on_identity_change=_mark_identity_changed,
@@ -46,13 +57,32 @@ def load_identity(*, scope_version: str = "1") -> tuple[UUID, str, str | None]:
         )
         identity = getattr(result, "identity", None)
     except Exception:
-        identity = None
+        return None, None, "BRIDGE_UNAVAILABLE"
+    # 첫 mount의 None은 비동기 응답 대기이며 저장소 실패나 새 사용자 생성의 근거가 아니다.
+    if identity is None:
+        return None, None, None
     if not isinstance(identity, dict):
-        return new_user_id(), "SESSION_ONLY", "STORAGE_BLOCKED"
+        return None, None, "INVALID_BRIDGE_RESPONSE"
+    if (
+        type(identity.get("schema_version")) is not int
+        or identity.get("schema_version") != 1
+        or identity.get("component_instance_id") != "identity-main"
+    ):
+        return None, None, "INVALID_BRIDGE_RESPONSE"
+    if identity.get("scope_version") != scope_version:
+        return None, None, None
     user_id = parse_uuid_v4(identity.get("user_id"))
-    if user_id is None:
-        return new_user_id(), "SESSION_ONLY", "INVALID_STORED_UUID"
     persistence = identity.get("persistence")
-    if persistence not in {"LOCAL", "SESSION_ONLY"}:
-        persistence = "SESSION_ONLY"
-    return user_id, persistence, None
+    error_code = identity.get("error_code")
+    if error_code is not None and not isinstance(error_code, str):
+        return None, None, "INVALID_BRIDGE_RESPONSE"
+    if error_code == "STORAGE_BLOCKED" and persistence == "SESSION_ONLY":
+        # 복구 쓰기가 실패해도 사용자가 입력한 UUID를 보존하고, 재실행 때 다시 만들지 않는다.
+        return replacement or current_user_id or user_id or new_user_id(), persistence, error_code
+    if error_code in {"INVALID_STORED_UUID", "CRYPTO_UNAVAILABLE"}:
+        return None, None, error_code
+    if user_id is None or persistence != "LOCAL" or error_code is not None:
+        return None, None, "INVALID_BRIDGE_RESPONSE"
+    if replacement is not None and user_id != replacement:
+        return None, None, "INVALID_BRIDGE_RESPONSE"
+    return user_id, "LOCAL", None
