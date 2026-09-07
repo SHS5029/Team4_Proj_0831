@@ -6,7 +6,7 @@ import base64
 import hashlib
 import json
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
@@ -15,28 +15,36 @@ import httpx
 import pytest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from resource_fixtures import consume_payload
 from test_bootstrap_token import CAPABILITY, NOW, SECRET, make_claims, sign
 
 from mafia_game.core.security.errors import EngineConsumeDenied
 from mafia_game.main import RuntimeSettings, create_app
-from mafia_game.ports.engine_bootstrap import EngineBootstrapPort
+from mafia_game.ports.engine_context import EnginePort
 
 
 @dataclass
-class FakeEngine(EngineBootstrapPort):
+class FakeEngine(EnginePort):
     """실제 Backend 없이 consume 호출 횟수·입력과 거부 결과를 재현한다."""
 
     deny: bool = False
     after_consume: object | None = None
     calls: list[tuple[str, str]] = field(default_factory=list)
     closed: bool = False
+    consume_body: bytes = field(default_factory=consume_payload)
 
-    async def consume(self, bootstrap_token: str, capability: str) -> None:
+    async def consume(self, bootstrap_token: str, capability: str) -> bytes:
         self.calls.append((bootstrap_token, capability))
         if self.deny:
             raise EngineConsumeDenied
         if callable(self.after_consume):
             self.after_consume()
+        return self.consume_body
+
+    async def get_context(self, scope: str, capability: str) -> bytes:
+        """WU-M2 테스트가 예상 밖 Resource 호출을 즉시 감지하게 한다."""
+
+        raise AssertionError(f"unexpected context call: {scope}, {bool(capability)}")
 
     async def aclose(self) -> None:
         """shutdown 순서 검증을 위해 client close 호출 여부만 기록한다."""
@@ -125,6 +133,59 @@ def mcp_headers(token: str, *, capability: str | None = None) -> dict[str, str]:
     return headers
 
 
+def job_credential(index: int) -> tuple[str, str]:
+    """같은 process에서 replay되지 않는 synthetic job token·capability 쌍을 만든다."""
+
+    capability = base64.urlsafe_b64encode(
+        f"synthetic-capability-value-{index:05d}".encode()
+    ).decode().rstrip("=")
+    claims = make_claims(
+        nonce=f"00000000-0000-1000-8000-{index + 10:012d}",
+        capability_hash=hashlib.sha256(capability.encode()).hexdigest(),
+    )
+    return sign(claims), capability
+
+
+async def call_existing_asgi(
+    app: object,
+    token: str,
+    session_id: str,
+    body: bytes,
+    send: Callable[[dict[str, object]], Awaitable[None]],
+) -> None:
+    """후속 요청의 응답 전송 실패를 직접 주입할 수 있는 최소 ASGI 호출을 만든다."""
+
+    request_sent = False
+
+    async def receive() -> dict[str, object]:
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        return {"type": "http.disconnect"}
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/mcp",
+        "raw_path": b"/mcp",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"authorization", f"Bearer {token}".encode()),
+            (b"mcp-session-id", session_id.encode()),
+            (b"content-type", b"application/json"),
+            (b"accept", b"application/json, text/event-stream"),
+        ],
+        "client": None,
+        "server": None,
+    }
+    await app(scope, receive, send)  # type: ignore[operator]
+
+
 def tamper_signature(token: str) -> str:
     """서명 표현은 canonical로 유지하면서 실제 HMAC byte 하나만 변경한다."""
 
@@ -159,6 +220,260 @@ async def test_sdk_initialize_consumes_once_and_delete_cleans_session() -> None:
 
     assert engine.calls == [(token, CAPABILITY)]
     assert auth.requests >= 3
+
+
+@pytest.mark.anyio
+async def test_public_delete_stops_the_session_manager_run_context() -> None:
+    """공개 DELETE 뒤 session 전용 manager run이 끝나 tombstone을 함께 폐기한다."""
+
+    token = sign(make_claims())
+    async with running_client(FakeEngine()) as (app, client):
+        initial = await client.post(
+            "/mcp",
+            headers=mcp_headers(token, capability=CAPABILITY),
+            json=initialize_body(),
+        )
+        session_id = initial.headers["Mcp-Session-Id"]
+        pool = app.state.session_manager
+
+        assert pool.candidate_count == 0
+        assert pool.active_count == 1
+        assert pool.running_count == 1
+
+        deleted = await client.delete(
+            "/mcp", headers={**mcp_headers(token), "Mcp-Session-Id": session_id}
+        )
+
+        assert deleted.status_code == 200
+        with anyio.fail_after(1):
+            await pool.wait_for_run_exits(1)
+        assert pool.candidate_count == 0
+        assert pool.active_count == 0
+        assert pool.run_exit_count == 1
+
+
+@pytest.mark.anyio
+async def test_session_id_collision_discards_only_the_new_candidate() -> None:
+    """registry·route 충돌에서 기존 runtime은 유지하고 새 candidate run만 끝낸다."""
+
+    app = create_app(settings(), engine=FakeEngine(), clock=lambda: NOW)
+    middleware = app.state.bootstrap_middleware
+
+    async def fixed_session(scope, receive, send):  # type: ignore[no-untyped-def]
+        message = await receive()
+        if scope["method"] == "DELETE":
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+            return
+        request_id = json.loads(message["body"])["id"]
+        payload = {"jsonrpc": "2.0", "id": request_id, "result": {}}
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"mcp-session-id", b"fixed-collision")],
+            }
+        )
+        await send({"type": "http.response.body", "body": json.dumps(payload).encode()})
+
+    middleware._app = fixed_session
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            first_token, first_capability = job_credential(20)
+            first = await client.post(
+                "/mcp",
+                headers=mcp_headers(first_token, capability=first_capability),
+                json=initialize_body(20),
+            )
+            second_token, second_capability = job_credential(21)
+            second = await client.post(
+                "/mcp",
+                headers=mcp_headers(second_token, capability=second_capability),
+                json=initialize_body(21),
+            )
+
+            assert first.status_code == 200
+            assert second.status_code == 403
+            with anyio.fail_after(1):
+                await app.state.session_manager.wait_for_run_exits(1)
+            assert app.state.session_registry.active_count == 1
+            assert app.state.session_manager.candidate_count == 0
+            assert app.state.session_manager.active_count == 1
+            assert app.state.session_manager.run_exit_count == 1
+
+            await client.delete(
+                "/mcp",
+                headers={
+                    **mcp_headers(first_token),
+                    "Mcp-Session-Id": "fixed-collision",
+                },
+            )
+
+
+@pytest.mark.anyio
+async def test_registry_add_collision_rolls_back_published_route_and_manager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """route publish 뒤 registry add가 거부돼도 외부 응답 전에 candidate 전체를 닫는다."""
+
+    app = create_app(settings(), engine=FakeEngine(), clock=lambda: NOW)
+
+    async def reject_add(*_: object) -> bool:
+        return False
+
+    monkeypatch.setattr(app.state.session_registry, "add", reject_add)
+    token = sign(make_claims())
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            response = await client.post(
+                "/mcp",
+                headers=mcp_headers(token, capability=CAPABILITY),
+                json=initialize_body(),
+            )
+
+            assert response.status_code == 403
+            assert response.json() == {"error": "BOOTSTRAP_DENIED"}
+            assert app.state.session_registry.active_count == 0
+            assert app.state.session_manager.candidate_count == 0
+            assert app.state.session_manager.active_count == 0
+            assert app.state.session_manager.running_count == 0
+            assert app.state.session_manager.run_exit_count == 1
+
+
+@pytest.mark.anyio
+async def test_late_old_retire_does_not_close_reused_session_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """detach된 old owner의 늦은 종료가 같은 ID로 publish된 new runtime을 건드리지 않는다."""
+
+    app = create_app(settings(), engine=FakeEngine(), clock=lambda: NOW)
+    middleware = app.state.bootstrap_middleware
+
+    async def fixed_session(scope, receive, send):  # type: ignore[no-untyped-def]
+        message = await receive()
+        headers = []
+        if scope["method"] == "DELETE":
+            body = b""
+        else:
+            request_id = json.loads(message["body"])["id"]
+            body = json.dumps(
+                {"jsonrpc": "2.0", "id": request_id, "result": {}}
+            ).encode()
+            headers = [(b"mcp-session-id", b"reused-session")]
+        await send({"type": "http.response.start", "status": 200, "headers": headers})
+        await send({"type": "http.response.body", "body": body})
+
+    middleware._app = fixed_session
+    original_terminate = middleware._terminate_transport
+    old_detached = anyio.Event()
+    release_old = anyio.Event()
+    old_owner: str | None = None
+
+    async def delayed_old(scope, session_id, binding):  # type: ignore[no-untyped-def]
+        if binding.sdk_owner == old_owner:
+            old_detached.set()
+            await release_old.wait()
+        return await original_terminate(scope, session_id, binding)
+
+    monkeypatch.setattr(middleware, "_terminate_transport", delayed_old)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            old_token, old_capability = job_credential(30)
+            opened = await client.post(
+                "/mcp",
+                headers=mcp_headers(old_token, capability=old_capability),
+                json=initialize_body(30),
+            )
+            old_binding = await app.state.session_registry.lookup_bound("reused-session")
+            assert old_binding is not None
+            old_owner = old_binding.sdk_owner
+
+            delete_response: httpx.Response | None = None
+
+            async def delete_old() -> None:
+                nonlocal delete_response
+                delete_response = await client.delete(
+                    "/mcp",
+                    headers={
+                        **mcp_headers(old_token),
+                        "Mcp-Session-Id": opened.headers["Mcp-Session-Id"],
+                    },
+                )
+
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(delete_old)
+                await old_detached.wait()
+                new_token, new_capability = job_credential(31)
+                replacement = await client.post(
+                    "/mcp",
+                    headers=mcp_headers(new_token, capability=new_capability),
+                    json=initialize_body(31),
+                )
+                assert replacement.status_code == 200
+                new_binding = await app.state.session_registry.lookup_bound(
+                    "reused-session"
+                )
+                assert new_binding is not None and new_binding is not old_binding
+                release_old.set()
+
+            assert delete_response is not None and delete_response.status_code == 200
+            assert app.state.session_registry.active_count == 1
+            assert app.state.session_manager.active_count == 1
+            assert app.state.session_manager.running_count == 1
+
+
+@pytest.mark.anyio
+async def test_shutdown_cancels_blocked_teardown_without_delaying_other_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A의 취소 가능한 종료 지연 중에도 B teardown 시작과 전체 shutdown을 완료한다."""
+
+    engine = FakeEngine()
+    app = create_app(settings(), engine=engine, clock=lambda: NOW)
+    middleware = app.state.bootstrap_middleware
+    pool = app.state.session_manager
+    original_terminate = middleware._terminate_transport
+    blocked_owner: str | None = None
+    second_started = anyio.Event()
+    never_release = anyio.Event()
+
+    async def blocked_first(scope, session_id, binding):  # type: ignore[no-untyped-def]
+        if binding.sdk_owner == blocked_owner:
+            await never_release.wait()
+        else:
+            second_started.set()
+        return await original_terminate(scope, session_id, binding)
+
+    monkeypatch.setattr(middleware, "_terminate_transport", blocked_first)
+    with anyio.fail_after(0.75):
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+            ) as client:
+                session_ids: list[str] = []
+                for index in (40, 41):
+                    token, capability = job_credential(index)
+                    response = await client.post(
+                        "/mcp",
+                        headers=mcp_headers(token, capability=capability),
+                        json=initialize_body(index),
+                    )
+                    session_ids.append(response.headers["Mcp-Session-Id"])
+                binding = await app.state.session_registry.lookup_bound(session_ids[0])
+                assert binding is not None
+                blocked_owner = binding.sdk_owner
+
+    assert second_started.is_set()
+    assert app.state.session_registry.active_count == 0
+    assert pool.active_count == pool.candidate_count == pool.running_count == 0
+    assert pool.run_exit_count == 2
+    assert engine.closed
 
 
 @pytest.mark.anyio
@@ -199,11 +514,13 @@ async def test_distinct_jobs_receive_distinct_bootstrap_consumes_and_session_ids
     ]
 
 
-def test_runtime_uses_stateful_manager_with_fixed_idle_timeout() -> None:
+def test_runtime_assigns_fixed_idle_timeout_only_to_gate_aware_registry() -> None:
     app = create_app(settings(), engine=FakeEngine(), clock=lambda: NOW)
 
     assert app.state.session_manager.stateless is False
-    assert app.state.session_manager.session_idle_timeout == 30.0
+    assert app.state.session_manager.event_store is None
+    assert app.state.session_manager.json_response is True
+    assert app.state.session_manager.session_idle_timeout is None
     assert app.state.session_registry.idle_timeout_seconds == 30.0
 
 
@@ -376,6 +693,9 @@ async def test_delayed_consume_that_finishes_after_expiry_creates_no_session() -
             response = await client.post(
                 "/mcp", headers=mcp_headers(token, capability=CAPABILITY), json=initialize_body()
             )
+            assert app.state.session_manager.candidate_count == 0
+            assert app.state.session_manager.active_count == 0
+            assert app.state.session_manager.running_count == 0
 
     assert response.status_code == 403
     assert response.json() == {"error": "BOOTSTRAP_DENIED"}
@@ -392,6 +712,7 @@ async def test_expiry_during_sdk_initialize_is_denied_before_session_registratio
     engine = FakeEngine()
     app = create_app(settings(), engine=engine, clock=clock)
     middleware = app.state.bootstrap_middleware
+    original_terminate = middleware._terminate_transport
     terminated: list[str] = []
 
     async def downstream(_, receive, send):  # type: ignore[no-untyped-def]
@@ -407,8 +728,9 @@ async def test_expiry_during_sdk_initialize_is_denied_before_session_registratio
         payload = {"jsonrpc": "2.0", "id": 1, "result": {}}
         await send({"type": "http.response.body", "body": json.dumps(payload).encode()})
 
-    async def record_terminate(_, session_id, __):  # type: ignore[no-untyped-def]
+    async def record_terminate(scope, session_id, binding):  # type: ignore[no-untyped-def]
         terminated.append(session_id)
+        return await original_terminate(scope, session_id, binding)
 
     monkeypatch.setattr(middleware, "_app", downstream)
     monkeypatch.setattr(middleware, "_terminate_transport", record_terminate)
@@ -444,6 +766,87 @@ async def test_expiry_reaper_cleans_before_thirty_second_idle_without_requests()
             assert app.state.session_registry.active_count == 1
             await __import__("anyio").sleep(1.1)
             assert app.state.session_registry.active_count == 0
+
+
+@pytest.mark.anyio
+async def test_reaper_teardowns_are_session_independent_across_sweeps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """멎은 A 종료가 같은 sweep의 B와 이후 sweep의 C 소유권 전이를 막지 않는다."""
+
+    monotonic = MutableMonotonic()
+    app = create_app(
+        settings(), engine=FakeEngine(), clock=lambda: NOW, monotonic=monotonic
+    )
+    middleware = app.state.bootstrap_middleware
+    original_terminate = middleware._terminate_transport
+    release_first = anyio.Event()
+    second_started = anyio.Event()
+    third_started = anyio.Event()
+    started: list[str] = []
+    first_session_id: str | None = None
+    second_session_id: str | None = None
+    third_session_id: str | None = None
+
+    async def controlled_terminate(scope, session_id, binding):  # type: ignore[no-untyped-def]
+        started.append(session_id)
+        if session_id == first_session_id:
+            await release_first.wait()
+        elif session_id == second_session_id:
+            second_started.set()
+        elif session_id == third_session_id:
+            third_started.set()
+        await original_terminate(scope, session_id, binding)
+
+    monkeypatch.setattr(middleware, "_terminate_transport", controlled_terminate)
+
+    second_progressed = False
+    third_progressed = False
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            opened: list[str] = []
+            for index in (1, 2):
+                token, capability = job_credential(index)
+                response = await client.post(
+                    "/mcp",
+                    headers=mcp_headers(token, capability=capability),
+                    json=initialize_body(index),
+                )
+                opened.append(response.headers["Mcp-Session-Id"])
+            first_session_id, second_session_id = opened
+
+            monotonic.value += 30.0
+            with anyio.move_on_after(0.5) as second_wait:
+                await second_started.wait()
+            second_progressed = not second_wait.cancel_called
+            if second_progressed:
+                assert app.state.session_registry.active_count == 0
+                assert app.state.session_manager.active_count == 0
+
+            if second_progressed:
+                token, capability = job_credential(3)
+                third = await client.post(
+                    "/mcp",
+                    headers=mcp_headers(token, capability=capability),
+                    json=initialize_body(3),
+                )
+                third_session_id = third.headers["Mcp-Session-Id"]
+                monotonic.value += 30.0
+                with anyio.move_on_after(0.5) as third_wait:
+                    await third_started.wait()
+                third_progressed = not third_wait.cancel_called
+                if third_progressed:
+                    assert app.state.session_registry.active_count == 0
+                    assert app.state.session_manager.active_count == 0
+
+            release_first.set()
+
+    assert second_progressed
+    assert third_progressed
+    assert first_session_id is not None
+    assert started.count(first_session_id) == 1
 
 
 @pytest.mark.anyio
@@ -578,6 +981,88 @@ async def test_existing_malformed_rpc_is_fixed_error_without_closing_session() -
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(
+            b'{"jsonrpc":"2.0","id":81,"method":"resources/read",'
+            b'"params":{"uri":"mafia://session/public/"}}',
+            id="unknown-raw-uri",
+        ),
+        pytest.param(
+            b'{"jsonrpc":"2.0","id":82,"method":"ping","params":"PRIVATE-MARKER"}',
+            id="validation",
+        ),
+    ],
+)
+async def test_existing_fixed_error_send_failure_closes_expected_binding_once(
+    monkeypatch: pytest.MonkeyPatch,
+    body: bytes,
+) -> None:
+    """raw URI·validation 고정 응답 전송 실패도 원예외 전파 전 session을 한 번 닫는다."""
+
+    app = create_app(settings(), engine=FakeEngine(), clock=lambda: NOW)
+    token = sign(make_claims())
+    terminated: list[str] = []
+
+    async def record_terminate(_: object, session_id: str, __: object) -> None:
+        terminated.append(session_id)
+
+    async def failing_send(_: dict[str, object]) -> None:
+        raise OSError("synthetic response transport failure")
+
+    monkeypatch.setattr(
+        app.state.bootstrap_middleware, "_terminate_transport", record_terminate
+    )
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            initial = await client.post(
+                "/mcp", headers=mcp_headers(token, capability=CAPABILITY), json=initialize_body()
+            )
+            session_id = initial.headers["Mcp-Session-Id"]
+
+            with pytest.raises(OSError, match="synthetic response transport failure"):
+                await call_existing_asgi(app, token, session_id, body, failing_send)
+
+            assert app.state.session_registry.active_count == 0
+            assert terminated == [session_id]
+
+
+@pytest.mark.anyio
+async def test_unknown_session_send_failure_never_terminates_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """registry에 없는 ID의 응답 실패는 임의 SDK transport 종료로 확대하지 않는다."""
+
+    app = create_app(settings(), engine=FakeEngine(), clock=lambda: NOW)
+    terminated: list[str] = []
+
+    async def record_terminate(_: object, session_id: str, __: object) -> None:
+        terminated.append(session_id)
+
+    async def failing_send(_: dict[str, object]) -> None:
+        raise OSError("synthetic missing-session transport failure")
+
+    monkeypatch.setattr(
+        app.state.bootstrap_middleware, "_terminate_transport", record_terminate
+    )
+    async with app.router.lifespan_context(app):
+        with pytest.raises(OSError, match="synthetic missing-session transport failure"):
+            await call_existing_asgi(
+                app,
+                "synthetic-owner-token",
+                "unknown-session-id",
+                b'{"jsonrpc":"2.0","id":83,"method":"ping"}',
+                failing_send,
+            )
+
+        assert app.state.session_registry.active_count == 0
+        assert terminated == []
+
+
+@pytest.mark.anyio
 async def test_missing_followup_bearer_returns_401_and_cleans_session() -> None:
     token = sign(make_claims())
     async with running_client(FakeEngine()) as (app, client):
@@ -647,6 +1132,99 @@ async def test_registry_is_bound_before_initialize_response_is_sent(
     }
     async with app.router.lifespan_context(app):
         await app(scope, receive, send)
+
+
+@pytest.mark.anyio
+async def test_initialize_response_commit_precedes_concurrent_delete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """초기 response-start 뒤 DELETE가 와도 body commit 후에만 manager를 종료한다."""
+
+    app = create_app(settings(), engine=FakeEngine(), clock=lambda: NOW)
+    middleware = app.state.bootstrap_middleware
+    original_terminate = middleware._terminate_transport
+    response_started = anyio.Event()
+    allow_response_body = anyio.Event()
+    terminate_started = anyio.Event()
+    session_id: str | None = None
+    sent_messages: list[dict[str, object]] = []
+
+    async def observed_terminate(scope, requested_id, binding):  # type: ignore[no-untyped-def]
+        terminate_started.set()
+        return await original_terminate(scope, requested_id, binding)
+
+    monkeypatch.setattr(middleware, "_terminate_transport", observed_terminate)
+    token = sign(make_claims())
+    body = json.dumps(initialize_body(), separators=(",", ":")).encode()
+    request_sent = False
+
+    async def receive() -> dict[str, object]:
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, object]) -> None:
+        nonlocal session_id
+        sent_messages.append(message)
+        if message["type"] == "http.response.start":
+            headers = {
+                key.decode().lower(): value.decode()
+                for key, value in message.get("headers", [])
+            }
+            session_id = headers["mcp-session-id"]
+            response_started.set()
+            await allow_response_body.wait()
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/mcp",
+        "raw_path": b"/mcp",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"authorization", f"Bearer {token}".encode()),
+            (b"x-agent-capability", CAPABILITY.encode()),
+            (b"content-type", b"application/json"),
+            (b"accept", b"application/json, text/event-stream"),
+        ],
+        "client": None,
+        "server": None,
+    }
+    delete_response: httpx.Response | None = None
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+
+            async def delete_after_start() -> None:
+                nonlocal delete_response
+                assert session_id is not None
+                delete_response = await client.delete(
+                    "/mcp",
+                    headers={**mcp_headers(token), "Mcp-Session-Id": session_id},
+                )
+
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(app, scope, receive, send)
+                await response_started.wait()
+                tasks.start_soon(delete_after_start)
+                with anyio.move_on_after(0.05) as early_terminate:
+                    await terminate_started.wait()
+                assert early_terminate.cancel_called
+                allow_response_body.set()
+
+            assert delete_response is not None and delete_response.status_code == 200
+            assert terminate_started.is_set()
+            assert [message["type"] for message in sent_messages] == [
+                "http.response.start",
+                "http.response.body",
+            ]
 
 
 @pytest.mark.anyio
@@ -735,12 +1313,15 @@ async def test_initial_send_failure_cleans_binding_and_terminates_with_opaque_ow
     """consume 뒤 응답 전달 실패가 나도 raw binding을 먼저 지우고 원래 예외를 전파한다."""
 
     app = create_app(settings(), engine=FakeEngine(), clock=lambda: NOW)
+    middleware = app.state.bootstrap_middleware
+    original_terminate = middleware._terminate_transport
     terminated: list[tuple[str, str]] = []
 
     async def record_terminate(scope, session_id, binding):  # type: ignore[no-untyped-def]
         terminated.append((session_id, binding.sdk_owner))
+        return await original_terminate(scope, session_id, binding)
 
-    monkeypatch.setattr(app.state.bootstrap_middleware, "_terminate_transport", record_terminate)
+    monkeypatch.setattr(middleware, "_terminate_transport", record_terminate)
     token = sign(make_claims())
     body = json.dumps(initialize_body(), separators=(",", ":")).encode()
     sent = False
@@ -778,6 +1359,8 @@ async def test_initial_send_failure_cleans_binding_and_terminates_with_opaque_ow
         with pytest.raises(RuntimeError, match="client transport closed"):
             await app(scope, receive, failing_send)
         assert app.state.session_registry.active_count == 0
+        assert app.state.session_manager.active_count == 0
+        assert app.state.session_manager.running_count == 0
 
     assert len(terminated) == 1
     assert terminated[0][1] not in {token, CAPABILITY}
@@ -790,13 +1373,16 @@ async def test_initial_send_cancellation_cleans_before_propagation(
     """response send 취소 중에도 shielded cleanup이 끝난 뒤 취소가 상위로 돌아간다."""
 
     app = create_app(settings(), engine=FakeEngine(), clock=lambda: NOW)
+    middleware = app.state.bootstrap_middleware
+    original_terminate = middleware._terminate_transport
     terminated = False
 
-    async def record_terminate(*_: object) -> None:
+    async def record_terminate(scope, session_id, binding):  # type: ignore[no-untyped-def]
         nonlocal terminated
         terminated = True
+        return await original_terminate(scope, session_id, binding)
 
-    monkeypatch.setattr(app.state.bootstrap_middleware, "_terminate_transport", record_terminate)
+    monkeypatch.setattr(middleware, "_terminate_transport", record_terminate)
     token = sign(make_claims())
     body = json.dumps(initialize_body(), separators=(",", ":")).encode()
     request_sent = False
@@ -838,6 +1424,9 @@ async def test_initial_send_cancellation_cleans_before_propagation(
         assert cancel_scope.cancel_called
         assert app.state.session_registry.active_count == 0
         assert terminated
+        with anyio.fail_after(1):
+            await app.state.session_manager.wait_for_run_exits(1)
+        assert app.state.session_manager.running_count == 0
 
 
 @pytest.mark.anyio
@@ -943,6 +1532,203 @@ async def test_existing_handler_cancellation_cleans_session_and_propagates(
 
 
 @pytest.mark.anyio
+async def test_concurrent_delete_only_registry_winner_calls_sdk_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """같은 binding을 본 동시 DELETE도 cleanup 승자 하나만 SDK DELETE를 호출한다."""
+
+    app = create_app(settings(), engine=FakeEngine(), clock=lambda: NOW)
+    token = sign(make_claims())
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            initial = await client.post(
+                "/mcp", headers=mcp_headers(token, capability=CAPABILITY), json=initialize_body()
+            )
+            session_id = initial.headers["Mcp-Session-Id"]
+            middleware = app.state.bootstrap_middleware
+            registry = app.state.session_registry
+            original_lookup = registry.lookup_active
+            original_app = middleware._app
+            both_confirmed = anyio.Event()
+            release_confirmation = anyio.Event()
+            count_lock = anyio.Lock()
+            confirmations = 0
+            sdk_delete_calls = 0
+
+            async def synchronized_lookup(
+                requested_id: str, *, expected: object | None = None, touch: bool = False
+            ) -> object:
+                nonlocal confirmations
+                result = await original_lookup(requested_id, expected=expected, touch=touch)
+                if expected is None and not touch:
+                    async with count_lock:
+                        confirmations += 1
+                        if confirmations == 2:
+                            both_confirmed.set()
+                    await release_confirmation.wait()
+                return result
+
+            async def counted_app(scope, receive, send):  # type: ignore[no-untyped-def]
+                nonlocal sdk_delete_calls
+                if scope.get("method") == "DELETE":
+                    sdk_delete_calls += 1
+                await original_app(scope, receive, send)
+
+            monkeypatch.setattr(registry, "lookup_active", synchronized_lookup)
+            monkeypatch.setattr(middleware, "_app", counted_app)
+            responses: list[httpx.Response] = []
+
+            async def delete_once() -> None:
+                responses.append(
+                    await client.delete(
+                        "/mcp",
+                        headers={**mcp_headers(token), "Mcp-Session-Id": session_id},
+                    )
+                )
+
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(delete_once)
+                tasks.start_soon(delete_once)
+                await both_confirmed.wait()
+                release_confirmation.set()
+
+            assert sorted(response.status_code for response in responses) == [200, 404]
+            assert [response.json() for response in responses if response.status_code == 404] == [
+                {"error": "SESSION_NOT_FOUND"}
+            ]
+            assert sdk_delete_calls == 1
+            assert app.state.session_registry.active_count == 0
+
+
+@pytest.mark.anyio
+async def test_delete_losing_to_reaper_does_not_repeat_sdk_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DELETE 확인 뒤 idle reaper가 먼저 소유권을 얻어도 패자는 SDK를 다시 닫지 않는다."""
+
+    monotonic = MutableMonotonic()
+    app = create_app(
+        settings(), engine=FakeEngine(), clock=lambda: NOW, monotonic=monotonic
+    )
+    token = sign(make_claims())
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            initial = await client.post(
+                "/mcp", headers=mcp_headers(token, capability=CAPABILITY), json=initialize_body()
+            )
+            session_id = initial.headers["Mcp-Session-Id"]
+            middleware = app.state.bootstrap_middleware
+            registry = app.state.session_registry
+            original_lookup = registry.lookup_active
+            original_app = middleware._app
+            delete_confirmed = anyio.Event()
+            release_delete = anyio.Event()
+            sdk_delete_called = anyio.Event()
+            sdk_delete_calls = 0
+
+            async def blocked_confirmation(
+                requested_id: str, *, expected: object | None = None, touch: bool = False
+            ) -> object:
+                result = await original_lookup(requested_id, expected=expected, touch=touch)
+                if expected is None and not touch:
+                    delete_confirmed.set()
+                    await release_delete.wait()
+                return result
+
+            async def counted_app(scope, receive, send):  # type: ignore[no-untyped-def]
+                nonlocal sdk_delete_calls
+                if scope.get("method") == "DELETE":
+                    sdk_delete_calls += 1
+                    sdk_delete_called.set()
+                await original_app(scope, receive, send)
+
+            monkeypatch.setattr(registry, "lookup_active", blocked_confirmation)
+            monkeypatch.setattr(middleware, "_app", counted_app)
+            response: httpx.Response | None = None
+
+            async def delete_once() -> None:
+                nonlocal response
+                response = await client.delete(
+                    "/mcp",
+                    headers={**mcp_headers(token), "Mcp-Session-Id": session_id},
+                )
+
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(delete_once)
+                await delete_confirmed.wait()
+                monotonic.value += 30.0
+                with anyio.fail_after(1):
+                    await sdk_delete_called.wait()
+                release_delete.set()
+
+            assert response is not None
+            assert response.status_code == 404
+            assert response.json() == {"error": "SESSION_NOT_FOUND"}
+            assert sdk_delete_calls == 1
+            assert app.state.session_registry.active_count == 0
+
+
+@pytest.mark.anyio
+async def test_cancelled_delete_does_not_retry_sdk_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DELETE 소유자의 취소도 shielded 단일 호출로 끝나며 보상 DELETE를 중복하지 않는다."""
+
+    app = create_app(settings(), engine=FakeEngine(), clock=lambda: NOW)
+    token = sign(make_claims())
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            initial = await client.post(
+                "/mcp", headers=mcp_headers(token, capability=CAPABILITY), json=initialize_body()
+            )
+            session_id = initial.headers["Mcp-Session-Id"]
+            middleware = app.state.bootstrap_middleware
+            original_app = middleware._app
+            delete_entered = anyio.Event()
+            allow_delete = anyio.Event()
+            cancel_scope_ready = anyio.Event()
+            request_scope: list[anyio.CancelScope] = []
+            sdk_delete_calls = 0
+
+            async def slow_first_delete(scope, receive, send):  # type: ignore[no-untyped-def]
+                nonlocal sdk_delete_calls
+                if scope.get("method") == "DELETE":
+                    sdk_delete_calls += 1
+                    if sdk_delete_calls == 1:
+                        delete_entered.set()
+                        await allow_delete.wait()
+                await original_app(scope, receive, send)
+
+            monkeypatch.setattr(middleware, "_app", slow_first_delete)
+
+            async def delete_once() -> None:
+                with anyio.CancelScope() as cancel_scope:
+                    request_scope.append(cancel_scope)
+                    cancel_scope_ready.set()
+                    await client.delete(
+                        "/mcp",
+                        headers={**mcp_headers(token), "Mcp-Session-Id": session_id},
+                    )
+
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(delete_once)
+                await cancel_scope_ready.wait()
+                await delete_entered.wait()
+                request_scope[0].cancel()
+                await anyio.lowlevel.checkpoint()
+                allow_delete.set()
+
+            assert sdk_delete_calls == 1
+            assert app.state.session_registry.active_count == 0
+
+
+@pytest.mark.anyio
 async def test_sessionless_non_post_does_not_consume() -> None:
     engine = FakeEngine()
     token = sign(make_claims())
@@ -967,6 +1753,10 @@ async def test_sessionless_non_post_does_not_consume() -> None:
         (502, b"upstream exception detail"),
         (500, b'{"broken"'),
         (400, b'{"error":{"code":-32099,"message":"raw sdk text","data":"secret"}}'),
+        (
+            400,
+            b'{"error":{"code":-32002,"message":"wrong message","data":"secret"}}',
+        ),
     ],
 )
 async def test_existing_downstream_errors_are_fixed_and_redacted(
@@ -1027,7 +1817,6 @@ async def test_existing_downstream_errors_are_fixed_and_redacted(
     ],
 )
 async def test_initialize_requires_exact_jsonrpc_success(
-    monkeypatch: pytest.MonkeyPatch,
     payload: dict[str, object],
     session_headers: list[tuple[bytes, bytes]],
 ) -> None:
@@ -1048,13 +1837,6 @@ async def test_initialize_requires_exact_jsonrpc_success(
         await send({"type": "http.response.body", "body": json.dumps(payload).encode()})
 
     middleware._app = downstream
-    terminated = False
-
-    async def record_terminate(*_: object) -> None:
-        nonlocal terminated
-        terminated = True
-
-    monkeypatch.setattr(middleware, "_terminate_transport", record_terminate)
     token = sign(make_claims())
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
@@ -1063,13 +1845,16 @@ async def test_initialize_requires_exact_jsonrpc_success(
             response = await client.post(
                 "/mcp", headers=mcp_headers(token, capability=CAPABILITY), json=initialize_body()
             )
+            with anyio.fail_after(1):
+                await app.state.session_manager.wait_for_run_exits(1)
+            assert app.state.session_manager.candidate_count == 0
+            assert app.state.session_manager.active_count == 0
 
     assert response.status_code == 400
     assert response.json()["error"] == {
         "code": -32603,
         "message": "내부 처리 중 오류가 발생했습니다.",
     }
-    assert terminated is any(value for _, value in session_headers)
     assert app.state.session_registry.active_count == 0
 
 

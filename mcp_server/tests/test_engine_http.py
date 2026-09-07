@@ -7,6 +7,7 @@ from uuid import UUID
 
 import httpx
 import pytest
+from resource_fixtures import consume_payload
 
 from mafia_game.core.security.errors import EngineConsumeDenied
 from mafia_game.integrations.engine_http import HttpEngineBootstrapAdapter
@@ -18,6 +19,7 @@ ENGINE_SECRET = "synthetic-engine-hmac-secret-value"
 @pytest.mark.anyio
 async def test_consume_signs_exact_body_and_required_headers() -> None:
     captured: dict[str, object] = {}
+    expected_response = consume_payload()
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured.update(method=request.method, path=request.url.raw_path, body=request.content)
@@ -40,34 +42,43 @@ async def test_consume_signs_exact_body_and_required_headers() -> None:
         parsed_nonce = UUID(request.headers["X-Engine-Nonce"])
         assert str(parsed_nonce) == request.headers["X-Engine-Nonce"]
         assert parsed_nonce.version == 4
-        return httpx.Response(200, json={"status": "CONSUMED"})
+        return httpx.Response(
+            200, content=expected_response, headers={"Content-Type": "application/json"}
+        )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         adapter = HttpEngineBootstrapAdapter(
             "https://engine.invalid", ENGINE_SECRET, client=client, clock=lambda: NOW
         )
-        await adapter.consume("signed.bootstrap", "synthetic-capability")
+        response_body = await adapter.consume("signed.bootstrap", "synthetic-capability")
 
     assert captured == {
         "method": "POST",
         "path": b"/internal/v1/mcp-bootstrap/consume",
         "body": b'{"bootstrap_token":"signed.bootstrap"}',
     }
+    assert response_body == expected_response
 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    ("status", "payload"),
+    ("status", "content_type"),
     [
-        (403, {"error": "CAPABILITY_DENIED"}),
-        (200, {"status": "CONSUMED", "extra": True}),
-        (200, {"status": "OTHER"}),
+        (403, "application/json"),
+        (201, "application/json"),
+        (200, "text/plain"),
     ],
 )
 async def test_consume_rejects_denial_or_nonexact_success(
-    status: int, payload: dict[str, object]
+    status: int, content_type: str
 ) -> None:
-    transport = httpx.MockTransport(lambda _: httpx.Response(status, json=payload))
+    transport = httpx.MockTransport(
+        lambda _: httpx.Response(
+            status,
+            content=consume_payload(),
+            headers={"Content-Type": content_type},
+        )
+    )
     async with httpx.AsyncClient(transport=transport) as client:
         adapter = HttpEngineBootstrapAdapter(
             "https://engine.invalid", ENGINE_SECRET, client=client, clock=lambda: NOW

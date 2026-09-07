@@ -478,6 +478,14 @@ Browser
 | `WU-M7` | 장애·재접속 검증 | stale capability, Engine 장애, fresh credential reconnect 처리 |
 | `WU-M8` | 운영 runbook과 release evidence | 기동·중지·migration·health 절차 재현 |
 
+WU-M5의 MCP 내부 로그 경계는 `mcp_server/mafia_game/ports/audit.py`,
+검증·전달 정책은 `core/audit.py`, 독립 검증은
+`mcp_server/tests/test_audit_logging.py`와 `test_audit_runtime.py`에 둔다.
+기존 initialize·consume·Resource·Engine·teardown 경로에만 먼저 연결하고,
+Tool 경로는 WU-M4 계약 정리 뒤 연결한다. 운영 sink와 보존 정책을 결정하지 않은
+상태에서는 주입된 sink에만 허용 metadata를 전달하며 기본값은 기록 폐기다.
+이 선행 구현은 OPEN-04 해소나 WU-M5 전체 완료를 뜻하지 않는다.
+
 ## 9. 체크포인트
 
 | CP | 선행 조건 | 통과 증거 |

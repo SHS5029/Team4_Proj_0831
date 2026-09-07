@@ -10,7 +10,7 @@ from typing import Protocol
 class EngineBootstrapPort(Protocol):
     """검증된 bootstrap과 opaque capability를 Backend에서 일회성 소비한다."""
 
-    async def consume(self, bootstrap_token: str, capability: str) -> None:
-        """정확한 성공 응답일 때만 반환하고 그 밖의 결과는 거부 예외로 변환한다."""
+    async def consume(self, bootstrap_token: str, capability: str) -> bytes:
+        """정확한 HTTP 성공 body를 반환해 service가 raw JSON 계약을 검증하게 한다."""
 
         ...

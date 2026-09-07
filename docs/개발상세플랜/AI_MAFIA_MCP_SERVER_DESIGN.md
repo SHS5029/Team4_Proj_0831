@@ -80,8 +80,9 @@ Resource의 상세 `data` field, enum, nullable, union과 길이 제약은 API �
 - Front 공개 API, 화면, OAuth·사용자 인증 구현
 - 자동 Provider failover, token·비용·예산·조정 가능한 LLM timeout
 
-현재 `mcp_server/mafia_game`은 예약 package이며 실행 entrypoint, Resource, Tool,
-Engine adapter와 테스트가 아직 없다. 일부 예약 `__init__.py`의 여행 도메인 placeholder와
+현재 `mcp_server/mafia_game`에는 WU-M2/M3의 실행 entrypoint·session·Resource·Engine
+adapter·독립 테스트와 WU-M5의 기존 경로 로그 선행 구현이 있다. Tool은 아직 없다.
+일부 예약 `__init__.py`의 여행 도메인 placeholder와
 `integrations/database`, `integrations/redis`, `integrations/embedding` 디렉터리는 구현
 권한을 뜻하지 않는다. 삭제·이동·이름 변경이 필요하면 착수 전 정본과 README를 먼저
 갱신하고 구조 변경 합의를 거친다.
@@ -218,9 +219,15 @@ URI, query와 Tool input으로 다른 agent를 선택할 수 없다. 공개 대�
 - 연결 단절 뒤 소비한 세션 개설 토큰, raw capability와 `Mcp-Session-Id`를 다시 사용하지
   않는다. 같은 lease의 job을 계속할 자격이 Backend에 남아 있을 때만 새 세 값을
   발급한다.
-- `OPEN-02`는 stateful `StreamableHTTPSessionManager`와 전용 Starlette 세션 개설
-  middleware를 사용하는 것으로 확정한다. SDK private attribute를 수정하거나
-  stateless mode로 session binding을 우회하지 않는다.
+- `OPEN-02`는 세션마다 fresh low-level `mcp.server.lowlevel.Server`를 만들고, 그
+  child application마다 정확히 하나의 stateful `StreamableHTTPSessionManager`
+  (`stateless=False`, `event_store=None`, `json_response=True`,
+  `session_idle_timeout=None`)를 만드는 것으로 확정한다. top-level session lifecycle
+  pool은 SDK 공개 constructor·`run()`·`handle_request()`만 사용해 manager별 `run()`
+  context를 정확히 한 번 소유한다. 이는 SDK의 one-manager-per-application 안내와
+  stateful·private API 금지, 아래 30초 외부 reaper를 함께 지키며, 명시적 terminal 뒤
+  해당 manager의 `run()`을 끝내 transport와 owner tombstone을 폐기하기 위한 MCP 내부
+  구조다. stateless 전환, SDK monkeypatch, private map·method 접근은 금지한다.
 - 최초 initialize 요청은 bearer 세션 개설 토큰과 `X-Agent-Capability`를 함께 검증하고
   Engine consume 성공 뒤에만 session transport와 `ACTIVE` memory를 노출한다. 같은
   활성 session의 후속 HTTP 요청은 최초와 같은 bearer를 보내되 capability header를
@@ -232,6 +239,11 @@ URI, query와 Tool input으로 다른 agent를 선택할 수 없다. 공개 대�
 - stateful session idle TTL은 30초로 고정한다. 세션 개설 토큰 `exp` 또는 Backend
   capability 거부가 더 먼저 도달하면 TTL과 관계없이 즉시 닫는다. session memory는
   파일·DB·Redis·event store에 저장하지 않는다.
+- 30초 외부 reaper는 만료 후보별 cleanup을 독립 dispatch하고 같은 binding의 중복
+  dispatch를 억제한다. session gate 안에서는 만료 재확인과 registry·pool route 종료
+  소유권만 확정하며, SDK `DELETE`와 manager `run()` 종료는 gate·registry lock 밖에서
+  수행한다. 따라서 한 session의 transport 종료가 지연되어도 현재·이후 다른 session의
+  route 제거와 teardown 시작을 막지 않는다.
 - consume 응답을 받지 못하면 성공을 추측하거나 같은 세션 개설 토큰을 다시 consume하지
   않고 해당 transport와 memory를 폐기한다. fresh credential 조정은 `OPEN-07`의
   Backend 절차를 따른다.
@@ -454,6 +466,32 @@ Resource, Tool, Engine adapter, teardown의 성공·거부·예외 전체다.
 allowlist와 marker 부재를 검사한다. logger 실패 경로도 payload를 fallback file에 쓰지
 않아야 한다. sink 제품과 보존 정책은 `OPEN-04`이며 wire 계약과 분리한다.
 
+### 12.1 운영 sink 결정과 독립적인 선행 구현
+
+`ports/audit.py`는 비밀 없는 record를 받는 동기 `AuditSink` 경계,
+`core/audit.py`는 API 9.4의 여섯 필드만 생성하는 검증기와 기간 측정기를 제공한다.
+`create_app(..., audit_sink=None)`의 기본값은 기록을 폐기하며 파일·표준 출력·DB·Redis·
+queue를 자동으로 선택하지 않는다. 주입하는 sink는 블로킹하지 않는 신뢰된 호출자
+구현이어야 한다. sink 예외는 재전송·spool 없이 폐기하고 게임 처리 결과를 바꾸지 않는다.
+
+로그 ID는 MCP request/session/job ID나 인증 header에서 복사하지 않고 독립 UUID로
+생성한다. 한 HTTP 요청과 그 내부 작업은 이 안전한 ID만 공유한다. operation·status·
+error class는 내부 폐쇄형 분류이며 원문 exception을 인자로 받지 않는다. duration은
+monotonic clock으로 측정하고 유한한 0 이상의 수만 허용한다.
+
+선행 계측 대상은 이미 구현된 initialize·consume·Resource list/read·Engine context·
+protocol 요청·session teardown이다. `tests/test_audit_logging.py`는 record와 sink 실패를,
+`tests/test_audit_runtime.py`는 실제 SDK·ASGI/fake Engine 경로의 성공·거부·예외·취소와
+민감 marker 비노출을 검증한다. WU-M4 Tool 계측, 운영 수집기·보존 정책, 실제 운영
+전달 증거는 이 선행 범위에 포함하지 않으며 OPEN-04는 계속 미결정으로 유지한다.
+
+SDK 장수 task에서 Resource handler를 실행할 때는 HTTP scope에 전달한 안전한
+`AuditSpan`의 UUID context만 복원한다. initialize 시점의 추적 ID를 이후 요청에
+재사용하지 않는다. context 조회의 성공은 HTTP 응답뿐 아니라 schema·직렬화 검증까지
+포함한다. SDK·HTTP·Uvicorn 진단 원문은 표준 logging filter로 formatter 전에 폐기하며
+중첩 runtime lifespan은 참조계수로 보호한다. 독립 entrypoint는 access log를 끄고
+host의 시작·종료 오류 처리까지 filter를 유지한다. 이 경계는 운영 sink 선택이 아니다.
+
 ## 13. 설정·secret·network
 
 | 프로세스 | 허용 설정 |
@@ -483,7 +521,11 @@ enum과 상태 전이를 계약으로 추가하지 않는다.
 WU-M3 fake Engine 증거는 consume binding 저장, list descriptor·순서·Engine 0회,
 허용 read당 GET 1회, 거부 read Engine 0회, 단일 응답 폐쇄형 검증, 요청 종료 뒤
 Resource context 무저장과 서로 다른 MCP session·audience 간 private payload의
-비재사용·비간섭을 독립적으로 입증한다. 이 fake 증거는 Backend가
+비재사용·비간섭을 독립적으로 입증한다. session pool의 공개 candidate·active·running
+count와 manager `run()` exit 사건으로 terminal 뒤 tombstone 폐기도 검증하되 SDK private
+state를 관측하지 않는다. 한 teardown을 멈춘 상태에서도 다른 만료 session의 route 제거와
+teardown 시작이 독립적으로 진행되고 shutdown cancellation이 지연된 session 하나에
+직렬화되지 않음을 검증한다. 이 fake 증거는 Backend가
 authoritative state와 projection provenance·cross-scope 의미 불변식을 올바르게
 판정했음을 입증하지 않는다. 그 권위 검증은 WU-B7, 실제
 Backend↔MCP 호출 횟수·binding·비간섭성 end-to-end 증거는 WU-M6이 소유한다.
@@ -538,7 +580,7 @@ WU-B6 + WU-B7 -------------------------------/      |
 | `WU-M1A` | DB 정본·환경 합의 | PostgreSQL·Redis 인스턴스, DDL/DML 계정, health 증거 | 계정별 연결·권한 allow/deny, Redis health | migration SQL·repository·Redis app 코드 변경 |
 | `WU-M1B` | WU-M1A, WU-B2 migration | 이름순 실행·재실행 기록, schema version 증거 | 빈 DB·기존 DB upgrade, 재실행, runtime DDL·event 수정 거부 | 적용 migration 수정, 임의 DDL, 실제 DSN 기록 |
 | `WU-M2` | CP-0, secret 분리, fake Engine | Streamable HTTP server, initialize·세션 개설 토큰 consume | 정상 initialize, 누락·변조·만료·replay·mismatch 거부 | Resource·Tool, DB·Redis, 게임 판정 |
-| `WU-M3` | WU-M2, API 8.2·8.3·9.2 | consume binding의 job/subject session, list·다섯 Resource adapter | binding 폐쇄형, 2×5 허용표, descriptor order, read 1/0 call, exact schema·요청 종료 뒤 무저장·session/audience 비간섭 fake 증거 | Backend 현재 상태·projection 권위 입증, 별도 문서 schema 재정의, Front snapshot 재사용, Tool |
+| `WU-M3` | WU-M2, API 8.2·8.3·9.2 | consume binding의 job/subject session, 세션별 `Server`·stateful manager lifecycle pool, list·다섯 Resource adapter | binding 폐쇄형, 2×5 허용표, descriptor order, read 1/0 call, exact schema·요청 종료 뒤 무저장·session/audience·teardown 비간섭 fake 증거 | Backend 현재 상태·projection 권위 입증, 별도 문서 schema 재정의, Front snapshot 재사용, Tool |
 | `WU-M4` | WU-M3, API 8.4·9.3 | 네 Tool, proposal 조립과 Engine adapter | 입력·phase·target·stale·idempotency·응답 유실 | 규칙 판정, DB mutation, GM Tool |
 | `WU-M5` | WU-M2~WU-M4 operation/error 경로 | 중앙 allowlist log와 redaction | 성공·거부·예외 marker 캡처, 허용 key 검사 | DB·queue·spool·audit outbox, event_outbox 소비 |
 | `WU-M6` | WU-B6·WU-B7, WU-M2~WU-M5, 통합 network | 실제 Backend↔MCP job 왕복 증거 | initialize→consume→Resource→Tool, GM read-only·direct-return, Backend 최종 판정 | 공개 API·DB schema 변경, 유료 Provider 강제 |
@@ -565,6 +607,36 @@ WU-B7 증거로 분리한다. WU-M6은 실제 Backend 계약과 end-to-end bindi
 호출 횟수·비간섭성, WU-M7은 장애 주입, WU-M8은 제3자 runbook 재현을 각각
 완료 근거로 삼는다.
 
+### 15.4 협의 제외 선행 작업 결과 — 2026-09-05
+
+사용자의 독립 작업 일괄 요청에 따라 기존 M3 보완과 M5의 sink와 독립적인 부분을
+구분해 구현·검증했다. 이 요청은 다른 섹터 소유 코드나 미정 계약을 변경하는 승인으로
+해석하지 않았으며, WU별 전체 완료와 선행 작업 완료를 구별한다.
+
+| 항목 | 현재 결과 | 남은 경계 |
+|---|---|---|
+| M3 | UTF-8 불가능 문자열 거부, 소수초 정밀도 손실 없는 deadline 비교, 전체 package 검증 통과 | Backend 권위·실제 통합 증거는 B7/M6 |
+| M5 선행 | 안전 record·주입 sink·기존 경로 계측·SDK 원문 차단 및 실패·취소 검증 | Tool 계측, OPEN-04 운영 sink·보존 결정 |
+| M8 준비 | package README에 확정된 로컬 실행·종료·설정 분리 절차 반영 | TLS/readiness/rotation 정책, 실제 통합·제3자 재현 |
+
+MCP 전체 255개 테스트, Ruff, `uv lock --check --offline`을 통과했다. M3 schema focused
+63개와 M5 record/runtime focused 41개는 전체 수에 포함된다. Backend/Front 검증은
+루트 README의 같은 날짜 결과를 참조하며 이 수에 합산하지 않는다.
+
+다음은 협의·타 섹터 산출물이 필요해 이번 구현에서 제외했다.
+
+- M4: Tool 현재 허용표의 조회 시점·호출 횟수·`turn` 미허용 session 처리, proposal
+  nullable/필수값과 public rationale 경계, proposal POST 오류 매핑의 구체화.
+- M1A: 기존 인스턴스·대상 환경·계정·데이터 보존 범위 확인 전 새 인프라를 생성하거나
+  기존 서비스를 중지하지 않았다. 실제 구축 여부를 이번 검증으로 판정하지 않는다.
+- M1B: Backend `004_seed_scenarios_and_personas.sql`의 시나리오 검증은 비정상 행을
+  세면서 `5-count(*)`를 계산하므로 정상 5개가 있어도 예외가 발생하는 구조다.
+  이는 SQL 정적 판독 결과이며 실제 DB 실행으로 재현하지 않았다. SQL 수정·실행 생략을
+  MCP가 대신 결정하지 않으며 Backend 수정 산출물 후 실행·재실행한다.
+- M6: Backend의 5-field consume, context/proposal handler와 실제 Agent MCP client 연결.
+- M7/M8: OPEN-04~07의 운영 sink·TLS·health·consume 응답 유실 조정 결정 및 실제
+  Backend 장애·재접속 왕복. fake 검증을 해당 WU 전체 통과로 표시하지 않는다.
+
 ## 16. 구현 결정 등록부
 
 아래 항목은 확정 정본 밖 구현 세부다. 해당 WU 전에 owner가 결정하고 wire·환경 변수·
@@ -573,7 +645,7 @@ WU-B7 증거로 분리한다. WU-M6은 실제 Backend 계약과 end-to-end bindi
 | ID | 상태 | 결정 항목 | owner | 적용 WU |
 |---|---|---|---|---|
 | `OPEN-01` | RESOLVED | `mcp_server` 독립 project, `mafia_game.main` composition root와 package-local lock/test | MCP | WU-M2 |
-| `OPEN-02` | RESOLVED | stateful manager, initialize 전 consume, DELETE·terminal cleanup, idle TTL 30초 | MCP·Backend | WU-M2, WU-M7 |
+| `OPEN-02` | RESOLVED | 세션별 fresh `Server`와 stateful manager, 공개 lifecycle pool, initialize 전 consume, route-first DELETE·terminal cleanup, manager `run()` 종료, 독립 30초 reaper | MCP·Backend | WU-M2, WU-M3, WU-M7 |
 | `OPEN-03` | RESOLVED | 11절과 API 9.3.1절의 고정 HTTP·JSON-RPC 오류 매핑 | 공통 | WU-M2~WU-M4 |
 | `OPEN-08` | RESOLVED | MCP context cache 없음; list Engine 0회, 허용 read GET 1회, 거부 read Engine 0회, 요청 종료 뒤 Resource JSON·model·text retained reference·재사용과 stale fallback 금지 | 공통 | WU-M3, WU-M7 |
 

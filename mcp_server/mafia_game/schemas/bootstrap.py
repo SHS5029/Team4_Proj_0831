@@ -15,6 +15,15 @@ from typing import Any
 from uuid import UUID
 
 from mafia_game.core.security.errors import AuthRequired, BootstrapDenied
+from mafia_game.schemas.common import (
+    GAME_PHASES,
+    RESOURCE_SCOPE_ORDER,
+    WireContractError,
+    canonical_uuid,
+    integer,
+    require_keys,
+    strict_json_object,
+)
 
 _TOKEN_PART = re.compile(r"^[A-Za-z0-9_-]+$")
 _LOWER_HEX_256 = re.compile(r"^[0-9a-f]{64}$")
@@ -43,6 +52,55 @@ class BootstrapClaims:
     iat: int
     exp: int
     nonce: str
+
+
+@dataclass(frozen=True, slots=True)
+class ConsumeBinding:
+    """Engine이 capability record에서 반환한 immutable issuance metadata다."""
+
+    status: str
+    allowed_resource_scopes: tuple[str, ...]
+    phase: str
+    state_version: int
+    window_id: str
+
+
+class ConsumeContractError(ValueError):
+    """consume 원문을 노출하지 않고 5-field 계약 위반만 나타낸다."""
+
+
+def parse_consume_response(raw: bytes, subject_type: str) -> ConsumeBinding:
+    """duplicate·scope 순서·subject binding을 포함한 성공 body 전체를 검증한다."""
+
+    try:
+        data = require_keys(
+            strict_json_object(raw),
+            {"status", "allowed_resource_scopes", "phase", "state_version", "window_id"},
+        )
+        if data["status"] != "CONSUMED":
+            raise WireContractError
+        scopes = data["allowed_resource_scopes"]
+        if not isinstance(scopes, list) or not scopes:
+            raise WireContractError
+        allowed = {
+            "AI_PLAYER": frozenset({"public", "me", "turn", "persona"}),
+            "GM": frozenset({"public", "gm-guide"}),
+        }.get(subject_type)
+        if allowed is None or any(
+            not isinstance(scope, str) or scope not in allowed for scope in scopes
+        ):
+            raise WireContractError
+        expected_order = [scope for scope in RESOURCE_SCOPE_ORDER if scope in scopes]
+        if scopes != expected_order:
+            raise WireContractError
+        phase = data["phase"]
+        if not isinstance(phase, str) or phase not in GAME_PHASES:
+            raise WireContractError
+        state_version = integer(data["state_version"], minimum=1)
+        window_id = canonical_uuid(data["window_id"])
+    except WireContractError as error:
+        raise ConsumeContractError from error
+    return ConsumeBinding("CONSUMED", tuple(scopes), phase, state_version, window_id)
 
 
 def _decode_base64url(value: str, *, auth_error: bool = True) -> bytes:
