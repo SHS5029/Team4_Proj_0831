@@ -303,6 +303,7 @@ Front·MCP 연결까지 완료됐다는 뜻은 아닙니다. 규칙 수준의 �
 ├── AGENTS.MD                         # 개발·기여 작업 규칙
 ├── README.md                         # 전체 설정·실행·검증 안내
 ├── .env.example                      # Backend 환경 변수 예시
+├── run_openai.sh                     # OpenAI Backend·MCP·Front 동시 실행
 ├── pyproject.toml                    # ai-mafia 통합 런타임·개발 의존성 및 도구 설정
 ├── backend/
 │   ├── app/main.py                   # FastAPI 생성과 router·오류 처리 등록
@@ -694,7 +695,32 @@ MCP 담당자가 전용 테스트 PostgreSQL·Redis의 대상과 migration·seed
 LLM_PROVIDER=dummy .venv/bin/python -m uvicorn backend.app.main:app --reload --port 8000
 ```
 
-`http://127.0.0.1:8000/health`의 정상 응답은 `{"status":"ok"}`입니다.
+OpenAI Provider로 실행할 때는 루트 `.env`에 `OPENAI_API_KEY`와 `OPENAI_MODEL`을
+설정하고, migration·seed가 준비된 격리 저장소를 `AI_MAFIA_DATABASE_URL`과
+`AI_MAFIA_REDIS_URL`에 지정한 뒤 전용 스크립트를 사용합니다. 팀 공유
+`TEAM_DATABASE_URL`과 같은 DB는 여러 Backend worker가 한 게임을 선점할 수 있으므로
+스크립트가 시작을 거부합니다. 스크립트는 키와 접속 URL을 하드코딩하거나 출력하지 않고
+루트 `.env`를 `python-dotenv`로 읽으며, Backend에만 `LLM_PROVIDER=openai`를 적용합니다.
+Backend·MCP·일반 사용자 Front를 함께 실행하고, `Ctrl+C` 또는 한 프로세스의 종료 시
+나머지 프로세스도 정리합니다. Front와 MCP에는 OpenAI·DB 비밀 환경 변수를 전달하지
+않습니다.
+
+```bash
+./run_openai.sh --check  # 유료 API 호출 없이 세 런타임 설정·import 검증
+./run_openai.sh          # Backend·MCP·Front 동시 실행
+```
+
+동시 실행 주소는 Backend `http://127.0.0.1:18000`, MCP
+`http://127.0.0.1:18100/mcp`, Front `http://127.0.0.1:18501`입니다.
+다른 프로젝트와 포트가 겹치면 세 주소를 함께 맞추도록 실행 포트를 바꿀 수 있습니다.
+
+```bash
+AI_MAFIA_BACKEND_PORT=28000 AI_MAFIA_MCP_PORT=28100 \
+AI_MAFIA_FRONTEND_PORT=28501 ./run_openai.sh
+```
+
+수동 Backend의 health 주소는 `http://127.0.0.1:8000/health`, 동시 실행 스크립트의
+health 주소는 `http://127.0.0.1:18000/health`이며 정상 응답은 `{"status":"ok"}`입니다.
 
 Mafia Game MCP는 Backend를 먼저 실행한 뒤 최소 FastMCP process로 실행합니다. 아래
 명령은 저장소 루트에서 실행하며, 개발 환경에서는 loopback 연결만 사용합니다.
@@ -887,4 +913,14 @@ push를 자동 승인하지 않습니다.
   
   ---
   
-+ 추가 기능) 타 직업의 툴을 호출할 수 있는 agent 생성 기능 (환경설정 페이지)
++ 추가 기능) 타 직업의 툴을 호출할 수 있는 agent 생성 기능 (환경설정 페이지) + agent parameters 부분 변경 가능(0.1초과, 1.0 미만 금지)
++ 위 변경사항 의미 있으려면 게임 시작 전 커스텀 메뉴에서 플레이어 직업 선택 가능하도록 변경 있어야함
+
+게임·관전 공개 타임라인은 노란색 발언 말풍선과 행동 알림을 구분합니다. `AI 판단과 실행`은 기본적으로 접혀 있으며 펼쳐서 확인합니다. 종료 결과에는 마피아 선택과 최종 공격 대상을 구분하고, 두 선택이 갈린 경우 RNG로 결정되었다고 안내합니다. 비공개 선택은 게임 종료 후에만 표시합니다.
+
+AI 발언 지침은 구어체 자기 보호 계획을 이미 제공된 답으로 인정하고, 아직 발언 기회가 없는 무응답과 모호한 목격을 마피아 증거로 삼지 않도록 보완했습니다. 시민 오처형 뒤에는 기존 의심 근거를 재검토하며, 밤 사망만으로 역할 자칭을 확정하지 않습니다. 프롬프트 지침이므로 모든 모델 응답의 준수를 보장하지는 않습니다.
+
+운영 FastMCP는 AI 입력에서 시나리오 제목만 유지하고 배경·피해자·장소·개인 알리바이·목격담을 제외합니다. 대신 public.data.rules로 밤 행동·투표·승패·정보 공개 규칙을 제공합니다. 공개 발언과 본인 조사 결과는 보존하며 Front의 시나리오 화면은 그대로입니다.
+Backend MCP 클라이언트는 기존·축약 응답을 모두 허용합니다. 실행 중인 MCP 프로세스는 코드 변경 후 재기동해야 적용됩니다. 검증: MCP 테스트 45개, Backend MCP 클라이언트 테스트 47개 통과. 실제 유료 모델 호출은 실행하지 않았습니다.
+
+OpenAI 실행의 루트 `.env` 모델은 `OPENAI_MODEL=gpt-5.6-luna`로 설정하며, OpenAI 추론 모델 요청의 `reasoning.effort`는 `high`을 사용합니다.

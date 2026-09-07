@@ -335,7 +335,7 @@ async def test_openai_reasoning_has_room_for_final_json_and_classifies_incomplet
     monkeypatch.setattr("openai.AsyncOpenAI", factory)
     provider = OpenAIProvider("synthetic-key", "gpt-5.6-luna")
     assert (await provider.generate(_llm_request())).output == {"type": "PASS"}
-    assert calls[0]["reasoning"] == {"effort": "low"}
+    assert calls[0]["reasoning"] == {"effort": "high"}
     assert calls[0]["max_output_tokens"] >= 4096
     assert calls[0]["store"] is False
     response.status = "incomplete"

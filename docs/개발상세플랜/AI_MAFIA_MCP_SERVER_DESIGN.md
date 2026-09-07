@@ -715,3 +715,5 @@ no persistent spool과 fresh credential이다. Resource context no-cache는 이�
 - [ ] 위험도에 맞는 검증 결과와 생략 사유를 기록했는가
 - [ ] 루트 README와 package README가 실제 구현 상태·명령과 일치하는가
 - [ ] 사용자 승인 없이 commit·push하지 않았는가
+
+이번 단일 WU-M3 보완은 사용자가 요청한 운영 FastMCP 모델 입력 축약·게임 규칙 안내 추가다. 기존 Resource 등록 파일에서만 변환하며 상세 계약은 API 명세의 FastMCP 모델 입력 축약 절을 따른다. Backend MCP 소비 클라이언트는 기존·축약 응답을 함께 허용하는 최소 호환 변경을 포함한다. DB·게임 판정은 변경하지 않는다.

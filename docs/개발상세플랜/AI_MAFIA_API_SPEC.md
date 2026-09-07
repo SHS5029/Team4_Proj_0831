@@ -1727,3 +1727,7 @@ window와 `state_version`을 다시 확인한 뒤에만 `PUBLIC` event로 저장
 - MCP 구조화 로그의 metadata allowlist와 payload·target·capability·token·signature·
   ID·header·prompt·raw response·exception 전문 비기록 검증
 - LLM token·비용·timeout field와 API가 노출되지 않는지 확인
+
+### FastMCP 모델 입력 축약 (2026-09-07)
+
+현재 운영 `mafia://context/current/...`, `mafia://context/scoped/...` 등록부는 Backend 응답 후 모델 입력을 축약한다. Backend 내부 API와 인증 Resource의 8.2 schema는 그대로 유지한다. 운영 FastMCP 응답의 public.data.scenario는 scenario_id·title만 보존하고 public.data.rules는 고정 한국어 규칙 문자열 배열을 추가한다. me.data는 alibi·observation을 제외하며 그 밖의 필드는 보존한다. 공개 사건·발언·본인 private_events·turn·persona·gm-guide는 보존한다. rules는 마스터플랜 3절 규칙 설명이며 상태 판정이나 추가 비공개 정보가 아니다.

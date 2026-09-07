@@ -174,6 +174,15 @@ GAME_PAGE_CSS = """
     transition-duration: .01ms !important; animation-duration: .01ms !important;
   }
 }
+[data-testid="stChatMessage"] {
+  background: #fff2a8;
+  border: 1px solid #e8ce61;
+  border-radius: 18px;
+  color: #332b16;
+}
+[data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] {
+  color: #332b16;
+}
 </style>
 """
 
@@ -508,14 +517,8 @@ def _render_spectator_timeline(*, snapshot: dict[str, Any]) -> None:
         st.caption("게임의 공개 이벤트와 발언만 표시됩니다.")
         if not events:
             st.info("아직 표시할 공개 기록이 없습니다.")
-        for index, event in enumerate(events):
-            with st.container(key=f"spectator-public-event-{index}", border=True):
-                speaker = _event_speaker(event=event, player_names=player_names)
-                if speaker:
-                    st.markdown(f"**💬 {speaker}**")
-                else:
-                    st.markdown(f"**{_event_heading(event)}**")
-                st.write(_event_text(event=event, player_names=player_names))
+        for event in events:
+            _render_public_chat_event(event=event, player_names=player_names)
 
 
 def _render_spectator_private(*, snapshot: dict[str, Any], me: dict[str, Any]) -> None:
@@ -582,21 +585,33 @@ def _render_timeline(
             )
             st.caption(f"피해자: {victim} · 장소: {location_text}")
             st.write(str(scenario.get("background", "")))
-        # 발언 누적 길이가 화면을 밀어내지 않도록 공개 이벤트만 독립 scroll 영역에
-        # 넣는다. 사건 설명과 입력 panel은 화면의 고정된 문맥으로 남긴다.
-        with st.container(key="game-timeline-scroll", height=340, border=False):
-            if not events:
-                st.info("사건 설명을 확인한 뒤 공개 대화가 이곳에 표시됩니다.")
-            player_names = {
-                str(player.get("player_id")): str(player.get("display_name", "플레이어"))
-                for player in public_players(snapshot)
-            }
-            for index, event in enumerate(events):
-                with st.container(key=f"game-public-event-{index}", border=True):
-                    speaker = _event_speaker(event=event, player_names=player_names)
-                    if speaker:
-                        st.markdown(f"**{speaker}**")
-                    st.write(_event_text(event=event, player_names=player_names))
+        if not events:
+            st.info("사건 설명을 확인한 뒤 공개 대화가 이곳에 표시됩니다.")
+        player_names = {
+            str(player.get("player_id")): str(player.get("display_name", "플레이어"))
+            for player in public_players(snapshot)
+        }
+        for event in events:
+            _render_public_chat_event(event=event, player_names=player_names)
+
+
+def _render_public_chat_event(*, event: dict[str, Any], player_names: dict[str, str]) -> None:
+    """공개 발언은 말풍선, 행동은 작은 알림으로 표현하고 외부 문자열을 escape한다."""
+
+    speaker = _event_speaker(event=event, player_names=player_names)
+    message = _event_text(event=event, player_names=player_names)
+    if event.get("event_type") == "PLAYER_SPOKE":
+        with st.chat_message(speaker or "플레이어", avatar="💬"):
+            st.markdown(f"<strong>{escape(speaker or '플레이어')}</strong> · 발언", unsafe_allow_html=True)
+            st.markdown(f"<div style='white-space:pre-wrap;overflow-wrap:anywhere'>{escape(message)}</div>", unsafe_allow_html=True)
+    else:
+        st.markdown(
+            '<div style="margin:.35rem 0;padding:.65rem 1rem;border-left:3px solid #8b9bb5;'
+            'border-radius:8px;background:#edf1f7;color:#334155;overflow-wrap:anywhere">'
+            f'<small>◈ 행동 · {escape(_event_heading(event))}</small>'
+            f'<div style="white-space:pre-wrap">{escape(message)}</div></div>',
+            unsafe_allow_html=True,
+        )
 
 
 def _render_private_panel(*, snapshot: dict[str, Any], me: dict[str, Any]) -> None:
@@ -1112,8 +1127,7 @@ def _render_agent_activity(*, snapshot: dict[str, Any]) -> None:
     """밤·투표는 공통 안내만, 공개 발언은 현재 진행과 접힌 과거 이력을 표시한다."""
 
     phase = snapshot.get("game", {}).get("phase")
-    with st.container(key="game-agent-activity", border=True):
-        st.markdown("#### AI 판단과 실행")
+    with st.expander("AI 판단과 실행", expanded=False):
         if phase in PRIVATE_ACTIVITY_PHASES:
             st.info("비공개 단계가 진행 중입니다. 각 AI의 역할·대상·응답 여부는 공개하지 않습니다.")
             return
@@ -1162,7 +1176,8 @@ def _render_agent_activity(*, snapshot: dict[str, Any]) -> None:
         if not records:
             st.caption("최근 처리 기록이 없습니다. 서버 재시작 뒤에는 새 기록부터 표시됩니다.")
         else:
-            with st.expander("최근 공개 처리 기록", expanded=False):
+            with st.container():
+                st.caption("최근 공개 처리 기록")
                 for item in records:
                     scope = "현재 차례" if _is_current_activity(item, snapshot) else "이전 기록"
                     time = datetime.fromisoformat(item["created_at"].replace("Z", "+00:00")).strftime("%H:%M:%S UTC")

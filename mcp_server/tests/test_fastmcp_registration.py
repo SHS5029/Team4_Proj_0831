@@ -104,3 +104,25 @@ async def test_scoped_resource_preserves_actor_and_scope_for_backend(scope: str)
     assert resource[0].mime_type == "application/json"
     assert json.loads(resource[0].content) == {"session_id": "fixture-session", "phase": "DAY"}
     assert backend.calls == [("resource", uri)]
+
+
+def test_model_context_removes_story_preserves_evidence_and_original():
+    """서사 제거가 공개 발언·본인 조사 기록이나 원본 객체를 훼손하지 않는지 검증한다."""
+    from copy import deepcopy
+    from mafia_game.api.resources import model_context
+
+    public = {"scope": "public", "data": {
+        "scenario": {"scenario_id": "synthetic", "title": "합성 사건", "background": "배경", "victim": "피해자", "locations": ["장소"]},
+        "public_events": [{"data": {"message": "자기 보호하겠습니다"}}], "players": [],
+    }}
+    original = deepcopy(public)
+    result = model_context(public)
+    assert public == original
+    assert result["data"]["scenario"] == {"scenario_id": "synthetic", "title": "합성 사건"}
+    assert result["data"]["public_events"] == original["data"]["public_events"]
+    assert any("RNG" in rule for rule in result["data"]["rules"])
+    me = {"scope": "me", "data": {"role": "DETECTIVE", "alibi": "장소", "observation": "목격", "private_events": [{"is_mafia": False}]}}
+    trimmed = model_context(me)
+    assert set(trimmed["data"]) == {"role", "private_events"}
+    assert trimmed["data"]["private_events"] == me["data"]["private_events"]
+    assert "alibi" in me["data"]
