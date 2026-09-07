@@ -59,11 +59,18 @@ GAME_PAGE_CSS = """
 .game-phase-caption { margin: .35rem 0 1rem; color: var(--game-muted); }
 [class*="st-key-current-action-region"] { margin-bottom: 1.1rem; }
 [class*="st-key-game-player-panel"],
-[class*="st-key-game-timeline-panel"],
 [class*="st-key-game-my-panel"] {
   min-height: 37rem; padding: 1rem !important; border: 1px solid var(--game-border) !important;
   border-radius: .8rem !important; background: #fff !important;
   box-shadow: 0 .5rem 1.5rem rgba(20, 42, 81, .05);
+}
+[class*="st-key-game-timeline-panel"] {
+  padding: 1rem !important; border: 1px solid var(--game-border) !important;
+  border-radius: .8rem !important; background: #fff !important;
+  box-shadow: 0 .5rem 1.5rem rgba(20, 42, 81, .05);
+}
+[class*="st-key-game-timeline-scroll"] {
+  margin-top: .7rem; padding-right: .2rem;
 }
 .game-panel-title {
   margin-bottom: .1rem; color: var(--game-ink); font-size: 1.05rem; font-weight: 800;
@@ -157,7 +164,6 @@ GAME_PAGE_CSS = """
   .game-header { margin: 0 -.8rem 1rem; padding: 0 .9rem; }
   .game-nav { display: none; }
   [class*="st-key-game-player-panel"],
-  [class*="st-key-game-timeline-panel"],
   [class*="st-key-game-my-panel"],
   [class*="st-key-spectator-player-panel"],
   [class*="st-key-spectator-timeline-panel"],
@@ -345,16 +351,6 @@ def render(snapshot: dict[str, Any]) -> None:
         )
         return
 
-    # 살아 있는 사용자의 현재 행동은 phase 제목 바로 다음에 한 번만 렌더링한다.
-    # 긴 누적 타임라인이나 AI 진행 기록을 읽고 있어도 하단 요약이 행동 window를
-    # 알리며, 브라우저 component가 새 window에서만 이 영역으로 이동·focus한다.
-    with st.container(key="current-action-region"):
-        _render_visible_action_panel(
-            client=client,
-            game_id=str(game.get("game_id")),
-            snapshot=snapshot,
-        )
-
     left, center, right = st.columns([1, 1.65, 1.08])
     with left:
         _render_players(snapshot=snapshot, me=me, phase=str(phase))
@@ -366,6 +362,15 @@ def render(snapshot: dict[str, Any]) -> None:
             phase=str(phase),
             day_number=day_number,
         )
+        # 공개 대화는 정해진 높이 안에서 스크롤하고, 행동 입력은 같은 중앙 열의
+        # 하단에 둔다. 따라서 현재 차례가 생겨도 좌·우 정보 panel 사이에서 입력창을
+        # 찾을 필요가 없으며, focus bridge의 기존 action region 계약도 유지한다.
+        with st.container(key="current-action-region"):
+            _render_visible_action_panel(
+                client=client,
+                game_id=str(game.get("game_id")),
+                snapshot=snapshot,
+            )
     with right:
         _render_private_panel(snapshot=snapshot, me=me)
 
@@ -577,18 +582,21 @@ def _render_timeline(
             )
             st.caption(f"피해자: {victim} · 장소: {location_text}")
             st.write(str(scenario.get("background", "")))
-        if not events:
-            st.info("사건 설명을 확인한 뒤 공개 대화가 이곳에 표시됩니다.")
-        player_names = {
-            str(player.get("player_id")): str(player.get("display_name", "플레이어"))
-            for player in public_players(snapshot)
-        }
-        for index, event in enumerate(events):
-            with st.container(key=f"game-public-event-{index}", border=True):
-                speaker = _event_speaker(event=event, player_names=player_names)
-                if speaker:
-                    st.markdown(f"**{speaker}**")
-                st.write(_event_text(event=event, player_names=player_names))
+        # 발언 누적 길이가 화면을 밀어내지 않도록 공개 이벤트만 독립 scroll 영역에
+        # 넣는다. 사건 설명과 입력 panel은 화면의 고정된 문맥으로 남긴다.
+        with st.container(key="game-timeline-scroll", height=340, border=False):
+            if not events:
+                st.info("사건 설명을 확인한 뒤 공개 대화가 이곳에 표시됩니다.")
+            player_names = {
+                str(player.get("player_id")): str(player.get("display_name", "플레이어"))
+                for player in public_players(snapshot)
+            }
+            for index, event in enumerate(events):
+                with st.container(key=f"game-public-event-{index}", border=True):
+                    speaker = _event_speaker(event=event, player_names=player_names)
+                    if speaker:
+                        st.markdown(f"**{speaker}**")
+                    st.write(_event_text(event=event, player_names=player_names))
 
 
 def _render_private_panel(*, snapshot: dict[str, Any], me: dict[str, Any]) -> None:

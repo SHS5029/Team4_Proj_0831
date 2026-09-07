@@ -24,11 +24,14 @@ ACTION_ATTENTION_COMPONENT = st.components.v2.component(
 ACTION_PANEL_CSS = """
 <style>
 [class*="st-key-discussion-action-panel"] {
-  margin-top: .9rem; padding: .85rem !important; border: 1px solid #8eb6ff !important;
+  margin-top: .9rem; padding: .95rem !important; border: 1px solid #8eb6ff !important;
   border-radius: .75rem !important;
   background: linear-gradient(135deg, #f9fbff, #eef4ff) !important;
+  box-shadow: 0 .7rem 1.8rem rgba(20, 42, 81, .10);
 }
-[class*="st-key-discussion-action-panel"] textarea { min-height: 6.2rem; border-color: #afc4e8; }
+[class*="st-key-discussion-action-panel"] textarea {
+  min-height: 7.3rem; border-color: #8eb6ff; background: #fff !important;
+}
 [class*="st-key-night-action-panel"] {
   padding: 1.15rem !important; border: 1px solid #203a60 !important;
   border-radius: .8rem !important; color: #f3f7ff !important;
@@ -190,6 +193,7 @@ def _render_discussion(*, game_id: str, snapshot: dict[str, Any]) -> None:
             return
 
         locked = _is_locked(window=window, pending=pending)
+        st.markdown("#### 발언 입력")
         turn_col, guide_col = st.columns([1, 4])
         turn_col.markdown("**내 차례**")
         guide_col.write("공개된 정보를 바탕으로 의견을 말해 주세요.")

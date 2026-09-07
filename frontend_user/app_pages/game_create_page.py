@@ -39,14 +39,23 @@ SETUP_CSS = """
 .setup-skyline { position:absolute; right:1rem; bottom:5rem; color:#557aab; font-size:2rem; letter-spacing:.5rem; }
 .setup-panel { padding:1.2rem; border:1px solid var(--setup-border); border-radius:.8rem; background:#fff; box-shadow:0 .6rem 1.6rem rgba(20,42,81,.06); }
 .setup-panel-title { margin-bottom:.9rem; color:var(--setup-ink); font-size:1.15rem; font-weight:800; }
-.setup-count { min-height:8.5rem; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:.75rem; border:1px solid var(--setup-border); border-radius:.8rem; background:#fff; text-align:center; }
-.setup-count-selected { border:2px solid var(--setup-blue); box-shadow:0 0 0 3px rgba(36,104,237,.08); }
-.setup-count-pieces { display:flex; flex-wrap:wrap; justify-content:center; gap:.08rem; max-width:8.5rem; min-height:1.8rem; color:#71809a; font-size:1.2rem; line-height:1; }
-.setup-count-pieces span { display:inline-block; }
-.setup-count-selected .setup-count-pieces { color:var(--setup-blue); }
-.setup-count-selected .setup-count-icon, .setup-count-selected .setup-count-number { color:var(--setup-blue); }
-.setup-count-number { margin-top:.3rem; color:var(--setup-ink); font-size:1.7rem; font-weight:800; }
-.setup-count-subtitle { margin-top:.25rem; color:var(--setup-muted); font-size:.82rem; }
+[class*="st-key-game-player-count-"] button {
+  min-height:10rem; padding:.8rem .6rem; white-space:pre-line; line-height:1.55;
+  color:var(--setup-ink) !important; background:#fff !important;
+  border:1px solid var(--setup-border) !important; border-radius:.8rem !important;
+  font-size:1.05rem !important; font-weight:800 !important;
+}
+[class*="st-key-game-player-count-"] button:hover:not(:disabled) {
+  border-color:#8db2ff !important; background:#f7faff !important;
+}
+[class*="st-key-game-player-count-6-selected"] button,
+[class*="st-key-game-player-count-7-selected"] button,
+[class*="st-key-game-player-count-8-selected"] button,
+[class*="st-key-game-player-count-9-selected"] button {
+  border:2px solid var(--setup-blue) !important; color:var(--setup-blue) !important;
+  background:linear-gradient(145deg,#fff,#eef4ff) !important;
+  box-shadow:0 0 0 3px rgba(36,104,237,.08) !important;
+}
 [data-testid="stButton"] button:not([kind="primary"]), [data-testid="baseButton-secondary"] { color:#1f4fbd !important; background:#f7faff !important; border:1px solid #b8cdf8 !important; }
 [data-testid="stButton"] button:not([kind="primary"]) *, [data-testid="baseButton-secondary"] * { color:#1f4fbd !important; }
 [data-testid="stButton"] button:not([kind="primary"]):hover:not(:disabled), [data-testid="baseButton-secondary"]:hover:not(:disabled) { color:#17449f !important; background:#eaf2ff !important; }
@@ -158,7 +167,11 @@ def render(client: ApiClient) -> None:
 
 
 def _render_player_choices(*, in_flight: bool) -> int:
-    """6~9명 선택을 카드 형태로 표시하고 기존 session 선택값을 유지한다."""
+    """6~9명 선택을 하나의 큰 button으로 표시하고 기존 session 선택값을 유지한다.
+
+    인원 카드와 별도의 ``선택`` button을 함께 두면 같은 결정을 두 번 해야 하는 것처럼
+    보인다. 각 인원 option 자체를 단일 제어로 만들어 클릭 영역과 선택 결과를 일치시킨다.
+    """
 
     selected = st.session_state.setdefault("game.player_count", 6)
     if selected not in ROLE_COUNTS:
@@ -167,18 +180,16 @@ def _render_player_choices(*, in_flight: bool) -> int:
     columns = st.columns(4)
     for column, count in zip(columns, (6, 7, 8, 9), strict=True):
         with column:
-            selected_class = " setup-count-selected" if selected == count else ""
-            st.markdown(
-                f'<div class="setup-count{selected_class}"><div class="setup-count-pieces">'
-                + "".join(f'<span aria-hidden="true">♟</span>' for _ in range(count))
-                + '</div>'
-                f'<div class="setup-count-number">{count}명</div>'
-                f'<div class="setup-count-subtitle">AI 플레이어 {count - 1}명</div></div>',
-                unsafe_allow_html=True,
-            )
-            if st.button(f"{count}명 선택", key=f"game.player_count.{count}", disabled=in_flight, width="stretch"):
-                st.session_state["game.player_count"] = count
-                st.rerun()
+            selected_label = "✓ 선택됨\n" if selected == count else ""
+            with st.container(key=f"game-player-count-{count}{'-selected' if selected == count else ''}"):
+                if st.button(
+                    f"{selected_label}♟  {count}명\nAI 플레이어 {count - 1}명",
+                    key=f"game.player_count.{count}",
+                    disabled=in_flight,
+                    width="stretch",
+                ):
+                    st.session_state["game.player_count"] = count
+                    st.rerun()
     return int(selected)
 
 
