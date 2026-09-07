@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-from frontend_user.components.theme import render_page_navigation
+from frontend_user.components.theme import render_application_header, render_header_back_button
 
 RESULT_PAGE_CSS = """
 <style>
@@ -176,13 +176,10 @@ def render(snapshot: dict[str, Any]) -> None:
     game = snapshot.get("game") if isinstance(snapshot.get("game"), dict) else {}
     scenario = snapshot.get("scenario") if isinstance(snapshot.get("scenario"), dict) else {}
     st.markdown(RESULT_PAGE_CSS, unsafe_allow_html=True)
-    st.markdown(
-        '<header class="result-header"><div><span class="result-brand">🩸 게임 종료</span>'
-        '<span class="result-status">연결됨</span></div>'
-        '<span class="result-settings">⚙&nbsp; 설정</span></header>',
-        unsafe_allow_html=True,
+    render_application_header(
+        title="게임 종료",
+        action_renderer=lambda: render_header_back_button(current_page="game"),
     )
-    render_page_navigation(current_page="game")
 
     if game.get("status") != "COMPLETED":
         _render_failed(scenario=scenario)
@@ -506,7 +503,7 @@ def _render_actions(*, show_feedback: bool) -> None:
             st.session_state["navigation.page"] = "home"
             st.session_state.pop("game.game_id", None)
             st.rerun()
-        st.caption("게임 기록과 결과는 설정에서 다시 확인할 수 있습니다.")
+        st.caption("게임 기록과 결과는 홈의 완료 게임 목록에서 다시 확인할 수 있습니다.")
 
 
 def _render_failed(*, scenario: dict[str, Any]) -> None:

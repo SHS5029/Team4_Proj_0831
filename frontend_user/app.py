@@ -21,7 +21,6 @@ from frontend_user.app_pages.home_page import load_games, should_load_games  # n
 from frontend_user.app_pages.home_page import render as render_home  # noqa: E402
 from frontend_user.app_pages.result_page import render as render_result  # noqa: E402
 from frontend_user.app_pages.role_reveal_page import render as render_role_reveal  # noqa: E402
-from frontend_user.app_pages.settings_page import render as render_settings  # noqa: E402
 from frontend_user.components.identity_bridge import (  # noqa: E402
     IDENTITY_COMPONENT_CHANGED_SESSION_KEY,
     load_identity,
@@ -131,7 +130,6 @@ def main() -> None:
         if load_home_games and "home.games" not in st.session_state:
             st.session_state["home.games_loading"] = True
         render_home(client)
-    render_settings()
     # TTL 만료 때 먼저 rerun하면 이번 요청의 버튼 trigger가 초기화된다.
     # 카드·홈 이동·UUID 최종 확인을 먼저 처리하고, 남아 있는 목록 조회만 수행한다.
     if load_home_games:

@@ -9,6 +9,7 @@ from typing import Any
 
 import streamlit as st
 
+from frontend_user.components.theme import render_application_header
 from frontend_user.core.api_client import ApiClient, ApiResponseError, ApiUnavailableError
 
 HOME_GAMES_TTL_SECONDS = 30
@@ -79,12 +80,13 @@ def render(client: ApiClient) -> None:
     """게임 목록의 loading·empty·error·success 상태를 홈 레이아웃 안에서 표시한다."""
 
     st.markdown(HOME_CSS, unsafe_allow_html=True)
-    st.markdown(
-        '<header class="home-header"><div><span class="home-brand">AI 마피아</span>'
-        '<span class="home-status">연결됨</span></div>'
-        '<nav class="home-nav"><span>⚙&nbsp; 설정</span></nav></header>',
-        unsafe_allow_html=True,
-    )
+    def render_header_actions() -> None:
+        if st.button("▣ 피드백", key="home.feedback", width="stretch"):
+            _invalidate_games()
+            st.session_state["navigation.page"] = "feedback"
+            st.rerun()
+
+    render_application_header(title="AI 마피아", action_renderer=render_header_actions)
     st.markdown(
         '<section class="home-hero"><div class="home-hero-copy">'
         "<h1>AI 마피아게임</h1>"
@@ -97,10 +99,6 @@ def render(client: ApiClient) -> None:
         st.session_state["navigation.page"] = "create"
         st.rerun()
     st.caption("6~9명 · 약 15분")
-    if st.button("일반 피드백", key="home.feedback"):
-        _invalidate_games()
-        st.session_state["navigation.page"] = "feedback"
-        st.rerun()
     with st.container(border=True):
         st.markdown('<div class="home-player-title">플레이어 정보</div>', unsafe_allow_html=True)
         st.caption("현재 구조에서는 UUID를 게임 식별자로 사용합니다. 닉네임은 저장하지 않습니다.")

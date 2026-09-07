@@ -16,8 +16,9 @@ Backend 공개 API 요청에는 `X-User-Id`와 `X-Request-Id` header만 전달�
 배경·어두운 글자·명확한 테두리로 고정해 배경이나 버튼 상태에 관계없이 입력 내용을
 읽을 수 있습니다. 장식 이모지는 제거하고 사건 파일·야간 구역·최종 보고서 텍스트
 비주얼을 사용하며 외부 이미지 파일에는 의존하지 않습니다. 실제 입력은 기존 UUID·
-인원 선택·Backend 생성 계약만 사용합니다. 새 게임 설정의 인원 카드는 6~9명 선택과
-기존 `ROLE_COUNTS` preview를 표현하고 생성 중에는 선택·취소 입력을 잠급니다.
+인원 선택·Backend 생성 계약만 사용합니다. 새 게임 설정은 6~9명 option을 카드와 별도
+선택 button으로 중복 표시하지 않고 하나의 큰 button으로 표현하며, 기존 `ROLE_COUNTS`
+preview도 함께 표시합니다. 생성 중에는 선택·취소 입력을 잠급니다.
 
 `WU-F3`에서는 역할 공개·게임 shell을, `WU-F4`에서는 snapshot의 `legal_actions`와
 `valid_targets`에 따른 발언·밤 행동·투표 panel을 제공합니다. Front는 승패나 자동
@@ -53,8 +54,9 @@ F3 화면은 `ROLE_REVEAL`과 진행 phase를 Backend snapshot으로 구분합�
 공개 projection만 표시합니다. 새로고침 시에도 Front가 phase나 승패를 계산하지 않고
 `game_id`로 authoritative snapshot을 다시 요청합니다.
 게임 shell은 desktop에서 생존자 목록·중앙 phase 작업 영역·내 정보의 3열 구조로
-표시하고 768px 이하에서는 단일 열로 재배치합니다. 낮에는 중앙에 사건/공개 timeline과
-발언·투표 panel을, 밤에는 역할별 대상 선택 panel을 표시합니다. 첫날에도 정본 snapshot의
+표시하고 768px 이하에서는 단일 열로 재배치합니다. 중앙 공개 timeline의 이벤트 목록은
+고정 높이 scroll 영역이며, 낮 발언·밤 행동·투표 panel은 그 아래에 배치합니다. 따라서
+발언 입력은 대화 흐름의 하단에 유지됩니다. 첫날에도 정본 snapshot의
 scenario와 공개 event만 사용하며, 본인 role·알리바이·관찰·private event는 오른쪽
 panel에만 표시합니다.
 
