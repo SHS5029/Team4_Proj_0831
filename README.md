@@ -267,7 +267,7 @@ Front·MCP 연결까지 완료됐다는 뜻은 아닙니다. 규칙 수준의 �
 │   ├── core/api_client.py            # UUID 공개 Backend API client
 │   ├── .streamlit/secrets.toml.example
 │   └── tests/
-├── frontend_admin/                   # read-only 관리자 대시보드·게임 목록·상세
+├── frontend_admin/                   # read-only 관리자 운영 분석·피드백·로그·에이전트 계획
 ├── mcp_server/
 │   ├── pyproject.toml, uv.lock        # Python 3.12·MCP SDK 1.29.1 독립 실행 환경
 │   ├── mafia_game/                   # 최소 FastMCP 등록부·Backend HTTP adapter
@@ -347,7 +347,7 @@ Backend의 현재 게임 API는 canonical `mystery-v1` 계약을 사용하고, B
 Frontend의 Scaffold 전용 실행 경로와 client는 제거되었으며, Backend의 게임 API는
 PostgreSQL 정본 runtime만 사용합니다. 따라서 화면 확인과 API 테스트 전에 PostgreSQL
 migration과 연결 환경을 준비해야 합니다.
-관리자 통계 화면은 종료된 게임만 분석하며, 종료 게임이 없을 때는 빈 통계를 오류로
+관리자 운영 분석은 완료된 게임 결과를 기준으로 분석하며, 결과가 없을 때는 빈 통계를 오류로
 표시하지 않고 안내 문구를 보여줍니다.
 
 관리자 화면을 확인하려면 관리자 Frontend의 local storage에 생성된 UUID를
@@ -596,10 +596,52 @@ Windows에서 `uv`를 사용하지 않는 경우 프로젝트 가상환경의 Py
 통합 테스트입니다. 독립 MCP 가상환경에는 Backend 의존성이 없으므로 아래 테스트
 절의 실행 조건을 먼저 확인하세요.
 
-관리자 앱은 read-only 운영 현황·통계 분석·피드백/로그의 세 탭과 게임 목록·상세
-화면을 제공합니다. 현재 Backend 계약이 제공하는 게임 KPI와 시민/마피아 결과는
-실제 값으로 표시하고, 직업별 승률·피드백 목록·감사 로그 목록은 API 연결 전까지
-준비 상태로 안내합니다.
+관리자 앱은 read-only 통합 운영 분석·피드백/로그/운영 에이전트 계획 화면을 제공합니다. 현재 Backend 계약이 제공하는 게임 KPI와 시민/마피아 결과는
+실제 값으로 표시하고, 에이전트 페르소나별 AI 승률·사용자 피드백 목록·관리자 감사 로그도 Backend
+조회 API에 연결합니다. 피드백 종류/평점과 감사 이벤트 유형을 필터링하고 20건씩
+이전·다음 페이지로 조회합니다. 전체 사용자 KPI는 DB의 UUID 수입니다.
+운영 에이전트 계획 탭에서는 승인 자료에 질문하고 검색 근거·점수·신뢰도를 확인할 수
+있으며, Backend의 `POST /api/v1/admin/insights/query`는 질문 후 게임·문서 데이터를
+변경하지 않습니다.
+
+관리자 데모 모드에는 공개 테스트 키 `demo_ai_mafia_admin_v1`의 연결 확인 입력창이
+있습니다. 실제 인증 키가 아닌 로컬 가상 API 전용 값입니다. 게임 1,200건·사용자 300명,
+페르소나별 승률·30일 추이·피드백 240건·감사 로그 180건의 합성 예시를 표시하며 조회 유형 필터를
+제공합니다. 합성 게임은 완료 900·저장 180·진행 96·실패 24건이며, 실제 DB에 삽입하지
+않습니다. 진영별 승리는 시민 540승·마피아 360승 도넛 차트로 표시하며 KPI·페르소나별 AI
+승률은 같은 합성 기록에서 계산합니다.
+실제 API 권한은 기존 UUID allowlist로 검증합니다.
+
+운영 분석 화면은 전체 사용자·누적 게임·완료율·시민/마피아 승률 KPI, 진영별 도넛,
+얇은 페르소나별 가로 막대와 상세 표를 중복 없이 한 화면에 배치합니다. 최근 게임 목록과
+종료 게임 수는 관리자 요약 화면에서 제외했습니다.
+
+관리자 계약은 [API 명세 7절](docs/개발상세플랜/AI_MAFIA_API_SPEC.md)의 7.4~7.8에
+확장되어 있습니다. `GET /api/v1/admin/persona-win-rates`, `/api/v1/admin/feedback`,
+`/api/v1/admin/audit-logs`를 제공하고 metrics는 users_total·daily_games를 추가합니다.
+계획서는 WU-B8에 통합 관리자 화면 연결까지 명시합니다. 실제 모드는 Backend의
+`ADMIN_USER_IDS`와 같은 관리자 UUID를 사용하며 `ADMIN_DEMO_MODE=false`로 실행합니다.
+Backend 실행 명령은 저장소 루트에서 `python -m uvicorn backend.app.main:app --port 8000`입니다.
+현재 서버가 실행 중이면 같은 포트의 해당 프로세스를 재시작해 변경 모듈을 적용합니다.
+관리자 테스트는 실제 DB 없이 fake repository와 메모리 HTTP 전송을 사용합니다:
+`python -m pytest -c pyproject.toml frontend_admin/tests backend/tests/test_b8_admin_api.py -q`.
+실 PostgreSQL 집계 실행 계획·DB 통합 검증은 격리된 테스트 DB에서 별도로 수행해야 합니다.
+
+관리자 센터의 운영 분석·사용자 피드백·관리자 로그·운영 에이전트 계획 네 화면은 동일한
+짙은 퍼플 관리자 스타일로 통일해 운영 화면의 구분과 가독성을 높였습니다. 운영 에이전트
+계획 탭은 RAG/운영 에이전트의 구현 계획과 데이터 보호 경계를 설명하며, 검색 코드 경로는
+외부 LLM 없는 로컬 임베딩과 pgvector 혼합 검색으로 동작하도록 연결했습니다. 자동 조치는 연결하지 않습니다.
+상세 계획은
+[AI 마피아 관리자 운영 에이전트 계획서](docs/개발상세플랜/AI_MAFIA_ADMIN_AGENT_PLAN.md)에 정리했습니다.
+
+화면용 `ADMIN_DEMO_MODE=true` 합성 데이터와 별도로, 실제 DB 검증이 필요한 담당자는
+`backend/seed_admin_demo_data.sql`을 수동 실행할 수 있습니다. 이 파일은 기존 데이터를
+보존하면서 합성 게임 30건, 게임 참가자 210건, 피드백 30건을 idempotent하게 추가하고,
+실제 조회를 의미하는 관리자 감사 로그는 생성하지 않습니다. seed 실행 직후 확인한 집계는
+users 89건, games 96건, game_players 680건, feedback 35건이며 이후 운영 실행에 따라
+현재 수치는 달라질 수 있습니다. 운영 에이전트 색인은 `backend/migrations/005_create_admin_knowledge_schema.sql`
+적용 후 `backend/index_admin_knowledge.py`를 수동 실행합니다. 현재 연결된 원격 DB는
+`pgvector` 확장을 제공하지 않아 이 migration과 색인은 아직 적용하지 않았습니다.
 
 Backend와 관리자 UUID 없이 UI를 확인해야 할 때는 PowerShell에서
 `$env:ADMIN_DEMO_MODE = "true"`를 설정해 합성된 관리자 메타데이터를 사용할 수
@@ -639,9 +681,9 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 frontend_admin/.venv/bin/python -m pytest \
   tests/test_fastmcp_registration.py tests/test_fastmcp_roundtrip.py -q)
 ```
 
-2026-09-07 실행 결과는 **Backend 128, 사용자 Front 34, 관리자 Front 3, MCP 6개로
-총 171 passed**입니다. async plugin이 설치되어 과거 문서의 plugin 미설치 상태는
-해소됐습니다. 이 결과는 실제 게임 전체 E2E 성공을 뜻하지 않습니다.
+2026-09-07 관리자 통합 작업 후 비DB 회귀 범위 실행 결과는 **190 passed**입니다.
+관리자 Front·Backend 계약 focused 범위는 **36 passed**이며, 실제 게임 전체 E2E 성공을
+뜻하지 않습니다. async plugin이 설치되어 과거 문서의 plugin 미설치 상태는 해소됐습니다.
 
 다음 세 파일은 **실제 DB 쓰기·삭제가 있는 통합 테스트**이며 이번에는 실행하지
 않았습니다. 특히 MCP subprocess는 Backend worker를 켜고 기존 환경을 상속합니다.
@@ -686,7 +728,7 @@ secrets와 게임 코드는 변경하지 않았습니다.
   실제 게임 환경에서 암호화 설정 여부를 확인해야 합니다.
 - LLM prompt, raw response, private context, token과 비용을 로그에 넣지 않습니다.
 - `ADMIN_USER_IDS`는 강한 인증이 아니므로 관리자 앱도 loopback·사설망에서만 사용합니다.
-- 관리자 앱에는 read-only 통계·게임 목록·상세가 있지만 UUID 입력·필터 등 화면
+- 관리자 앱에는 read-only 운영 분석·피드백·로그·운영 에이전트 계획이 있으며 UUID 입력·필터 등 화면
   동선이 일부 남아 있습니다. 관리자 권한은 Backend allowlist로 확인합니다.
 - 현재 Mafia Game MCP에는 `/mcp` 서버, 최소 Resource·Prompt·Tool 등록부와 Backend
   HTTP adapter, fake·ASGI 테스트가 있습니다. 실제 프로세스 테스트는 DB를 사용하므로

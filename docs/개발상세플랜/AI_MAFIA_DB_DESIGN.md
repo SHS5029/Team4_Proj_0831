@@ -569,6 +569,42 @@ MCP runtime은 이 table·publisher·Redis stream을 직접 읽거나 쓰지 않
 IP 원문, header 전체, 비밀값과 응답 payload는 저장하지 않는다. 관리자 API가 read-only인
 MVP에서도 접근 흔적을 남긴다.
 
+### 4.20 `admin_knowledge_documents`와 `admin_knowledge_chunks`
+
+운영 에이전트는 승인된 자료만 검색한다. 원본 피드백·종료 게임 공개 요약·승인된
+운영 문서의 정제 결과를 문서와 청크로 분리하고, 질문 API는 이 두 테이블을 읽기만
+한다. 색인은 별도 수동 명령에서 개인정보·비밀값·private context를 제거한 뒤 수행한다.
+
+| 테이블·컬럼 | 타입 | 제약·의미 |
+|---|---|---|
+| `admin_knowledge_documents.id` | `uuid` | 문서 PK |
+| `source_type` | `varchar(32)` | `FEEDBACK`, `GAME_SUMMARY`, `OPERATIONS_DOC` |
+| `source_id` | `varchar(160)` | 원본을 가리키는 공개 식별자 |
+| `title` | `varchar(240)` | 관리자에게 보여줄 제목 |
+| `document_version` | `varchar(64)` | 같은 원본의 버전 구분 |
+| `visibility` | `varchar(32)` | `ADMIN_APPROVED`만 검색, `REVOKED`는 제외 |
+| `feedback_rating` | `smallint` | 피드백만 1~5, 나머지는 NULL |
+| `content_hash` | `char(64)` | 정제 문서 변경 감지용 SHA-256 |
+| `approved_at` | `timestamptz` | 승인·검색 기간 필터 기준 |
+| `admin_knowledge_chunks.content` | `text` | 정제 후 최대 500자의 검색 청크 |
+| `content_tsv` | `tsvector` | `simple` 사전의 생성 컬럼과 GIN index |
+| `embedding` | `vector(64)` | 현재 고정 토큰 해싱 기반 로컬 임베딩 |
+| `metadata` | `jsonb` | 비민감 필터용 metadata object |
+
+`005_create_admin_knowledge_schema.sql`은 `vector` extension, GIN full-text index와
+cosine용 pgvector HNSW index를 만든다. 실제 Provider 임베딩으로 교체할 때는 차원과
+index를 함께 migration해야 한다. 질문 API는 역할·개별 행동·투표·seed·LLM prompt를
+이 테이블에 색인하지 않으며, 조회 결과와 질문 상태만 `admin_audit_events`에 남긴다.
+
+관리자 센터 확장(WU-B8, API 7.4~7.7)은 기존 테이블을 사용한다. users 전체 수,
+games의 UTC 생성 추이, 완료 게임의 game_players(kind=AI) 직업별 집계를 읽는다.
+feedback는 (created_at, id) 내림차순, admin_audit_events는 PK id 내림차순 커서로 읽는다.
+감사 action의 공개 이름은 event_type이며 서버 원문 로그나 임의 등급을 추가하지 않는다.
+관리자 운영 에이전트(WU-B10)는 승인 지식 테이블의 full-text·pgvector 혼합 검색과
+정제된 근거 문장 반환을 사용한다. `backend/index_admin_knowledge.py`는 기존 피드백과
+완료 게임 공개 요약 및 승인 문서를 별도 수동 작업으로 색인한다. 질문 API 자체는
+DB 구조를 변경하거나 예시 기록을 자동 삽입하지 않는다.
+
 ## 5. 핵심 transaction
 
 ### 5.1 사용자 최초 쓰기와 게임 생성

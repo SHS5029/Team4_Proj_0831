@@ -7,6 +7,7 @@ EXPECTED_MIGRATIONS = [
     "002_create_scaffold_game_schema.sql",
     "003_create_mystery_v1_schema.sql",
     "004_seed_scenarios_and_personas.sql",
+    "005_create_admin_knowledge_schema.sql",
 ]
 
 EXPECTED_SCENARIOS = (
@@ -44,6 +45,11 @@ CANONICAL_TABLES = (
     "event_outbox",
     "feedback",
     "admin_audit_events",
+)
+
+KNOWLEDGE_TABLES = (
+    "admin_knowledge_documents",
+    "admin_knowledge_chunks",
 )
 
 
@@ -104,3 +110,16 @@ def test_seed_migration_contains_fixed_scenarios_and_personas() -> None:
     assert "all mystery-v1 persona reasoning_skill values must be 0.5" in normalized
     assert "select count(*) filter" in normalized
     assert "select 5 - count(*) into invalid_scenario_count" not in normalized
+
+
+def test_admin_knowledge_migration_contains_approved_vector_schema() -> None:
+    """운영 에이전트 migration이 pgvector와 승인 자료 경계를 정의하는지 확인한다."""
+
+    migration = (MIGRATIONS_DIR / "005_create_admin_knowledge_schema.sql").read_text(
+        encoding="utf-8"
+    )
+    normalized = " ".join(migration.lower().split())
+    assert "create extension if not exists vector" in normalized
+    assert "using hnsw (embedding vector_cosine_ops)" in normalized
+    for table in KNOWLEDGE_TABLES:
+        assert f"create table if not exists public.{table}" in normalized

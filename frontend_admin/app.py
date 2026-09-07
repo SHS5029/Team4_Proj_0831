@@ -14,8 +14,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from frontend_admin.app_pages.dashboard_page import render as render_dashboard
-from frontend_admin.app_pages.game_detail_page import render as render_detail
-from frontend_admin.app_pages.game_list_page import render as render_list
 from frontend_admin.components.identity_bridge import (
     ADMIN_IDENTITY_COMPONENT_CHANGED_SESSION_KEY,
     load_identity,
@@ -24,6 +22,8 @@ from frontend_admin.core.api_client import (
     AdminApiClient,
     AdminApiError,
     DemoAdminApiClient,
+    DEMO_API_KEY,
+    AUDIT_EVENT_LABELS,
     is_demo_mode,
 )
 from frontend_admin.core.auth import ADMIN_ACCESS_SESSION_KEY, ADMIN_USER_ID_SESSION_KEY
@@ -40,13 +40,31 @@ def main() -> None:
         # 가상 모드는 외부 API 없이 화면을 확인하기 위한 명시적 개발 옵션이다.
         # 환경변수가 없으면 아래 실제 UUID allowlist 흐름만 실행된다.
         st.warning("개발용 가상 메타데이터 모드입니다. 실제 운영 데이터가 아닙니다.")
-        client = DemoAdminApiClient()
+        with st.expander("데모 API 연결 설정"):
+            st.caption("이 키는 공개 테스트 값입니다. 외부 API나 실제 관리자 인증에는 사용할 수 없습니다.")
+            st.code(DEMO_API_KEY, language=None)
+            with st.form("admin.demo.connection"):
+                demo_key = st.text_input("데모 API 키", value=DEMO_API_KEY)
+                connect = st.form_submit_button("연결 확인", type="primary")
+            if connect:
+                st.session_state["admin.demo.key"] = demo_key
+        try:
+            client = DemoAdminApiClient(api_key=st.session_state.get("admin.demo.key", DEMO_API_KEY))
+        except AdminApiError:
+            st.session_state[ADMIN_ACCESS_SESSION_KEY] = False
+            st.error("데모 키가 일치하지 않습니다. 연결 설정에서 위의 예시 키를 다시 입력해 주세요.")
+            return
         metrics = client.metrics().get("data")
         if not isinstance(metrics, dict):
             st.error("가상 관리자 데이터를 읽을 수 없습니다.")
             return
-        st.session_state[ADMIN_ACCESS_SESSION_KEY] = True
-        render_dashboard(metrics, lambda: _render_games(client))
+        st.session_state[ADMIN_ACCESS_SESSION_KEY] = False
+        try:
+            insights, records = _dashboard_inputs(client, metrics)
+        except (AdminApiError, ValueError, KeyError, TypeError):
+            st.error("관리자 예시 데이터를 읽을 수 없습니다.")
+            return
+        render_dashboard(metrics, insights=insights, records=records, synthetic=True, client=client)
         return
 
     if (
@@ -66,35 +84,57 @@ def main() -> None:
         if not isinstance(metrics, dict):
             raise AdminApiError(503, "INVALID_RESPONSE")
         metrics = reject_private_fields(metrics)
+        insights, records = _dashboard_inputs(client, metrics)
         st.session_state[ADMIN_ACCESS_SESSION_KEY] = True
-    except (AdminApiError, ValueError):
+    except (AdminApiError, ValueError, KeyError, TypeError):
         st.session_state[ADMIN_ACCESS_SESSION_KEY] = False
         st.error("관리자 접근 권한을 확인할 수 없습니다.")
         st.caption("권한이 없거나 관리자 Backend에 연결할 수 없습니다.")
         return
-    render_dashboard(metrics, lambda: _render_games(client))
+    render_dashboard(metrics, insights=insights, records=records, client=client)
 
 
-def _render_games(client: AdminApiClient) -> None:
-    """목록과 상세를 조회하되 private field 검증 실패 시 상세를 렌더링하지 않는다."""
+def _dashboard_inputs(client, metrics: dict) -> tuple[dict, dict]:
+    """모든 탭의 API 응답을 렌더링 전에 읽어 권한 오류 시 부분 노출을 막는다."""
 
-    try:
-        response = client.games()
-        data = response.get("data")
-        items = data.get("items", []) if isinstance(data, dict) else []
-        if not isinstance(items, list):
+    def data(response):
+        value = response.get("data")
+        if not isinstance(value, dict) or not isinstance(value.get("items"), list):
             raise ValueError("INVALID_RESPONSE")
-        items = reject_private_fields(items)
-        selected = render_list(items)
-        if selected:
-            detail_response = client.game_detail(selected)
-            detail = detail_response.get("data")
-            if not isinstance(detail, dict):
-                raise ValueError("INVALID_RESPONSE")
-            render_detail(reject_private_fields(detail))
-    except (AdminApiError, ValueError):
-        st.error("관리자 게임 정보를 불러오지 못했습니다.")
+        return reject_private_fields(value)
 
+    personas = data(client.persona_win_rates())["items"]
+    insights = {
+        "personas": [{"페르소나": row["persona_name"],
+                      "성격": row["personality_summary"],
+                      "참여 수": row["participations"], "승리 수": row["wins"],
+                      "승률 (%)": round(float(row["win_rate"]) * 100, 1)}
+                     for row in personas],
+        "daily": [{"날짜": row["date"], "생성 게임": row["games_created"]}
+                  for row in metrics.get("daily_games", [])],
+    }
+    feedback_type = {"전체": None, "일반": "GENERAL", "게임": "GAME"}[
+        st.session_state.get("admin.feedback.type", "전체")]
+    rating_label = st.session_state.get("admin.feedback.rating", "전체")
+    rating = None if rating_label == "전체" else int(rating_label)
+    event_type = AUDIT_EVENT_LABELS[st.session_state.get("admin.logs.type", "전체")]
+
+    def cursor(name, filters):
+        # 식별자 또는 필터가 바뀌면 이전 조건에서 받은 커서를 재사용하지 않는다.
+        signature = (str(getattr(client, "user_id", "demo")), *filters)
+        if st.session_state.get(name + ".signature") != signature:
+            st.session_state[name + ".signature"] = signature
+            st.session_state[name + ".cursors"] = [None]
+        return st.session_state[name + ".cursors"][-1]
+
+    feedback_cursor = cursor("admin.feedback", (feedback_type, rating))
+    logs_cursor = cursor("admin.logs", (event_type,))
+    records = {
+        "feedback": data(client.feedback(feedback_type=feedback_type, rating=rating,
+                                         cursor=feedback_cursor)),
+        "logs": data(client.audit_logs(event_type=event_type, cursor=logs_cursor)),
+    }
+    return insights, records
 
 if __name__ == "__main__":
     main()
