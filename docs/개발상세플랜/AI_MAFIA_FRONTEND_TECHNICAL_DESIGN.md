@@ -130,7 +130,7 @@ LLM 출력은 component source에 삽입하지 않는다.
 
 ```text
 frontend_user/
-├─ app.py                         # bootstrap·route만 담당
+├─ app.py                         # 초기화·route만 담당
 ├─ app_pages/
 │  ├─ home_page.py                # F2 추가
 │  ├─ game_create_page.py         # F2 추가
@@ -167,7 +167,7 @@ frontend_user/
    └─ test_app_smoke.py
 
 frontend_admin/
-├─ app.py                         # bootstrap·guard·route
+├─ app.py                         # 초기화·guard·route
 ├─ app_pages/
 │  ├─ dashboard_page.py
 │  ├─ game_list_page.py
@@ -225,7 +225,7 @@ UUID·game·route 변경 시 `core/session.py`의 범위별 reset 함수를 사�
 - 화면 이동은 `navigation.page`과 query를 갱신한 뒤 `st.rerun()` 한 번으로 완료한다.
 
 ```text
-앱 실행/rerun → UUID bootstrap → route·scope 검증 → GET/sync
+앱 실행/rerun → UUID 초기화 → route·scope 검증 → GET/sync
 → payload 검증 → ViewModel → Presenter render
 
 form submit callback → local/action/target guard → key·body 고정
@@ -509,7 +509,7 @@ header·CORS preflight·stream 취소·polling 전환은 Playwright E2E를 필�
 ### WU-F8 — read-only 관리자
 
 - `frontend_admin`을 `:8502`에서 별도 실행하고 관리자 storage key를 사용한다.
-- bootstrap 뒤 `GET /api/v1/admin/metrics`의 200만 접근 허용으로 본다.
+- 초기화 뒤 `GET /api/v1/admin/metrics`의 200만 접근 허용으로 본다.
 - 403·연결 오류에서는 dashboard 함수와 partial data를 렌더링하지 않는다.
 - API client는 admin GET만 노출하며 수정·삭제·강제 종료 UI를 만들지 않는다.
 - 진행 game private field는 `***`로 보관하지 않고 model에서 거부한다.
@@ -521,7 +521,7 @@ browser network 결과는 Playwright E2E로 검사한다.
 
 | code·상황 | 처리 |
 |---|---|
-| `MISSING_USER_ID` | UUID bootstrap 전환 |
+| `MISSING_USER_ID` | UUID 초기화 전환 |
 | `ADMIN_ACCESS_DENIED` | cache 제거, 거부 화면만 표시 |
 | `GAME_NOT_FOUND` | 소유권 여부를 구분하지 않는 홈 안내 |
 | `STALE_STATE_VERSION` | 입력 폐기, sync, action 재확인 |
@@ -648,7 +648,7 @@ Front alias를 만들지 않고 정본과 계약 테스트를 먼저 갱신한�
 
 - [ ] WU와 화면·API 계약이 모든 정본과 일치한다.
 - [ ] 닉네임·OAuth·Front HMAC이 다시 포함되지 않았다.
-- [ ] `app.py`는 bootstrap·route만 담당한다.
+- [ ] `app.py`는 초기화·route만 담당한다.
 - [ ] widget state와 Backend authoritative state가 분리된다.
 - [ ] rerun·refresh·multi-tab 복구 방안이 명확하다.
 - [ ] custom component 책임이 UUID·SSE로 제한된다.

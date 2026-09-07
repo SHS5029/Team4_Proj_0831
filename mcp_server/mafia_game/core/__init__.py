@@ -1,1 +1,1 @@
-"""Tour MCP 내부 timeout·오류·logging 공통 기능 위치."""
+"""Mafia Game MCP 설정·오류·보안 공통 정책 위치."""

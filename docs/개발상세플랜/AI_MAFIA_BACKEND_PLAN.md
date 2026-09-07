@@ -121,8 +121,13 @@ backend/
 │  │  ├─ orchestrator.py
 │  │  ├─ game_engine.py
 │  │  ├─ state_machine.py
-│  │  ├─ rng.py
 │  │  ├─ projections.py
+│  │  └─ fallback.py
+│  ├─ game_engine/
+│  │  ├─ engine.py
+│  │  ├─ phases/
+│  │  ├─ rules/
+│  │  ├─ rng.py
 │  │  └─ fallback.py
 │  ├─ infrastructure/
 │  │  ├─ postgres.py
@@ -201,7 +206,7 @@ engine은 FastAPI·PostgreSQL·Redis·LLM을 직접 호출하지 않는다. rout
 | B1 | core/config.py, identity_router.py, identity_service.py, user_repository.py, main.py | UUID-only 사용자 context와 ownership |
 | B2 | migrations/003_create_mystery_v1_schema.sql, migrations/004_seed_scenarios_and_personas.sql, infrastructure/migrations.py | 19개 table·constraint·seed |
 | B3 | infrastructure/postgres.py, infrastructure/transaction.py, infrastructure/redis/*, repositories/* | row lock·receipt·outbox·Redis |
-| B4 | models/game_state.py, models/enums.py, agent/game_engine.py, state_machine.py, rng.py, fallback.py | 순수 규칙 엔진·결정적 RNG |
+| B4 | models/game_state.py, models/enums.py, game_engine/engine.py, game_engine/phases/, game_engine/rules/, game_engine/rng.py, game_engine/fallback.py | 순수 규칙 엔진·결정적 RNG |
 | B6 | agent/orchestrator.py, projections.py, mcp/client.py, llm_provider/*, agent_repository.py | Agent job·capability·proposal·fallback |
 | B7 | scaffold_mcp_router.py, security/internal_request.py, sync_service.py, event_repository.py, outbox_repository.py | HMAC·nonce·Engine API·SSE |
 | B5 | scaffold_game_router.py, scaffold_game_service.py, command_service.py, window_service.py, sync_service.py, schemas/* | 공개 game·command·sync·feedback |
@@ -421,7 +426,7 @@ game_id uuid NOT NULL REFERENCES games(id) ON DELETE CASCADE
 window_kind varchar(24) NOT NULL            -- SPEECH / NIGHT / VOTE / REVOTE / FINAL_VOTE
 phase varchar(32) NOT NULL
 round smallint NOT NULL                     -- 0~5
-cycle smallint NOT NULL                     -- 1 또는 추가 발언 2
+cycle smallint NOT NULL                     -- 현재 MVP에서는 1
 turn_player_id uuid NULL
 opened_state_version bigint NOT NULL
 status varchar(16) NOT NULL                 -- OPEN / PAUSED / RESOLVING / RESOLVED / CANCELLED
@@ -520,7 +525,8 @@ created_at timestamptz NOT NULL
 
 UNIQUE(principal_type, principal_id, idempotency_key)을 둔다. 같은 key와 다른 request
 hash는 IDEMPOTENCY_KEY_REUSED다. 공개 API key는 Idempotency-Key, 내부 proposal key는
-body의 proposal_id이며 MCP bootstrap은 nonce ledger를 사용한다.
+body의 proposal_id이며 MCP 세션 개설 토큰(bootstrap token)은 nonce ledger를
+사용한다.
 
 #### game_snapshots
 
@@ -666,7 +672,7 @@ Backend CSPRNG seed에서 결정적 RNG를 만들고 결과를 저장한다. 인
 - 낮 발언은 생존자 좌석순으로 SPEAK 또는 PASS를 한 번씩 처리한다.
 - 발언은 정규화 후 1~200자다.
 - 첫날은 투표하지 않는다.
-- 첫날 전원이 PASS하면 고정 질문 cycle을 한 번 추가한다.
+- 생존자 전원이 발언 또는 PASS를 제출하면 다음 phase로 전환한다.
 - 밤은 20초, 투표는 30초다.
 - 마피아는 자기 자신을 공격할 수 없고, 탐정은 자기 자신을 조사할 수 없다.
 - 의사는 자기 자신을 보호할 수 있다.
@@ -887,7 +893,7 @@ Agent proposal은 body의 proposal_id를 idempotency key로 사용하고 허용 
 PASS, NIGHT_ACTION, VOTE다. MCP Tool input에는 game_id, agent_id, role, phase,
 version을 넣지 않는다.
 
-Backend는 MCP bootstrap token을 MCP_SERVER_AUTH_SECRET으로 만들고, MCP가 Backend를
+Backend는 MCP 세션 개설 토큰을 MCP_SERVER_AUTH_SECRET으로 만들고, MCP가 Backend를
 호출할 때는 별도의 ENGINE_INTERNAL_API_SECRET을 사용한다. MCP runtime은 token을
 opaque 값으로만 전달하고 DB·Redis에 직접 접근하지 않는다.
 
@@ -945,7 +951,7 @@ AI 발언 실패는 PASS, 행동·투표 실패는 규칙 기반 자동 처리, 
 
 ### WU-B7 — Internal Engine API·Outbox·SSE
 
-- 범위: HMAC, nonce, MCP bootstrap, agent proposal, publisher, SSE reconnect
+- 범위: HMAC, nonce, MCP 세션 개설 토큰, agent proposal, publisher, SSE reconnect
 - DB: nonce ledger와 append-only event 사용
 - 실패: signature·nonce·capability 거부, sequence gap, outbox 중복
 - 테스트: HMAC replay, stale capability, complete batch, polling/SSE dedup
@@ -1012,7 +1018,7 @@ AI 발언 실패는 PASS, 행동·투표 실패는 규칙 기반 자동 처리, 
 - Redis 장애에서 새 Agent turn 중단과 DB 원본 복구
 - Provider·MCP 오류 fallback
 - 15초 lease 만료와 fencing token
-- Engine HMAC·MCP bootstrap nonce replay 거부
+- Engine HMAC nonce·MCP 세션 개설 토큰의 nonce replay 거부
 - capability 만료·폐기·allowlist 검사
 - secret, prompt, raw response, private context, Chain of Thought 로그·DB 비저장
 - 관리자 allowlist fail-closed

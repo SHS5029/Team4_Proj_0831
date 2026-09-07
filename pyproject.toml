@@ -1,14 +1,14 @@
 [project]
-name = "team4-oauth-login"
+name = "ai-mafia"
 version = "0.1.0"
-description = "FastAPI와 Streamlit을 분리한 Team4 Google OIDC 서비스 구조"
+description = "AI 에이전트와 함께 진행하는 대화형 마피아 게임 MVP"
 requires-python = ">=3.12"
 dependencies = [
-  # --- 현재 구현(로그인·identity API)에서 사용하는 의존성 ---
+  # --- Backend와 Streamlit Frontend 실행 의존성 ---
   "fastapi>=0.116.0,<1",
   "psycopg[binary]>=3.2.0,<4",
   "python-dotenv>=1.1.0,<2",
-  "streamlit[auth]>=1.55.0,<2",
+  "streamlit>=1.55.0,<2",
   "uvicorn>=0.35.0,<1",
   # --- AI 마피아 MVP(docs/개발상세플랜/AI_MAFIA_MASTER_PLAN.md)용 의존성 ---
   # Redis: 게임 lock·공개 cache·event stream·내부 HMAC nonce
@@ -29,6 +29,8 @@ dependencies = [
 [dependency-groups]
 dev = [
   "pytest>=8.4.0,<9",
+  # Backend 개별 requirements와 같은 Starlette TestClient 의존성을 통합 환경에도 둔다.
+  "httpx2>=2.0,<3",
   # 비동기 게임 엔진·Agent Manager 테스트용
   "pytest-asyncio>=0.24.0,<2",
   "ruff>=0.12.0,<1",

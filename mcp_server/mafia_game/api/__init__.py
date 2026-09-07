@@ -1,1 +1,1 @@
-"""Tour MCP의 Tool·Resource·Prompt 공개 프로토콜 계층."""
+"""Mafia Game MCP의 인증·Tool·Resource 공개 프로토콜 계층."""

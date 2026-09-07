@@ -11,6 +11,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from backend.app.infrastructure.transaction import TransactionManager
+from backend.app.repositories.action_repository import PostgresActionRepository
 
 try:
     from psycopg.types.json import Jsonb
@@ -33,6 +34,7 @@ class AgentReservation:
     state_version: int
     lease_token: UUID
     lease_expires_at: datetime
+    recovered_proposal: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,7 +126,10 @@ class PostgresAgentRepository:
         connection_context, cursor_context, _ = contexts
         if hasattr(cursor_context, "__exit__"):
             cursor_context.__exit__(type(error), error, error.__traceback__ if error else None)
-        connection_context.__exit__(type(error), error, error.__traceback__ if error else None)
+        if error is None:
+            connection_context.__exit__(None, None, None)
+        else:
+            connection_context.__exit__(type(error), error, error.__traceback__)
 
     def _run_transaction(self, operation: Callable[[Any], Any]) -> Any:
         """성공·실패와 무관하게 cursor와 connection을 반드시 닫는다.
@@ -155,7 +160,7 @@ class PostgresAgentRepository:
         window_deadline: datetime | None = None,
         now: datetime | None = None,
     ) -> AgentReservation | None:
-        """중복 job은 만들지 않고, 새 예약만 최대 15초 lease로 만든다."""
+        """현재 미제출 job만 예약하고 미적용 terminal 결과는 같은 binding에서 복구한다."""
 
         return self._run_transaction(
             lambda cursor: self._reserve_job(
@@ -182,15 +187,83 @@ class PostgresAgentRepository:
         window_deadline: datetime | None,
         now: datetime | None,
     ) -> AgentReservation | None:
-        """예약 SQL을 실행하는 내부 cursor 버전이다."""
+        """게임→window→job 잠금 순서로 하나의 worker에게만 복구 권한을 준다.
+
+        실제 행동은 별도 transaction에서 저장되므로 SUCCEEDED도 적용 완료의 증거가
+        아니다. 원래 버전의 열린 window에 제출 원장이 없고 이전 lease가 반환되거나
+        만료됐을 때만 저장 proposal을 인수한다. 새 RESERVED 행에는 결과를 두지 않는다.
+        """
 
         current = now or datetime.now(UTC)
+        binding = self._lock_action_binding(cursor, game_id=game_id, player_id=player_id,
+                                            window_id=window_id, job_kind=job_kind,
+                                            state_version=state_version, now=current)
+        if binding is None:
+            return None
         lease_expires = current + timedelta(seconds=self.MAX_LEASE_SECONDS)
+        if binding[0] is not None:
+            lease_expires = min(lease_expires, binding[0])
         if window_deadline is not None:
             lease_expires = min(lease_expires, window_deadline)
         if lease_expires <= current:
             return None
         job_id, lease_token = uuid4(), uuid4()
+        cursor.execute(
+            """
+            SELECT id, reserved_state_version, status, lease_expires_at, normalized_proposal
+            FROM agent_jobs
+            WHERE game_id = %s AND window_id = %s AND player_id IS NOT DISTINCT FROM %s
+              AND job_kind = %s
+            FOR UPDATE
+            """,
+            (game_id, window_id, player_id, job_kind),
+        )
+        row = cursor.fetchone()
+        if row is not None:
+            old_id, old_version, old_status, old_expires, saved = row
+            if old_status not in {"RESERVED", "SUCCEEDED", "FALLBACK", "STALE", "FAILED"}:
+                return None
+            if old_status in {"RESERVED", "SUCCEEDED", "FALLBACK"} and old_expires > current:
+                return None
+            if old_version != state_version:
+                if job_kind != "VOTE":
+                    return None
+                # 저장·재개 등으로 판단 기준이 달라진 투표는 만료된 이전 결과를
+                # 옮기지 않는다. 현재 binding 검증 후 새 token으로 처음부터 판단한다.
+                cursor.execute(
+                    """
+                    UPDATE agent_jobs SET reserved_state_version = %s, status = 'RESERVED',
+                        lease_token = %s, lease_expires_at = %s, normalized_proposal = NULL,
+                        failure_code = NULL, completed_at = NULL
+                    WHERE id = %s
+                    """, (state_version, lease_token, lease_expires, old_id),
+                )
+                return AgentReservation(
+                    job_id=old_id, game_id=game_id, player_id=player_id, window_id=window_id,
+                    job_kind=job_kind, state_version=state_version, lease_token=lease_token,
+                    lease_expires_at=lease_expires,
+                )
+            # GM narration은 action_submissions로 적용 여부를 증명할 수 없으므로
+            # 기존 성공 GM 결과를 player 행동처럼 복구하지 않는다.
+            if player_id is None and old_status == "SUCCEEDED":
+                return None
+            if old_status == "SUCCEEDED" and saved is None:
+                return None
+            recovered = saved if old_status in {"SUCCEEDED", "FALLBACK"} else None
+            cursor.execute(
+                """
+                UPDATE agent_jobs
+                SET status = 'RESERVED', lease_token = %s, lease_expires_at = %s,
+                    normalized_proposal = NULL, failure_code = NULL, completed_at = NULL
+                WHERE id = %s
+                """,
+                (lease_token, lease_expires, old_id),
+            )
+            return AgentReservation(
+                job_id=old_id, game_id=game_id, player_id=player_id, window_id=window_id,
+                job_kind=job_kind, state_version=state_version, lease_token=lease_token,
+                lease_expires_at=lease_expires, recovered_proposal=recovered,
+            )
         cursor.execute(
             """
             INSERT INTO agent_jobs (
@@ -219,6 +292,80 @@ class PostgresAgentRepository:
             job_id=row[0], game_id=row[1], player_id=row[2], window_id=row[3],
             job_kind=row[4], state_version=row[5], lease_token=row[6], lease_expires_at=row[7],
         )
+
+    @staticmethod
+    def _lock_action_binding(cursor: Any, *, game_id: UUID, player_id: UUID | None,
+                             window_id: UUID, job_kind: str, state_version: int,
+                             now: datetime) -> tuple | None:
+        """현재 AI 차례·버전·미제출을 확인하고 command와 같은 게임 잠금을 먼저 잡는다."""
+
+        cursor.execute(
+            """
+            SELECT g.state_version FROM public.games AS g
+            WHERE g.id = %s AND g.status = 'IN_PROGRESS'
+            FOR UPDATE
+            """, (game_id,),
+        )
+        game = cursor.fetchone()
+        if game is None:
+            return None
+        if job_kind == "VOTE":
+            if not PostgresActionRepository.vote_version_is_current(
+                cursor, game_id=game_id, window_id=window_id, expected=state_version, current=game[0],
+            ):
+                return None
+        elif game[0] != state_version:
+            return None
+        cursor.execute(
+            """
+            SELECT w.deadline_at
+            FROM public.action_windows AS w
+            JOIN public.games AS g ON g.id = w.game_id AND g.phase = w.phase
+            WHERE w.game_id = %s AND w.id = %s AND w.status = 'OPEN'
+              AND (w.window_kind = 'SPEECH' OR w.deadline_at > %s)
+              AND ((%s = 'SPEECH' AND w.window_kind = 'SPEECH' AND w.turn_player_id = %s)
+                OR (%s = 'NIGHT_ACTION' AND w.window_kind = 'NIGHT')
+                OR (%s = 'VOTE' AND w.window_kind IN ('VOTE', 'REVOTE', 'FINAL_VOTE'))
+                OR (%s = 'GM_NARRATION' AND %s::uuid IS NULL))
+              AND (%s::uuid IS NULL OR EXISTS (
+                  SELECT 1 FROM public.game_players AS p
+                  WHERE p.game_id = w.game_id AND p.id = %s AND p.kind = 'AI' AND p.alive = TRUE))
+              AND NOT EXISTS (
+                  SELECT 1 FROM public.action_submissions AS s
+                  WHERE s.game_id = w.game_id AND s.window_id = w.id AND s.actor_player_id = %s)
+            FOR UPDATE OF w
+            """,
+            (game_id, window_id, now, job_kind, player_id, job_kind, job_kind, job_kind,
+             player_id, player_id, player_id, player_id),
+        )
+        return cursor.fetchone()
+
+    def release_unapplied_job(self, reservation: AgentReservation, *, now: datetime | None = None) -> bool:
+        """실패한 적용 시도만 현재 token으로 반환하며 저장 proposal과 terminal 의미는 보존한다.
+
+        반환 도중 DB가 끊겨도 원래 lease 만료가 같은 복구 경로를 연다. 이미 저장된
+        행동이나 새 worker의 token은 건드리지 않고 다음 예약에서 binding을 다시 검증한다.
+        """
+
+        def release(cursor: Any) -> bool:
+            cursor.execute(
+                """
+                UPDATE agent_jobs AS j SET lease_expires_at = LEAST(j.lease_expires_at, %s)
+                WHERE j.id = %s AND j.lease_token = %s AND j.game_id = %s
+                  AND j.window_id = %s AND j.reserved_state_version = %s
+                  AND j.status IN ('SUCCEEDED', 'FALLBACK')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM public.action_submissions AS s
+                    WHERE s.game_id = j.game_id AND s.window_id = j.window_id
+                      AND s.actor_player_id = j.player_id)
+                RETURNING j.id
+                """,
+                (now or datetime.now(UTC), reservation.job_id, reservation.lease_token,
+                 reservation.game_id, reservation.window_id, reservation.state_version),
+            )
+            return cursor.fetchone() is not None
+
+        return self._run_transaction(release)
 
     def issue_capability(
         self,
@@ -315,6 +462,10 @@ class PostgresAgentRepository:
         """job UPDATE를 실행하는 내부 cursor 버전이다."""
 
         completed_at = now or datetime.now(UTC)
+        if self._lock_action_binding(cursor, game_id=reservation.game_id, player_id=reservation.player_id,
+                                     window_id=reservation.window_id, job_kind=reservation.job_kind,
+                                     state_version=reservation.state_version, now=completed_at) is None:
+            return False
         cursor.execute(
             """
             UPDATE agent_jobs
@@ -322,6 +473,8 @@ class PostgresAgentRepository:
                 completed_at = %s
             WHERE id = %s AND lease_token = %s AND status = 'RESERVED'
               AND lease_expires_at > %s
+              AND game_id = %s AND window_id = %s AND reserved_state_version = %s
+              AND player_id IS NOT DISTINCT FROM %s AND job_kind = %s
             RETURNING id
             """,
             (
@@ -331,6 +484,11 @@ class PostgresAgentRepository:
                 reservation.job_id,
                 reservation.lease_token,
                 completed_at,
+                reservation.game_id,
+                reservation.window_id,
+                reservation.state_version,
+                reservation.player_id,
+                reservation.job_kind,
             ),
         )
         return cursor.fetchone() is not None

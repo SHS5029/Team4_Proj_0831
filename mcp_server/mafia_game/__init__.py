@@ -1,1 +1,1 @@
-"""예시 파일. 폴더명 반드시 수정"""
+"""AI 마피아의 job-bound Streamable HTTP MCP runtime package."""

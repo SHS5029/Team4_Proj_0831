@@ -27,6 +27,12 @@
 
 ## 2. 식별자·시각·버전 규칙
 
+2026-09-07 이전 밤 저장값의 호환은 `phase=NIGHT_ACTION`, `1 <= day_number <= 5`,
+`round=day_number-1` 조합에만 적용한다. 읽기·엔진 복원에서 `round=day_number`로
+해석하고 다음 정상 쓰기에서 저장값을 정규화한다. 기존 window UUID의 제출과
+deadline·과거 원장은 보존한다. 그 외 과거 상태의 밤 번호나 행동을 추정하거나
+일괄 migration하지 않는다. 신규 게임은 첫 밤 진입부터 round 1을 저장한다.
+
 | 항목 | 계약 |
 |---|---|
 | 기본 ID | PostgreSQL `uuid`, 서버 생성 객체는 `gen_random_uuid()` |
@@ -256,7 +262,7 @@ ENDED
 | `window_kind` | `varchar(24)` | `SPEECH`, `NIGHT`, `VOTE`, `REVOTE`, `FINAL_VOTE` |
 | `phase` | `varchar(32)` | 생성 당시 phase |
 | `round` | `smallint` | 0~5 |
-| `cycle` | `smallint` | 기본 1, 추가 발언 2 |
+| `cycle` | `smallint` | 현재 MVP에서는 기본 순환 1만 사용 |
 | `turn_player_id` | `uuid` | 개별 발언 차례만 설정 |
 | `opened_state_version` | `bigint` | window를 연 버전 |
 | `status` | `varchar(16)` | `OPEN`, `PAUSED`, `RESOLVING`, `RESOLVED`, `CANCELLED` |
@@ -324,6 +330,15 @@ window의 최종 집계와 결정적 RNG 결과를 한 번만 저장한다.
   `(game_id, resolved_target_player_id) -> game_players(game_id, id)` 복합 FK를 사용한다.
 
 ### 4.11 `game_events`
+
+4.10절 `result_payload`의 현재 v1은 `schema_version=1`, `round`, `phase`를 공통으로
+가진다. NIGHT에는 API 2.5절 nights의 필드, VOTE·REVOTE·FINAL_VOTE에는 votes의
+필드와 `tied` boolean, `needs_revote` boolean, `tied_candidates` UUID 배열,
+`final_target_player_id` UUID 또는 null을 저장한다. 배열 item의 actor/target/is_auto
+및 조사 결과 형식은 API 2.5절을 따른다. 해소 시점에 입력과 자동 선택·최종 결과를
+같은 transaction에서 보존하며 종료 전 공개 projection은 개인 선택을 제외한다.
+기존 원장이 없는 게임은 과거 선택을 임의로 보충하지 않는다.
+
 
 | 컬럼 | 타입 | 제약·의미 |
 |---|---|---|
@@ -394,7 +409,8 @@ FAST_FORWARD_ENABLED, GAME_SAVED, GAME_RESUMED, GAME_ENDED, GAME_FAILED
 - 성공 여부가 불명확한 중간 상태를 저장하지 않는다. DB 오류로 transaction이
   rollback되면 receipt도 없어 재시도할 수 있다.
 - 공개 API의 `USER` key는 `Idempotency-Key` header, 내부 proposal의 `AGENT` key는
-  body `proposal_id`다. MCP bootstrap은 game command가 아니며 nonce ledger를 사용한다.
+  body `proposal_id`다. MCP 세션 개설 토큰(bootstrap token)은 game command가 아니며
+  nonce ledger를 사용한다.
 
 ### 4.13 `game_snapshots`
 
@@ -501,13 +517,13 @@ Backend가 발급하고 Engine API가 검증하는 opaque capability 원장이�
 
 ### 4.16 `internal_request_nonces`
 
-내부 HMAC과 MCP bootstrap replay 차단의 영구 원장이다.
+내부 HMAC과 MCP 세션 개설 토큰 replay 차단의 영구 원장이다.
 
 | 컬럼 | 타입 | 제약·의미 |
 |---|---|---|
 | `scope` | `varchar(24)` | `ENGINE_HMAC` 또는 `MCP_BOOTSTRAP` |
 | `nonce` | `uuid` | 요청·token nonce |
-| `request_hash` | `char(64)` | canonical request 또는 bootstrap claim hash |
+| `request_hash` | `char(64)` | canonical request 또는 세션 개설 토큰 claim hash |
 | `expires_at` | `timestamptz` | replay 거부 종료 시각 |
 | `created_at` | `timestamptz` | NOT NULL |
 
@@ -633,9 +649,20 @@ transaction 실패 시 window는 다시 `OPEN`이며 저장 결과가 없으므�
 
 ### 5.4 Agent 외부 호출
 
+일반·재·최종 투표는 인간 제출과 독립적으로 모든 AI job을 병렬 실행하며 완료되는
+표부터 별도 transaction으로 누적한다. 미해소 AI 표는 `action_submissions`와 receipt만
+저장하고 공개 상태·version·event를 바꾸지 않는다. 마지막 표는 기존 게임 행 잠금과
+window·deadline 검증 안에서 한 번만 해소한다. 다른 AI의 실패는 이미 commit한 표에
+영향을 주지 않으며 마감 시 누락된 actor만 AUTO로 채운다.
+
+AI 판단의 버전은 인간의 같은 window 첫 투표 직전 버전으로 유지할 수 있다. 현재
+버전이 정확히 한 단계 높고 해당 HUMAN VOTE의 observed version이 일치하는 경우만
+예약·완료·적용에서 허용한다. 이 증거가 없는 stale version은 거부한다. 저장·재개로
+버전이 달라진 미제출 job은 이전 lease가 끝난 후 기존 결과를 버리고 새로 판단한다.
+
 ```text
 Tx A: window·version 검증 -> lease token을 가진 agent_jobs RESERVED
-      -> job-bound capability와 bootstrap nonce 발급 -> COMMIT
+      -> job-bound capability와 세션 개설 토큰의 nonce 발급 -> COMMIT
 외부: job별 새 MCP session에서 context 조회 -> 선택 LLM Provider 호출
       -> player proposal 또는 GM narration schema 검증
 Tx B: game FOR UPDATE -> lease token·reservation·window·version 재검증
@@ -647,7 +674,7 @@ Tx A와 Tx B 사이에는 DB transaction과 Redis game lock을 잡지 않는다.
 동시 worker는 unique 제약으로 하나만 reservation에 성공한다. lease가 먼저 만료되면
 scheduler가 fencing token을 교체하고 `PASS`, 자동 행동 또는 고정 GM 문구를 확정한다.
 Agent Manager는 terminal 경로에서 session 종료를 시도하고, reconnect가 필요하면 이전
-capability를 폐기한 뒤 같은 살아 있는 job에 새 capability와 bootstrap을 발급한다.
+capability를 폐기한 뒤 같은 살아 있는 job에 새 capability와 세션 개설 토큰을 발급한다.
 
 ### 5.5 내부 요청 인증
 
@@ -657,8 +684,9 @@ Engine HMAC signature와 timestamp를 먼저 검증한 뒤 짧은 transaction에
 mutation transaction을 연다. nonce INSERT가 성공한 뒤 domain 검증이 실패해도 같은
 wire 요청을 재사용할 수 없으며 caller는 새 nonce로 교정 요청을 만든다.
 
-MCP bootstrap consume도 `scope=MCP_BOOTSTRAP`으로 같은 원장을 사용한다. Redis nonce
-key는 이미 본 요청을 빠르게 거르는 cache일 뿐 DB INSERT를 생략하는 근거가 아니다.
+MCP 세션 개설 토큰 consume도 `scope=MCP_BOOTSTRAP`으로 같은 원장을 사용한다. Redis
+nonce key는 이미 본 요청을 빠르게 거르는 cache일 뿐 DB INSERT를 생략하는 근거가
+아니다.
 
 ### 5.6 저장·재개
 
@@ -683,11 +711,21 @@ DB와 prefix를 공유하지 않는다.
 |---|---|---|---|
 | `mafia:v1:lock:game:{game_id}` | string | 무작위 lock token | 짧은 TTL, token 일치 release, DB lock이 최종 정합성 보장 |
 | `mafia:v1:public:{game_id}:{state_version}` | string JSON | 공개 snapshot projection | 짧은 TTL, PostgreSQL에서 재생성 |
+| `mafia:v1:conversation:{db_scope}:{game_id}` | string JSON | 공개 사건·발언 전체, state_version·내부/Front cursor·checksum | 7일 TTL, 누락·손상·버전 차이는 PostgreSQL 전체 이력에서 복구 |
 | `mafia:v1:events:{game_id}` | stream | Front-visible batch sequence와 event ID 배열 | bounded trim, PostgreSQL event로 backfill |
 | `mafia:v1:outbox:wakeup` | pub/sub | 새 outbox 존재 알림 | 유실 허용, DB polling 병행 |
 | `mafia:v1:nonce:engine:{nonce}` | string | 이미 소비된 Engine nonce cache | 최대 120초, PostgreSQL ledger가 원본 |
-| `mafia:v1:nonce:mcp-bootstrap:{nonce}` | string | 이미 소비된 bootstrap nonce cache | 최대 120초, PostgreSQL ledger가 원본 |
+| `mafia:v1:nonce:mcp-bootstrap:{nonce}` | string | 이미 소비된 세션 개설 토큰의 nonce cache | 최대 120초, PostgreSQL ledger가 원본 |
 | `mafia:v1:health` | string | synthetic health marker | health check에서만 사용 |
+
+대화 캐시는 정본 공개 projection을 거친 `public_events` 전체를 내부 event 순서대로
+보관한다. 최근 N개로 자르지 않으며 DB 접속 대상의 비밀정보 없는 식별자로 namespace를
+분리한다. 캐시는 소유권·Agent scope 확인 후 현재 DB cursor와 정확히 일치할 때만 읽는다.
+늦은 읽기 결과는 더 높은 버전을 덮지 못하도록 원자적으로 저장하고, checksum·형식이
+잘못된 값은 사용하지 않는다. mutation commit 뒤와 snapshot·공개 Agent context 조회 때
+갱신한다. Redis 장애는 DB commit을 실패로 뒤집지 않으며 다음 조회에서 backfill한다.
+로컬 실행은 루트 `.env`의 `REDIS_URL`을 사용한다. 공개 발언에 스스로 밝힌 역할이나
+조사 주장은 대화 내용으로 저장하되, 비공개 역할·개인 행동 원장은 복사하지 않는다.
 
 ### 6.1 금지 데이터
 
@@ -760,6 +798,17 @@ projection한다. AI private event와 ADMIN event는 이 stream에 넣지 않는
 
 ### 9.1 소유권과 실행
 
+runner는 `DATABASE_MIGRATION_URL`을 필수 DDL 접속값으로 사용하며 runtime DSN으로
+대체하지 않는다. Backend 설정에서는 선택 필드이고 repr에 포함하지 않는다.
+일반 `from_env`/`get_settings`는 DDL 환경키를 조회·보관하지 않고 CLI의
+`from_migration_env`만 별도 설정으로 읽는다. runtime 설정 캐시를 재사용하지 않는다.
+실행 전에 DDL URL의 percent-decoded DB path를 runtime effective DSN의 path와
+대소문자까지 비교하고 다르면 접속하지 않는다. 프록시를 허용하므로 host·port가
+동일한 서버를 뜻하는지까지 보장하지는 않는다. URL의 `dbname`·`host`·`user`·
+`password` 등 접속 대상을 덮어쓰는 query는 거부하고 `sslmode` 같은 일반 옵션과
+정상 DDL URL 원문은 보존한다. 실행 프로세스는 비교용 runtime DSN도 읽되 SQL
+실행에는 DDL DSN만 전달하고 어느 값도 로그에 출력하지 않는다.
+
 - Backend가 `backend/migrations/`의 순방향 SQL과 검증 query를 작성한다.
 - MCP·Data 담당자가 DDL 계정으로 이름순 실행하고 재실행·health 결과를 공유한다.
 - Backend runtime 계정에는 schema 변경 권한을 주지 않는다.
@@ -815,7 +864,8 @@ MVP에는 사용자 삭제 API가 없다. 실제 개인정보를 수집하지 �
 - outbox 중복 publish와 SSE event deduplication
 - 다른 Agent private event 사이에도 Front sequence가 연속이며 timing side channel이
   생기지 않는지 확인
-- Engine HMAC·MCP bootstrap nonce의 PostgreSQL unique replay 거부, cleanup과 Redis
+- Engine HMAC nonce와 MCP 세션 개설 토큰의 nonce에 대한 PostgreSQL unique replay
+  거부, cleanup과 Redis
   cache 장애 시 원본 판정 유지
 - job별 capability 활성 uniqueness, reconnect 교체와 모든 terminal 경로의 revoke
 - GM narration이 action submission을 만들지 않고 fencing 재검증 뒤 `PUBLIC` event로만

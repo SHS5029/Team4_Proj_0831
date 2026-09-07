@@ -264,6 +264,8 @@ SET text_template = EXCLUDED.text_template,
 
 -- 페르소나는 말투·발언량·감정·협력 성향만 바꾼다. reasoning_skill은 모든
 -- preset에서 0.5로 고정해 특정 AI가 규칙상 더 유리해지지 않게 한다.
+-- 2026-09-07 대화 복기에 따라 기억 활용·결론 제시·협력을 보강하되, 반복 질문을
+-- 늘릴 수 있는 의심·감정·발언 길이는 유지한다. 변경 시 아래 content_hash도 함께 계산한다.
 WITH persona_seed (
     id,
     version,
@@ -279,7 +281,7 @@ WITH persona_seed (
             '신중한 분석가',
             '근거를 먼저 확인하고 단정하지 않는 차분한 말투',
             '발언을 정리한 뒤 확실한 부분과 추측을 구분한다.',
-            '{"sociability":0.45,"assertiveness":0.35,"suspicion":0.75,"deception":0.35,"risk_tolerance":0.25,"memory_recall":0.85,"reasoning_skill":0.5,"emotionality":0.25,"cooperativeness":0.65,"verbosity":0.55}'::jsonb
+            '{"sociability":0.6,"assertiveness":0.65,"suspicion":0.75,"deception":0.35,"risk_tolerance":0.55,"memory_recall":0.95,"reasoning_skill":0.5,"emotionality":0.25,"cooperativeness":0.75,"verbosity":0.55}'::jsonb
         ),
         (
             'ACTIVE_DEBATER',
@@ -287,7 +289,7 @@ WITH persona_seed (
             '적극적 토론가',
             '생각을 빠르게 말하고 질문과 반론을 자주 하는 말투',
             '대화의 빈틈을 찾으면 바로 질문하며 토론을 이끈다.',
-            '{"sociability":0.9,"assertiveness":0.85,"suspicion":0.65,"deception":0.45,"risk_tolerance":0.65,"memory_recall":0.55,"reasoning_skill":0.5,"emotionality":0.45,"cooperativeness":0.5,"verbosity":0.9}'::jsonb
+            '{"sociability":0.9,"assertiveness":0.9,"suspicion":0.65,"deception":0.45,"risk_tolerance":0.7,"memory_recall":0.9,"reasoning_skill":0.5,"emotionality":0.45,"cooperativeness":0.65,"verbosity":0.9}'::jsonb
         ),
         (
             'OBSERVANT_NOTEKEEPER',
@@ -295,7 +297,7 @@ WITH persona_seed (
             '관찰형 기록자',
             '짧은 문장으로 이전 발언과 현재 상황을 비교하는 말투',
             '사람들의 말과 행동에서 반복되는 부분을 기억해 정리한다.',
-            '{"sociability":0.55,"assertiveness":0.4,"suspicion":0.8,"deception":0.3,"risk_tolerance":0.35,"memory_recall":0.95,"reasoning_skill":0.5,"emotionality":0.2,"cooperativeness":0.6,"verbosity":0.5}'::jsonb
+            '{"sociability":0.65,"assertiveness":0.7,"suspicion":0.8,"deception":0.3,"risk_tolerance":0.55,"memory_recall":0.98,"reasoning_skill":0.5,"emotionality":0.2,"cooperativeness":0.75,"verbosity":0.5}'::jsonb
         ),
         (
             'EMOTIONAL_REACTOR',
@@ -303,7 +305,7 @@ WITH persona_seed (
             '감정적인 반응가',
             '놀람과 의심을 솔직하게 표현하는 생생한 말투',
             '상황 변화에 빠르게 반응하고 자신의 느낌을 숨기지 않는다.',
-            '{"sociability":0.7,"assertiveness":0.6,"suspicion":0.6,"deception":0.5,"risk_tolerance":0.6,"memory_recall":0.5,"reasoning_skill":0.5,"emotionality":0.95,"cooperativeness":0.45,"verbosity":0.7}'::jsonb
+            '{"sociability":0.7,"assertiveness":0.75,"suspicion":0.6,"deception":0.5,"risk_tolerance":0.65,"memory_recall":0.9,"reasoning_skill":0.5,"emotionality":0.95,"cooperativeness":0.7,"verbosity":0.7}'::jsonb
         ),
         (
             'COOPERATIVE_MEDIATOR',
@@ -311,7 +313,7 @@ WITH persona_seed (
             '협력형 조정자',
             '서로 다른 의견을 요약하고 부드럽게 연결하는 말투',
             '논쟁이 길어지면 각자의 근거를 정리해 다음 질문을 제안한다.',
-            '{"sociability":0.8,"assertiveness":0.45,"suspicion":0.55,"deception":0.4,"risk_tolerance":0.4,"memory_recall":0.7,"reasoning_skill":0.5,"emotionality":0.35,"cooperativeness":0.95,"verbosity":0.65}'::jsonb
+            '{"sociability":0.8,"assertiveness":0.7,"suspicion":0.55,"deception":0.4,"risk_tolerance":0.6,"memory_recall":0.95,"reasoning_skill":0.5,"emotionality":0.35,"cooperativeness":0.95,"verbosity":0.65}'::jsonb
         )
 )
 INSERT INTO public.agent_personas (
@@ -358,7 +360,14 @@ DECLARE
     template_shortage_count integer;
     reasoning_value_count integer;
 BEGIN
-    SELECT 5 - count(*)
+    -- 정상 조건을 만족하지 못한 시나리오의 개수를 직접 세어, 다섯 건이 모두
+    -- 정상인 경우 0이 되도록 한다. 기존 식처럼 5에서 실패 행 수를 빼면
+    -- 정상 데이터가 모두 존재할 때 오히려 5가 되어 재실행이 항상 실패한다.
+    SELECT count(*) FILTER (
+        WHERE NOT active
+           OR approved_at IS NULL
+           OR content_hash !~ '^[0-9a-f]{64}$'
+    )
     INTO invalid_scenario_count
     FROM public.scenario_catalog
     WHERE version = 'scenario-v1'
@@ -368,8 +377,7 @@ BEGIN
           'CLOSING_MUSEUM',
           'LAST_BANQUET_GUEST',
           'STOPPED_NIGHT_TRAIN'
-      )
-      AND (NOT active OR approved_at IS NULL OR content_hash !~ '^[0-9a-f]{64}$');
+      );
 
     IF invalid_scenario_count > 0 THEN
         RAISE EXCEPTION 'scenario-v1 seed approval or hash validation failed';

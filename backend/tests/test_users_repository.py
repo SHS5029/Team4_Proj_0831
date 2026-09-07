@@ -159,7 +159,7 @@ def test_get_user_only_reads_and_unknown_user_is_not_created() -> None:
 
 
 def test_get_user_returns_only_canonical_users_columns() -> None:
-    """기존 프로필·OAuth 컬럼 없이 정본의 세 필드만 모델로 변환한다."""
+    """사용자 프로필이나 외부 계정 없이 정본의 세 필드만 모델로 변환한다."""
 
     repository, _ = _repository(
         DatabaseScenario(

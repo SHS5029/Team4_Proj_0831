@@ -1,1 +1,1 @@
-"""향후 Tour cache·실행 상태용 Redis 구현 위치."""
+"""MCP runtime의 Redis 직접 접근 금지 경계를 보존하기 위해 비워 둔 예약 위치."""

@@ -10,11 +10,43 @@
 
 **HTTP prefix:** `/api/v1`
 
+> **현재 MCP 구현 참고 (2026-09-05):** Backend의 현재 최소 연결은 별도 공개 `/api/v1`
+> MCP API가 아니라 `/internal/mcp/context`, `/internal/mcp/prompts/{name}`와
+> `/internal/mcp/actions` synthetic endpoint만 제공한다. 이 문서의 Engine·MCP
+> 확장 계약은 실제 게임 규칙과 함께 후속 구현할 때 적용한다.
+
 이 문서는 일반 사용자 Front, 관리자 Front, Backend와 Mafia Game MCP 사이의 API
 정본이다. 구현 완료 시 FastAPI가 생성하는 `/openapi.json`과 이 문서의 path, enum,
 필수 field와 오류 코드가 일치해야 한다. 별도 수기 OpenAPI YAML은 관리하지 않는다.
 
 ## 1. 공통 규칙
+
+### 현재 FastMCP actor projection 보완 (2026-09-07)
+
+최소 연결의 `GET /internal/mcp/context`는 필수 `game_id`, `user_id`와 선택
+`player_id`, `scope`를 받는다. scope 기본값은 `public`이며 허용 값은 8.2절의
+다섯 scope다. 사용자 소유권과 player의 해당 게임 소속·AI 여부를 검증한 뒤
+8.2절 envelope/data를 반환한다. actor 없는 요청은 공개 scope만 허용하며 인간
+snapshot의 `me`를 재사용하지 않는다. 없는 게임·다른 소유자는 404, 잘못된
+actor/scope 조합은 403으로 거부한다. UUID만으로 사용자를 구분하는 사설 MVP
+경계는 유지하며 과거 bootstrap/HMAC 설계를 재도입하지 않는다.
+
+이 내부 adapter는 진행 중 실제 OPEN window가 있을 때만 context를 제공하며
+ROLE_REVEAL·SAVED·COMPLETED 또는 window 없는 상태는 409 ACTION_NOT_ALLOWED로
+거부한다. actor 없는 public은 GM/game_id envelope이고 AI의 gm-guide 요청은
+403이다. actor의 persona/facts 필수 자료가 없으면 403으로 거부하며 다른 사람의
+자료나 임의 window UUID로 보충하지 않는다.
+
+기존 `mafia://context/current/{game_id}/{user_id}`는 공개 조회로 유지하고, AI 호출은
+`mafia://context/scoped/{game_id}/{user_id}/{player_id}/{scope}`를 사용한다. MCP는
+URI를 위 endpoint 인자로 전달하는 얇은 adapter이며 DB 접근·독자 projection을
+만들지 않는다. scope별 `data`는 8.2절을 유일한 정본으로 삼는다. Backend client는
+envelope의 state_version/window_id를 검증하고 각 scope를 따로 조회한다.
+두 Resource의 JSON text content는 `mimeType: application/json`으로 명시한다.
+
+관련 책임은 WU-B7(내부 context endpoint·actor projection), WU-M3(기존 Resource
+등록부·HTTP adapter), WU-B6(Agent client·Provider 입력 연결)로 나눈다. 공개
+`agent_activity`는 AI 판단 입력에 재삽입하지 않는다.
 
 ### 1.1 전송과 형식
 
@@ -143,6 +175,12 @@ Backend까지 전달하고, Front에는 proxy origin만 Backend URL로 제공한
 - 다른 AI의 미해소 private submission과 Agent reservation은 Front projection을
   바꾸지 않으므로 공개 `state_version`을 올리지 않는다. phase 해소·공개 event 또는
   인간 본인 private 상태가 바뀔 때 version을 올린다.
+- 진행 중 투표의 내부 AI 제출은 미해소 상태라면 `result_state_version`이 현재
+  version과 같다. 인간의 같은 window 첫 투표만으로 한 버전 증가한 경우에는 해당
+  submission의 `observed_state_version`으로 증명한 AI 판단만 계속 적용할 수 있다.
+  공개 사용자 command에는 이 예외를 적용하지 않는다. 내부 투표 context client는 같은
+  window·phase에서 이 한 버전 차이만 허용하고, 저장 전 원장이 원인을 최종 검증한다.
+  window 변경·저장/재개·deadline 만료 결과는 거부하며 이전 표를 새 투표에 옮기지 않는다.
 
 ## 2. 공통 모델
 
@@ -341,6 +379,48 @@ window 안의 `legal_actions`는 빈 배열이다. Front countdown은 표시용�
   다른 player의 private 정보는 종료 전 받지 않는다.
 - 종료 snapshot의 `result`에는 2.5절의 전체 role·action 공개 기록을 넣는다.
 
+### 2.4.1 AI 처리 상태 표시
+
+일반 snapshot에 선택적 `agent_activity` 배열을 추가한다. 미지원 또는 재시작 직후는
+빈 배열이다. 게임 소유권 확인 뒤 같은 게임의 최근 공개 발언 처리 기록만 최대
+50개를 순서대로 반환한다. 이 정보는 진행 보조 표시이며 command version이나
+SSE cursor를 바꾸지 않는다. `NIGHT_ACTION`과 진행 중 투표의 actor별 기록은 공개
+배열에 넣지 않는다. Front는 해당 phase에서 공통 비공개 처리 안내를 표시한다.
+
+각 item은 다음 field만 갖는다.
+
+| field | 계약 |
+|---|---|
+| `sequence` | 해당 Backend 실행 내 단조 증가 양의 정수 |
+| `run_id` | 서버 실행 UUID; 재시작 시 변경 |
+| `created_at` | UTC RFC 3339 |
+| `player_id` | 같은 게임의 AI player UUID |
+| `phase` | `DAY_DISCUSSION` 또는 `FINAL_DISCUSSION` |
+| `state_version` | 관찰한 상태 버전, 양의 정수 |
+| `stage` | `STARTED`, `CONTEXT_READY`, `DECIDING`, `DECIDED`, `APPLIED`, `FALLBACK`, `FAILED`, `SKIPPED` |
+| `action` | `SPEAK`, `PASS` 또는 `null`; 적용 전 선택과 적용 완료를 stage로 구별 |
+| `summary` | Backend가 enum에서 만드는 고정 한국어 안내, 최대 200자 |
+| `decision_source` | 선택적 `MODEL`, `DUMMY`, `FALLBACK` 또는 `null`; 과거 응답의 필드 생략 허용 |
+| `reason_code` | 선택적 실패 분류 코드 또는 `null`; 아래 allowlist만 허용 |
+| `decision_basis` | 선택적 공개 판단 근거 코드 또는 `null`; 아래 allowlist만 허용 |
+
+`reason_code`는 `PROVIDER_TIMEOUT`, `PROVIDER_AUTHENTICATION`, `PROVIDER_RATE_LIMIT`,
+`PROVIDER_MODEL_UNAVAILABLE`, `PROVIDER_INCOMPLETE`, `PROVIDER_UNAVAILABLE`,
+`PROPOSAL_INVALID`, `MCP_UNAVAILABLE`, `MCP_SUBMISSION_FAILED`,
+`AGENT_DEPENDENCY_ERROR`만 허용한다. `decision_basis`는 `PUBLIC_EVIDENCE`,
+`COMPARE_STATEMENTS`, `ASK_FOR_CLARIFICATION`, `INSUFFICIENT_EVIDENCE`,
+`NO_NEW_INFORMATION`만 허용하며 Backend가 고정 한국어로 설명한다. 이는 모델이
+선택한 공개 근거 유형이며 내부 사고 원문이나 사실의 진위 검증 결과가 아니다.
+SPEAK의 기존 `public_rationale` 문자열 중 위 코드에 정확히 일치하는 값만 표시한다.
+PASS의 `public_rationale`는 null 또는 위 코드만 허용한다. 밤·투표 proposal에는
+기존처럼 rationale를 넣지 않으며 공개 진행 배열에도 기록하지 않는다.
+새 Provider 요청은 현재 job의 행동 enum과 위 근거 코드로 출력 schema를 제한한다.
+
+summary는 모델이 생성한 내부 사고나 원문 rationale가 아니다. 자유 형식 Provider
+문자열·발언 원문·대상·비공개 역할은 이 배열과 운영 로그에 복사하지 않는다.
+`APPLIED`는 mutation이 성공 반환한 뒤에만 기록한다. 취소되거나 오래된 작업은
+성공으로 표시하지 않는다. Front는 field를 검증하고 텍스트를 escape한다.
+
 ### 2.5 종료 결과
 
 `result`는 `status=COMPLETED`에서만 object이며 그 전에는 `null`이다.
@@ -394,6 +474,12 @@ FINAL_NON_MAFIA_SELECTED
 
 `attack_choices`, `investigations`와 `ballots`는 종료 뒤 공개되는 actor·target·자동 선택
 여부의 구조화 배열이다. 내부 추론, prompt와 raw model response는 포함하지 않는다.
+
+배열 item은 `actor_player_id`, `target_player_id`(같은 게임 UUID), `is_auto`(boolean)를
+갖고 investigations에는 `is_mafia` boolean을 추가한다. nights의 보호 대상은 UUID
+또는 null이며 counts는 5.1절의 후보별 집계다. 마피아 전원 미응답의 진영 자동 선택은
+개별 attack_choices를 창작하지 않고 확정 공격 대상에만 반영한다. 오래된 게임에
+확정 해소 원장이 없으면 누락된 선택을 추정하지 않고 해당 기록을 빈 배열로 반환한다.
 
 ## 3. 상태 확인
 
@@ -665,6 +751,12 @@ scenario는 저장 당시 값을 복원한다.
 
 polling과 SSE는 같은 operation 모델을 사용한다.
 
+현재 Backend의 nested 전송 형식도 허용한다. 바깥 batch는 `front_sequence`,
+`state_version`, `operations`를 가지며, 안쪽 각 operation은 `schema_version: 1`,
+`operation_index`, `type`, `payload`를 가진다. 바깥 sequence/version을 상속할 뿐
+원장의 index나 schema를 새로 추정하지 않는다. flat 형식에는 위 공통 필드를 모두
+포함한다. 명시된 schema가 없거나 서로 충돌하면 전체 batch를 거부한다.
+
 ```json
 {
   "schema_version": 1,
@@ -736,11 +828,15 @@ operation payload 계약:
 `PublicEvent`와 각 `data` object는 표에 적힌 field만 갖는 폐쇄형 union이다.
 `GAME_BEGAN.message`는 마스터플랜 3.4절의 고정 시작 문구다. player 관련 ID는 같은
 game의 공개 player UUID다. `PLAYER_SPOKE.message`는 공백 정규화 뒤 1~200자,
-`TURN_OPENED.cycle`은 1~2이고 nullable `prompt`가 있으면 마스터플랜 3.4절의 전원
-`PASS` 고정 질문이다. `NIGHT_RESOLVED`와 `VOTE_RESOLVED.round`는 1~5,
+`TURN_OPENED.cycle`은 1 또는 2다. 첫날은 항상 1이며 둘째 날부터 첫 순환이 전원
+PASS일 때만 한 번 더 순환한다. 추가 순환의 `prompt`는 마스터플랜의 고정 질문이며
+그 밖에는 `null`이다.
+`NIGHT_RESOLVED`와 `VOTE_RESOLVED.round`는 1~5,
 저장·재개 event의 `round`는 0~5다. `NIGHT_RESOLVED.killed_player_id`는 UUID 또는
 `null`, `PLAYER_EXECUTED.revealed_role`은 2.1절 `Role`이다.
 `VOTE_RESOLVED.phase`는 `DAY_VOTE`, `REVOTE`, `FINAL_ACCUSATION` 중 하나다.
+`VOTE_RESOLVED.tied`는 최다 득표 동률 여부의 boolean이고 `needs_revote`는
+첫 낮 투표 동률로 재투표를 여는 경우만 true다.
 `VOTE_RESOLVED.counts`는 `target_player_id` UUID와 `vote_count` 0 이상 정수만 가진
 폐쇄형 item 배열이다. 해소 당시 유효 후보를 좌석 오름차순으로 한 번씩 포함하고 각
 count는 생존 투표자 수 이하이며 합계는 확정된 유효 표 수와 같다. actor, 자동 선택
@@ -938,6 +1034,13 @@ LLM token·비용·timeout·예산 metric은 제공하지 않는다.
 
 ## 8. Backend 내부 Engine API
 
+> **현재 MVP FastMCP 연결 기준:** 아래 8.1~9절의 Engine HMAC·bootstrap token·MCP
+> session 상세는 전체 운영 보안을 위한 후속 프로파일이다. 현재 FastMCP 전환에서는
+> MCP가 Resource·Prompt·Tool 컨텍스트를 Backend adapter로 전달하고, 인증·권한·게임
+> 상태 판정은 Backend가 담당한다. 현재 작업의 최소 HTTP adapter 계약은
+> 현재 실제 코드 상태는 `docs/AI_MAFIA_CURRENT_CODE_STATUS.md`에 기록한다. 아래 상세 프로파일을
+> 현재 FastMCP WU에 새로 추가하지 않는다.
+
 MCP runtime만 호출하는 별도 private network endpoint다. 일반 Front와 브라우저에
 route와 secret을 노출하지 않는다.
 
@@ -1041,6 +1144,19 @@ field를 거부한다. 모든 field는 필수이고, 아래에서 `nullable`로 
 | `AI_PLAYER` | 허용 | 허용 | 허용 | 허용 | 거부 |
 | `GM` | 허용 | 거부 | 거부 | 거부 | 허용 |
 
+Backend는 매 GET에서 capability의 미폐기·만료, 현재 job reservation,
+game·subject·phase·`state_version`·`window_id`·scope allowlist를 다시
+최종 판정한다. 또한 같은 authoritative state에서 projection이
+생성됐는지의 provenance와 `public` subject 비의존성, `turn` target과
+`public` player의 일치, `gm-guide` source event와 `public` event의 일치 같은
+여러 scope에 걸친 의미 불변식을 검증한 뒤 응답한다.
+
+MCP는 8.3절 consume에서 저장한 binding과 단일 GET 응답에서 관측할 수
+있는 공통 envelope·해당 `data` 폐쇄형 schema·응답 내 일치
+불변식만 검증한다. 다른 scope를 추가 조회하거나 이전 응답을
+저장해 cross-scope 의미를 재판정하지 않으며, 이 불변식의 최종
+권위는 Backend에 있다.
+
 #### 8.2.1 `scope=public` data
 
 모든 subject에게 같은 game·`state_version`이면 같은 projection을 반환한다. envelope의
@@ -1115,7 +1231,7 @@ Resource에 넣지 않는다.
 |---|---|
 | `window_id` | UUID, envelope의 `window_id`와 같음 |
 | `window_kind` | `SPEECH`, `NIGHT`, `VOTE`, `REVOTE`, `FINAL_VOTE` |
-| `cycle` | 정수 1~2; `SPEECH`의 추가 순환만 2 |
+| `cycle` | 정수 1 또는 2; 첫날은 1, 둘째 날부터 전원 PASS일 때만 추가 순환 2 |
 | `opened_state_version` | 1 이상의 정수 |
 | `server_time` | 응답 생성 시각 |
 | `deadline_at` | `SPEECH`이면 `null`, 나머지는 UTC RFC 3339 시각 |
@@ -1180,7 +1296,7 @@ persona는 말투와 표현 성향만 바꾸며 규칙·정보 권한·추론 �
 | `fixed_message_key` | 제품 문구 정본 |
 |---|---|
 | `GAME_INTRO` | 마스터플랜 3.4절 게임 시작 안내 |
-| `ALL_PASS_FOLLOW_UP` | 마스터플랜 3.4절 전원 `PASS` 후 고정 질문 |
+| `ALL_PASS_FOLLOW_UP` | 마스터플랜 3.6절 둘째 날 이후 전원 `PASS` 후 고정 질문 |
 | `FINAL_ACCUSATION_NOTICE` | 마스터플랜 3.8절 최종 지목 안내 |
 
 `source_public_event`는 현재 GM job을 연 원인 event와 일치하고 같은
@@ -1192,8 +1308,8 @@ fail-closed한다.
 
 ### 8.3 `POST /internal/v1/mcp-bootstrap/consume`
 
-MCP runtime이 bootstrap token과 opaque capability를 받은 직후 Engine HMAC으로
-호출한다.
+MCP runtime이 MCP 세션 개설 토큰(bootstrap token)과 opaque capability를 받은 직후
+Engine HMAC으로 호출한다.
 
 ```json
 {
@@ -1201,16 +1317,51 @@ MCP runtime이 bootstrap token과 opaque capability를 받은 직후 Engine HMAC
 }
 ```
 
-Backend는 bootstrap signature, claim의 `agent_job_id`·subject·capability hash와
+Backend는 세션 개설 토큰 서명, claim의 `agent_job_id`·subject·capability hash와
 저장된 capability 및 현재 job reservation을 다시 검증한다. 이 요청의
 `X-Agent-Capability` header가 유일한 capability 원문이며 body에 중복하지 않는다.
-header hash가 bootstrap claim·DB hash와 모두 같아야 한다. token nonce를 PostgreSQL
+header hash가 세션 개설 토큰 claim·DB hash와 모두 같아야 한다. token nonce를 PostgreSQL
 `internal_request_nonces`에
-`scope=MCP_BOOTSTRAP`으로 INSERT한다. 성공 응답은 `{"status":"CONSUMED"}`이며
-재사용·만료·capability 불일치는 fail-closed한다. MCP는 이 성공 뒤에만 session을
-활성화한다.
+`scope=MCP_BOOTSTRAP`으로 INSERT한다. 성공 응답은 다음 다섯 field만 가진
+폐쇄형 object며 모든 field가 필수다.
 
-### 8.4 `POST /internal/v1/agent-proposals`
+```json
+{
+  "status": "CONSUMED",
+  "allowed_resource_scopes": ["public", "me", "turn", "persona"],
+  "phase": "DAY_DISCUSSION",
+  "state_version": 12,
+  "window_id": "11137761-d31b-46d1-8fb0-144ecf436069"
+}
+```
+
+- `status`는 상수 `CONSUMED`다.
+- `allowed_resource_scopes`는 `public`, `me`, `turn`, `persona`, `gm-guide`
+  순서를 canonical order로 사용하는 중복 없는 nonempty 배열이다.
+  `AI_PLAYER`는 `public`, `me`, `turn`, `persona`의 nonempty 부분집합,
+  `GM`은 `public`, `gm-guide`의 nonempty 부분집합만 받을 수 있다.
+- `phase`는 2.1절 `GamePhase`, `state_version`은 1 이상 정수,
+  `window_id`는 capability가 고정한 job window UUID다.
+- `status`를 제외한 네 binding 값은 Backend가 token·capability·reservation을
+  같은 판정에서 검증할 때 사용한 capability record의 immutable issuance
+  metadata를 그대로 반환한 것이다. 현재 상태를 별도로 재계산해 응답
+  binding을 바꾸지 않는다.
+- 9.1절의 bootstrap claim field는 그대로 유지하며 이 네 binding을
+  claim에 추가하지 않는다.
+
+재사용·만료·capability 불일치는 fail-closed한다. MCP는 이 성공
+뒤에만 session을 활성화하고 네 binding을 session memory에 저장한다.
+`allowed_resource_scopes`는 `resources/list`·read allowlist로, 나머지 세 값은
+8.2절 Engine context envelope의 `phase`·`state_version`·`window_id`
+교차 검증에 사용한다.
+
+MCP는 Engine consume 성공 응답의 raw JSON을 duplicate member를 허용하지 않는
+decoder로 해석한다. duplicate member, invalid JSON, 위 5-field binding 위반은
+fail-closed하며 session을 활성화하지 않는다. 기존 `{"status":"CONSUMED"}`
+status-only 성공 응답은 더 이상 허용하지 않는 breaking 동기 전환이다. MCP `WU-M3`와
+Backend `WU-B7`은 같은 시점에 위 5-field 폐쇄형 응답으로 전환해야 한다.
+
+### 8.4 `POST /internal/v1/agent-proposals` (full proposal contract)
 
 Request:
 
@@ -1250,6 +1401,43 @@ MCP Tool 성공은 게임 행동의 무조건 성공이 아니라 Backend가 pro
 결과다. 만료·폐기·phase·version·subject·audience 불일치를 외부에서 구분하지 않고
 `403 CAPABILITY_DENIED`로 거부한다. 상세 분류는 비밀 없는 내부 운영 log에만 남긴다.
 
+### 8.5 `POST /internal/v1/agent-action` (MVP thin adapter contract)
+
+최소 MCP 연결에서는 MCP가 full proposal의 내부 식별자를 조립하지 않는다. 인증된
+Backend session·capability가 game, agent, window와 현재 state version을 결정하고,
+MCP는 아래 행동 입력만 전달한다. 이 endpoint도 8.1의 Engine HMAC과
+`X-Agent-Capability` header 검증을 동일하게 적용한다.
+
+Request:
+
+```json
+{
+  "action": "PASS",
+  "target_player_id": null,
+  "message": null
+}
+```
+
+`action`은 `PASS`, `SPEAK`, `VOTE`, `NIGHT_ACTION` 중 하나이며, `target_player_id`와
+`message`는 행동 종류에 따라 nullable이다. 추가 field는 거부한다. Backend는 인증된
+session·capability와 현재 game state를 사용해 phase, role, 대상, deadline, 중복 요청을
+재검증하고 authoritative engine을 호출한다. MCP는 이 검증을 복제하지 않는다.
+
+Response `200`:
+
+```json
+{
+  "action": "PASS",
+  "status": "ACCEPTED",
+  "state_version": 13
+}
+```
+
+실행 거부, 만료, 잘못된 대상과 상태 충돌의 외부 분류는 Backend 공통 오류 계약을
+따르며, MCP는 오류 원문이나 내부 상태를 추가하지 않는다. 기존 8.4 full proposal
+endpoint는 Backend·Agent Manager가 직접 사용하는 확장 경로로 유지하고, 최소 MCP
+운영 연결은 8.5 endpoint를 사용한다.
+
 ## 9. Mafia Game MCP 계약
 
 ### 9.1 transport와 session
@@ -1257,37 +1445,59 @@ MCP Tool 성공은 게임 행동의 무조건 성공이 아니라 Backend가 pro
 - endpoint는 `${MAFIA_MCP_URL}` 전체 값이며 기본 개발 예시는
   `http://127.0.0.1:8100/mcp`다.
 - MCP Streamable HTTP initialize로 session을 만들고 `Mcp-Session-Id`를 사용한다.
-- Backend Agent Manager가 `MCP_SERVER_AUTH_SECRET`으로 서명한 일회성 bootstrap token을
+- Backend Agent Manager가 `MCP_SERVER_AUTH_SECRET`으로 서명한 일회성 세션 개설 토큰을
   `Authorization: Bearer <token>`으로 보낸다. raw shared secret 자체를 보내지 않는다.
-- bootstrap token은 먼저 key 정렬·공백 없는 UTF-8 canonical JSON을 padding 없는
+- 세션 개설 토큰은 먼저 key 정렬·공백 없는 UTF-8 canonical JSON을 padding 없는
   base64url `encoded_payload`로 만든 뒤
   `encoded_payload.base64url(HMAC-SHA256(MCP_SERVER_AUTH_SECRET, ASCII(encoded_payload)))`
   로 직렬화한다. claim은
   `token_type=MCP_BOOTSTRAP`, `agent_job_id`, `game_id`, `subject_type`, `subject_id`,
   `capability_hash`, `iat`, 최대 120초 `exp`와 UUID nonce다.
+- claim object는 폐쇄형이다. `capability_hash`는 raw capability byte string의
+  SHA-256 lowercase hex 64자이며, `iat`와 `exp`는 UTC Unix seconds 정수다.
+  `iat <= current_time < exp`이고 `1 <= exp - iat <= 120`인 경우만 허용하며 clock
+  leeway를 적용하지 않는다. 운영 host는 동기화된 시스템 시계를 사용한다.
+- bootstrap claim은 위 field를 그대로 유지하며
+  `allowed_resource_scopes`, `phase`, `state_version`, `window_id`를 추가하지 않는다.
+  이 네 값은 8.3절 consume이 capability record에서 반환한다.
 - initialize HTTP 요청의 `X-Agent-Capability` header에 raw opaque capability를 정확히
-  한 번 전달한다. MCP는 해당 header를 session memory에만 보관하고 bootstrap
+  한 번 전달한다. MCP는 해당 header를 session memory에만 보관하고 세션 개설 토큰
   signature를 확인한 뒤 8.3절 consume까지 성공해야 session을 연다.
+- 최초 initialize 이후 같은 활성 session의 HTTP 요청은 동일 bearer 세션 개설 토큰을
+  계속 보내 session owner를 증명하되 `X-Agent-Capability`는 다시 보내지 않는다.
+  MCP는 후속 bearer에 대해 서명·claim·만료와 session owner 일치를 검사하지만 이미
+  성공한 세션 개설 토큰 consume을 반복하지 않는다. 다른 bearer, 만료 bearer 또는
+  capability header 재전송은 session을 닫고 고정 오류로 거부한다.
 - session은 정확히 한 `agent_job_id`, `game_id`, `subject_type`과 `subject_id`에
   묶인다. AI player는 `subject_type=AI_PLAYER`, GM은 `subject_type=GM`이다.
 - AI player의 `subject_id`는 해당 `player_id`다. GM은 별도 player row를 만들지 않고
   `subject_id`에 현재 `game_id` UUID를 그대로 사용한다.
-- Backend Agent Manager는 `agent_jobs` reservation 한 건마다 새 capability, 새
-  bootstrap nonce·token과 새 MCP initialize session을 만든다. 같은 subject·phase·
+- Backend Agent Manager는 `agent_jobs` reservation 한 건마다 새 capability, 새 세션
+  개설 토큰과 그 nonce, 새 MCP initialize session을 만든다. 같은 subject·phase·
   window·state라도 다른 job에 이 셋을 재사용하지 않는다.
 - job이 성공, fallback, stale, 실패(호출 취소 포함) 또는 lease 만료로 끝나면 Backend는
   capability를 폐기하고 session 종료를 시도한다. MCP는 session memory의 capability와
   subject binding을 제거한다. phase·window·state version 변화도 기존 capability를
   즉시 폐기하며 늦은 결과를 새 상태에 자동 rebase하지 않는다.
-- transport가 끊기면 소비한 bootstrap token이나 기존 `Mcp-Session-Id`를 다시 쓰지
+- transport가 끊기면 소비한 세션 개설 토큰이나 기존 `Mcp-Session-Id`를 다시 쓰지
   않는다. 같은 job lease 안에서 재접속할 수 있을 때도 기존 capability를 먼저
-  폐기하고 새 capability·bootstrap·session으로 시작한다. Backend가 job의 현재 상태를
+  폐기하고 새 capability·세션 개설 토큰·session으로 시작한다. Backend가 job의 현재
+  상태를
   확인할 수 없으면 재접속하지 않고 정의된 fallback을 수행한다.
+- 정상 session 종료는 `DELETE /mcp`와 `Mcp-Session-Id`를 사용한다. MCP는 Tool
+  terminal 결과, 명시적 DELETE, transport 종료, 세션 개설 토큰·capability 만료와 process
+  shutdown에서 session memory를 멱등 폐기한다. idle 요청이 30초 동안 없으면 session을
+  종료하며 event store나 외부 저장소로 session을 복원하지 않는다.
+- 세션 개설 토큰 consume 응답이 유실되면 해당 initialize와 session을 실패로 닫고 같은
+  token을 다시 consume하지 않는다. Backend만 job 상태를 확인한 뒤 살아 있는 job에
+  fresh capability·세션 개설 토큰·session을 발급할 수 있다.
 - 운영은 검증된 TLS를 사용한다. loopback 개발만 평문 HTTP를 허용한다.
 
 ### 9.2 Resource
 
 session이 agent를 이미 고정하므로 URI에서 다른 agent ID를 받지 않는다.
+MCP는 raw JSON-RPC 요청을 duplicate member를 허용하지 않는 decoder로 해석하며,
+중복 member를 last-value-wins로 병합하지 않고 `-32602`로 fail-closed한다.
 
 | URI | Engine `scope` | 허용 subject | `data` 정본 |
 |---|---|---|---|
@@ -1300,10 +1510,34 @@ session이 agent를 이미 고정하므로 URI에서 다른 agent ID를 받지 �
 AI GM session은 `public`과 `gm-guide`만 사용할 수 있다. `me`, `turn`, `persona`와
 모든 행동 Tool capability를 받지 않는다.
 
+`resources/list`는 8.3절 consume binding의 `allowed_resource_scopes`만
+`public`, `me`, `turn`, `persona`, `gm-guide` canonical order로 직렬화한다.
+각 descriptor는 `uri`, `name`, `mimeType` 세 field만 가진 폐쇄형 object며
+`name`은 scope 문자열, `mimeType`은 `application/json`이다. list는 Engine을
+호출하지 않는다. 요청에는 `cursor` field가 아예 없어야 하며 존재하면
+`-32602`로 거부한다. 응답은 pagination·`nextCursor`를 제공하지 않는다.
+
+MCP SDK 1.29.1에서 Resource handler 등록으로 initialize 응답에 포함되는
+`capabilities.resources`는 `subscribe=false`, `listChanged=false`로 고정한다. 이는 두
+기능을 지원하지 않는 canonical 광고다. Resource template과
+`resources/templates/list`, `notifications/resources/list_changed`는 제공하지 않는다.
+
 Resource read는 요청 URI와 같은 URI, MIME type `application/json`인 text content를
 정확히 한 개 반환한다. text의 JSON은 8.2절 공통 envelope와 해당 `data` schema 전체다.
 MCP는 Engine 응답의 subject·scope·version과 폐쇄형 schema를 확인한 뒤 그대로
 직렬화하며, 알 수 없거나 금지된 field를 임의로 제거해서 성공 응답으로 바꾸지 않는다.
+MCP는 SDK의 `AnyUrl` 정규화 전에 raw `params.uri` 문자열을 상수 registry의 위 다섯
+URI와 exact 비교한다. percent-encoding, scheme·host case 변경, trailing slash·문자 등
+모든 변형은 거부한다. exact URI가 아니거나 session binding에 허용되지 않은 URI인
+경우 존재 여부를 숨기고 Engine 호출 0회로
+`-32002 CAPABILITY_DENIED`를 반환한다. 허용된 read 한 번은 해당
+scope의 Engine GET을 정확히 한 번만 호출하며 cross-scope 검증을 위한 추가
+GET을 하지 않는다.
+
+MCP는 session-local을 포함해 요청 종료 뒤 context cache나 Resource JSON,
+model object, 직렬화 text의 retained reference를 남기거나 이후 요청에서 재사용하지
+않는다. 한 요청을 decode·검증·직렬화하는 동안의 transient local object까지 금지하는
+뜻은 아니다. Engine 실패나 계약 위반에서 stale Resource로 fallback하지 않는다.
 
 ### 9.3 Tool
 
@@ -1327,9 +1561,38 @@ MCP는 Engine 응답의 subject·scope·version과 폐쇄형 schema를 확인한
   `proposal_id`와 byte-equivalent proposal body를 사용하고 Engine HMAC nonce만 새로
   만든다. 다른 body로 ID를 재사용하거나 stale version·window를 자동 갱신하지 않는다.
 
+#### 9.3.1 고정 오류 매핑
+
+initialize 단계의 HTTP 오류 body는 `{"error":"<code>"}` 하나만 사용한다.
+JSON-RPC 오류는 숫자 `code`와 고정 한국어 `message`만 가지며 `data`, upstream body,
+exception text와 stack trace를 포함하지 않는다.
+
+| 경계 | 조건 | HTTP/JSON-RPC | 공개 code |
+|---|---|---:|---|
+| initialize | bearer 또는 capability header 누락·형식 오류 | HTTP 401 | `AUTH_REQUIRED` |
+| initialize | 세션 개설 토큰 서명·claim·만료·replay·mismatch 또는 consume 거부 | HTTP 403 | `BOOTSTRAP_DENIED` |
+| session | 알 수 없거나 닫힌 `Mcp-Session-Id` | HTTP 404 | `SESSION_NOT_FOUND` |
+| protocol | raw JSON-RPC duplicate member, Tool 폐쇄형 입력 오류 또는 `resources/list`의 `cursor` 존재 | `-32602` | `VALIDATION_ERROR` |
+| handler | 비활성 session 또는 terminal 뒤 호출 | `-32001` | `SESSION_NOT_ACTIVE` |
+| Resource·Engine context | local exact registry·session allowlist 거부 또는 Engine 403·존재 은닉 404 | `-32002` | `CAPABILITY_DENIED` |
+| Engine context | timeout·연결 단절·429·5xx | `-32003` | `DEPENDENCY_UNAVAILABLE` |
+| Engine context | 그 밖의 1xx·200 외 2xx·3xx·예상 밖 4xx, 잘못된 Content-Type·invalid JSON·duplicate member, 200 응답의 binding·envelope·schema·응답 내부 불변식 위반 | `-32004` | `UPSTREAM_CONTRACT_VIOLATION` |
+| proposal | 같은 `proposal_id`의 body conflict | `-32005` | `PROPOSAL_CONFLICT` |
+| handler | 분류되지 않은 내부 실패 | `-32603` | `INTERNAL_ERROR` |
+
+- `-32002` message는 `요청한 리소스에 접근할 수 없습니다.`로 고정한다.
+- `-32003` message는 `게임 컨텍스트를 불러올 수 없습니다.`로 고정한다.
+- `-32004` message는 `게임 컨텍스트 응답 형식이 올바르지 않습니다.`로 고정한다.
+
+위 세 오류에는 `data`를 넣지 않고 Engine response body, 원문 오류·exception text와
+stack trace를 노출하지 않는다.
+
+취소는 상위 task로 전파하고 session cleanup을 수행한다. 취소 원문을 별도 protocol
+payload로 변환하지 않는다.
+
 ### 9.4 구조화 운영 로그와 redaction
 
-이 절은 initialize, bootstrap consume, Resource, Tool, Engine adapter와 session 종료의
+이 절은 initialize, 세션 개설 토큰 consume, Resource, Tool, Engine adapter와 session 종료의
 성공·거부·예외 경로 모두에 적용한다.
 
 - 구조화 record가 가질 수 있는 application field는 `request_id`, `correlation_id`,
@@ -1337,7 +1600,7 @@ MCP는 Engine 응답의 subject·scope·version과 폐쇄형 schema를 확인한
   폐쇄형 분류이고 exception message를 그대로 사용하지 않는다. 두 ID는 검증된 UUID만
   기록하며 임의 header 문자열을 그대로 복사하지 않는다.
 - Resource·Tool request·response payload, target player, game·agent·player ID, private
-  context, capability, bootstrap token, signature, secret, HTTP header, prompt, raw model
+  context, capability, 세션 개설 토큰, signature, secret, HTTP header, prompt, raw model
   response, exception 전문·stack과 chain-of-thought를 로그에 남기지 않는다.
 - logger와 sink의 표준 process metadata는 허용하되 application payload를 자동
   직렬화하지 않는다. formatter·sink 장애도 금지값을 임시 파일이나 spool에 쓰는
@@ -1438,17 +1701,25 @@ window와 `state_version`을 다시 확인한 뒤에만 `PUBLIC` event로 저장
 - feedback union과 게임별 unique
 - Engine canonical query/body HMAC, 60초 timestamp, 120초 nonce replay,
   stale capability와 agent 간 비간섭성
+- bootstrap claim field 유지, consume 성공 응답의 5-field 폐쇄형 schema,
+  scope 부분집합·canonical order와 issuance binding 교차 검증, status-only 응답 거부
 - 5개 Resource의 공통 envelope·scope별 exact key·nullable·union 검증과 unknown field
   fail-closed 처리
+- raw JSON-RPC·Engine consume/context 응답의 duplicate member 거부와 context 고정 오류
+  분류·message·payload 비노출
+- `resources/list`의 cursor 거부, binding 기반 descriptor·canonical order·Engine 0회,
+  SDK capability 광고, 허용 read당 GET 1회, raw URI 변형·미허용 URI의 존재 은닉·Engine
+  0회와 요청 종료 뒤 context 무저장
 - 같은 public projection의 subject 비의존성, 다른 AI의 `me`·`persona` 비간섭성과
   `turn` target의 role 비노출
 - GM session에 `me`, `turn`, `persona`, role-conditioned target과 행동 Tool이 없고
-  `public`, `gm-guide`만 있는지 확인
+  `public`, `gm-guide` 허용 집합의 nonempty 부분집합만 있는지 확인
 - GM 구조화 결과가 Agent Manager로 직접 반환되고 MCP Tool·proposal API 호출은 0회인지,
   잘못된 guide reference·private 사실·late fencing 결과가 fallback 또는 stale인지 확인
-- job마다 capability hash·bootstrap nonce·MCP session ID가 다르고 성공·fallback·stale·
-  실패(호출 취소 포함)·lease 만료 뒤 이전 값과 소비된 bootstrap이 거부되는지 확인
-- reconnect가 새 capability·bootstrap·session을 사용하고 이전 state/window 결과를
+- job마다 capability hash·세션 개설 토큰의 nonce·MCP session ID가 다르고
+  성공·fallback·stale·
+  실패(호출 취소 포함)·lease 만료 뒤 이전 값과 소비된 세션 개설 토큰이 거부되는지 확인
+- reconnect가 새 capability·세션 개설 토큰·session을 사용하고 이전 state/window 결과를
   자동 rebase하지 않는지 확인
 - MCP session 고정, Resource allowlist와 Tool proposal 재검증
 - 같은 `proposal_id`·같은 body의 불명확 응답 재시도는 mutation 한 번과 terminal

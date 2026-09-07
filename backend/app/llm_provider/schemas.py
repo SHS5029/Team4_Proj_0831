@@ -8,6 +8,14 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from backend.app.llm_provider.errors import LLMResponseError
 
+PUBLIC_DECISION_BASES = {
+    "PUBLIC_EVIDENCE": "공개된 사건 단서를 근거로 의견을 냈습니다.",
+    "COMPARE_STATEMENTS": "공개 발언과 알리바이를 비교했습니다.",
+    "ASK_FOR_CLARIFICATION": "불분명한 진술을 확인하기 위해 질문했습니다.",
+    "INSUFFICIENT_EVIDENCE": "판단할 공개 근거가 아직 부족하다고 보았습니다.",
+    "NO_NEW_INFORMATION": "이미 나온 의견 외에 추가할 내용이 없다고 보았습니다.",
+}
+
 
 class GameProposal(BaseModel):
     """Backend가 후속 phase·권한 검증을 수행할 최소 proposal이다."""
@@ -17,7 +25,9 @@ class GameProposal(BaseModel):
     action: str = Field(min_length=1, max_length=32)
     target_player_id: UUID | None = None
     source_state_version: int = Field(ge=1)
-    message: str | None = Field(default=None, max_length=2_000)
+    # 공개 발언은 게임 화면과 이벤트 payload에 그대로 들어가므로
+    # 제품 정본의 200자 제한을 Provider schema 단계에서도 동일하게 전달한다.
+    message: str | None = Field(default=None, max_length=200)
 
 
 class NormalizedAgentProposal(BaseModel):
@@ -69,7 +79,8 @@ def normalize_agent_proposal(payload: Any) -> NormalizedAgentProposal:
         if message != proposal.message:
             proposal = proposal.model_copy(update={"message": message})
     elif proposal.type == "PASS":
-        if proposal.message is not None or proposal.target_player_id is not None or proposal.public_rationale is not None:
+        if (proposal.message is not None or proposal.target_player_id is not None
+                or proposal.public_rationale not in {None, *PUBLIC_DECISION_BASES}):
             raise LLMResponseError("PASS proposal cannot contain message or target")
     elif proposal.type in {"NIGHT_ACTION", "VOTE"}:
         if proposal.target_player_id is None:
@@ -79,17 +90,21 @@ def normalize_agent_proposal(payload: Any) -> NormalizedAgentProposal:
     return proposal
 
 
-def agent_proposal_schema() -> dict[str, Any]:
+def agent_proposal_schema(*, job_kind: str | None = None) -> dict[str, Any]:
     """새 Agent adapter에 전달할 Provider 공통 JSON schema를 반환한다."""
 
     return {
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "type": {"type": "string", "enum": ["SPEAK", "PASS", "NIGHT_ACTION", "VOTE"]},
+            "type": {"type": "string", "enum": {
+                "SPEECH": ["SPEAK", "PASS"], "NIGHT_ACTION": ["NIGHT_ACTION"], "VOTE": ["VOTE"],
+            }.get(job_kind, ["SPEAK", "PASS", "NIGHT_ACTION", "VOTE"])},
             "target_player_id": {"type": ["string", "null"], "format": "uuid"},
-            "message": {"type": ["string", "null"], "maxLength": 2_000},
-            "public_rationale": {"type": ["string", "null"], "maxLength": 500},
+            "message": {"type": ["string", "null"], "maxLength": 200},
+            "public_rationale": {"type": ["string", "null"], "maxLength": 500,
+                                 "enum": [None] if job_kind in {"VOTE", "NIGHT_ACTION"}
+                                 else [None, *PUBLIC_DECISION_BASES]},
         },
         "required": ["type", "target_player_id", "message", "public_rationale"],
     }
