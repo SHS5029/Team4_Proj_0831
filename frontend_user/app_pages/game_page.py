@@ -12,6 +12,7 @@ import streamlit as st
 
 from frontend_user.components.action_panel import render as render_action_panel
 from frontend_user.components.sync_bridge import apply_sync, mount_sse
+from frontend_user.components.theme import render_page_navigation
 from frontend_user.core.api_client import ApiResponseError, ApiUnavailableError
 from frontend_user.core.sync import SyncEnvelopeError
 from frontend_user.core.view_models import own_private_view, public_players, public_timeline
@@ -282,6 +283,7 @@ def render(snapshot: dict[str, Any]) -> None:
         '<nav class="game-nav"><span>▣&nbsp; 피드백</span><span>⚙&nbsp; 설정</span></nav></header>',
         unsafe_allow_html=True,
     )
+    render_page_navigation(current_page="game")
     # 응답 유실 뒤 서버가 phase를 변경했어도 기존 요청의 재시도 UI를 유지한다.
     # 정상 시작 버튼은 역할 공개 화면에서만 표시한다.
     for command_type in ("BEGIN_GAME", "RESUME"):

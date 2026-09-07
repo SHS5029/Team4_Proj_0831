@@ -10,6 +10,8 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
+from frontend_user.components.theme import render_page_navigation
+
 RESULT_PAGE_CSS = """
 <style>
 :root {
@@ -161,6 +163,7 @@ def render(snapshot: dict[str, Any]) -> None:
         '<span class="result-settings">⚙&nbsp; 설정</span></header>',
         unsafe_allow_html=True,
     )
+    render_page_navigation(current_page="game")
 
     if game.get("status") != "COMPLETED":
         _render_failed(scenario=scenario)

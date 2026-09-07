@@ -4,9 +4,9 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from frontend_user.app_pages import game_page
+from frontend_user.components import theme
 from frontend_user.core.api_client import ApiResponseError, ApiUnavailableError
 from frontend_user.core.view_models import own_private_view, public_players
-
 
 GAME = "00000000-0000-4000-8000-000000000201"
 AI = "00000000-0000-4000-8000-000000000202"
@@ -717,3 +717,63 @@ def test_dummy_source_remains_visible_after_applied():
     app = AppTest.from_function(_activity_app, args=(snapshot,)).run()
     assert not app.exception
     assert "더미 모드" in " ".join(item.value for item in app.warning)
+
+
+def _navigation_app(initial_page):
+    """실제 dispatcher처럼 page 변경을 방문 기록과 공통 이동 제어에 연결한다."""
+
+    import streamlit as st
+
+    from frontend_user.components import theme
+
+    page = st.session_state.setdefault("navigation.page", initial_page)
+    page = theme.sync_page_navigation(page)
+    theme.render_page_navigation(current_page=page)
+    st.text(page)
+
+
+@pytest.mark.parametrize(
+    "page",
+    ["create", "creation_complete", "feedback", "game_feedback", "game"],
+)
+def test_every_non_home_route_has_back_and_home_buttons(page):
+    app = AppTest.from_function(_navigation_app, args=(page,)).run()
+    assert not app.exception
+    assert app.button(key="navigation.back").label == "← 뒤로가기"
+    assert app.button(key="navigation.home").label == "⌂ 홈"
+
+
+def test_invalid_navigation_page_returns_to_home_without_rendering_duplicate_controls():
+    app = AppTest.from_function(_navigation_app, args=([],)).run()
+    assert not app.exception
+    assert app.session_state["navigation.page"] == "home"
+    assert not app.button
+
+
+def test_back_uses_validated_app_history_without_creating_a_navigation_loop():
+    app = AppTest.from_function(_navigation_app, args=("home",)).run()
+    app.session_state["navigation.page"] = "create"
+    app.run()
+    app.session_state["navigation.page"] = "creation_complete"
+    app.run()
+    assert list(app.session_state[theme.NAVIGATION_HISTORY_KEY]) == ["home", "create"]
+
+    app.button(key="navigation.back").click().run()
+    assert app.session_state["navigation.page"] == "create"
+    assert list(app.session_state[theme.NAVIGATION_HISTORY_KEY]) == ["home"]
+
+
+def test_home_clears_history_and_only_invalidates_home_list_projection():
+    app = AppTest.from_function(_navigation_app, args=("game",))
+    app.session_state[theme.NAVIGATION_HISTORY_KEY] = ["home", "create", None, "invalid"]
+    app.session_state["game.game_id"] = GAME
+    app.session_state["form.feedback.comment"] = "작성 중인 내용"
+    app.session_state["home.games"] = [{"game_id": GAME}]
+    app.run()
+
+    app.button(key="navigation.home").click().run()
+    assert app.session_state["navigation.page"] == "home"
+    assert list(app.session_state[theme.NAVIGATION_HISTORY_KEY]) == []
+    assert app.session_state["game.game_id"] == GAME
+    assert app.session_state["form.feedback.comment"] == "작성 중인 내용"
+    assert "home.games" not in app.session_state

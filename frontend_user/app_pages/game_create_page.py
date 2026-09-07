@@ -6,8 +6,8 @@ from uuid import uuid4
 
 import streamlit as st
 
+from frontend_user.components.theme import render_page_navigation
 from frontend_user.core.api_client import ApiClient, ApiResponseError, ApiUnavailableError
-
 
 ROLE_COUNTS = {
     6: {"마피아": 1, "탐정": 1, "의사": 1, "시민": 3},
@@ -87,6 +87,7 @@ def render(client: ApiClient) -> None:
         '<nav class="setup-nav"><span>▣&nbsp; 피드백</span><span>⚙&nbsp; 설정</span></nav></header>',
         unsafe_allow_html=True,
     )
+    render_page_navigation(current_page="create")
     st.markdown('<div class="setup-breadcrumb">⌂ &nbsp; 홈 &nbsp; / &nbsp; <strong>새 게임</strong></div>', unsafe_allow_html=True)
     st.markdown(
         '<section class="setup-intro"><div><h1>새 게임 설정</h1>'

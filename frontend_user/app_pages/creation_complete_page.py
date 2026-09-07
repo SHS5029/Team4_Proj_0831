@@ -7,6 +7,8 @@ from html import escape
 
 import streamlit as st
 
+from frontend_user.components.theme import render_page_navigation
+
 
 def render(pending: dict[str, object]) -> None:
     """Backend 생성 성공 결과만 사용해 역할 공개 전 대기 화면을 표시한다."""
@@ -26,6 +28,7 @@ def render(pending: dict[str, object]) -> None:
         """,
         unsafe_allow_html=True,
     )
+    render_page_navigation(current_page="creation_complete")
     game_id = escape(str(pending.get("game_id", "확인 중")))
     snapshot = pending.get("snapshot")
     data = snapshot.get("data", snapshot) if isinstance(snapshot, Mapping) else {}

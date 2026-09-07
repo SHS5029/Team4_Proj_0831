@@ -7,10 +7,12 @@ from typing import Any
 import streamlit as st
 
 from frontend_user.app_pages.game_page import (
-    _process_shell_pending, _render_shell_command, render_saved_control,
+    _process_shell_pending,
+    _render_shell_command,
+    render_saved_control,
 )
+from frontend_user.components.theme import render_page_navigation
 from frontend_user.core.view_models import own_private_view, public_players
-
 
 ROLE_REVEAL_CSS = """
 <style>
@@ -139,6 +141,7 @@ def render(snapshot: dict[str, Any]) -> None:
         '<nav class="role-nav"><span>▣&nbsp; 피드백</span><span>⚙&nbsp; 설정</span></nav></header>',
         unsafe_allow_html=True,
     )
+    render_page_navigation(current_page="game")
 
     scenario = snapshot.get("scenario", {})
     game = snapshot.get("game", {})

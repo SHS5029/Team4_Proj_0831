@@ -11,9 +11,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from frontend_user.app_pages.creation_complete_page import (  # noqa: E402
+    render as render_creation_complete,
+)
 from frontend_user.app_pages.feedback_page import render as render_feedback  # noqa: E402
 from frontend_user.app_pages.game_create_page import render as render_create  # noqa: E402
-from frontend_user.app_pages.creation_complete_page import render as render_creation_complete  # noqa: E402
 from frontend_user.app_pages.game_page import render as render_game  # noqa: E402
 from frontend_user.app_pages.home_page import load_games, should_load_games  # noqa: E402
 from frontend_user.app_pages.home_page import render as render_home  # noqa: E402
@@ -24,18 +26,18 @@ from frontend_user.components.identity_bridge import (  # noqa: E402
     IDENTITY_COMPONENT_CHANGED_SESSION_KEY,
     load_identity,
 )
+from frontend_user.components.theme import render_app_theme, sync_page_navigation  # noqa: E402
 from frontend_user.core.api_client import ApiClient  # noqa: E402
+from frontend_user.core.identity import parse_uuid_v4  # noqa: E402
 from frontend_user.core.session import (  # noqa: E402
     IDENTITY_PERSISTENCE_SESSION_KEY,
     IDENTITY_SCOPE_SESSION_KEY,
-    IDENTITY_WRITE_SESSION_KEY,
     IDENTITY_WARNING_SESSION_KEY,
+    IDENTITY_WRITE_SESSION_KEY,
     get_identity,
     request_identity_write,
     set_identity,
 )
-from frontend_user.core.identity import parse_uuid_v4  # noqa: E402
-from frontend_user.components.theme import render_app_theme  # noqa: E402
 
 
 def main() -> None:
@@ -76,6 +78,7 @@ def main() -> None:
     if st.session_state.get(IDENTITY_WARNING_SESSION_KEY):
         st.warning("브라우저 저장소를 사용할 수 없어 이번 세션에서만 게임을 복구할 수 있어요.")
     page = st.session_state.get("navigation.page", "home")
+    page = sync_page_navigation(page)
     load_home_games = False
     if page == "feedback":
         render_feedback(client=client, feedback_type="GENERAL")

@@ -4,6 +4,17 @@ from __future__ import annotations
 
 import streamlit as st
 
+NAVIGATION_PAGES = frozenset({
+    "home",
+    "create",
+    "creation_complete",
+    "feedback",
+    "game_feedback",
+    "game",
+})
+NAVIGATION_HISTORY_KEY = "navigation.history"
+NAVIGATION_CURRENT_KEY = "navigation.current_page"
+
 
 APP_THEME_CSS = """
 <style>
@@ -70,6 +81,15 @@ html { color-scheme: light; }
   color: #173626 !important; background: #e8f5ec !important;
 }
 [data-testid="stAlertContentSuccess"] [data-testid="stMarkdownContainer"] * { color: inherit !important; }
+[class*="st-key-app-page-navigation"] {
+  margin: -1.15rem 0 1rem; padding: .55rem .65rem !important;
+  border: 1px solid var(--ai-border); border-radius: .8rem; background: rgba(255, 255, 255, .94);
+  box-shadow: 0 .35rem 1rem rgba(20, 42, 81, .06);
+}
+[class*="st-key-app-page-navigation"] [data-testid="stButton"] button {
+  min-height: 2.65rem; color: #174ea6 !important; background: #f7faff !important;
+  border-color: #b8cdf8 !important;
+}
 button:focus-visible, input:focus-visible, textarea:focus-visible {
   outline: 3px solid #245fd6 !important; outline-offset: 3px;
   box-shadow: 0 0 0 2px #fff !important;
@@ -87,3 +107,71 @@ def render_app_theme() -> None:
     """공통 CSS를 주입해 페이지별 레이아웃이 같은 기본 경험을 갖게 한다."""
 
     st.markdown(APP_THEME_CSS, unsafe_allow_html=True)
+
+
+def sync_page_navigation(current_page: str) -> str:
+    """직접 page 값을 바꾸는 기존 화면 전환을 검증된 방문 기록으로 동기화한다."""
+
+    page = (
+        current_page
+        if isinstance(current_page, str) and current_page in NAVIGATION_PAGES
+        else "home"
+    )
+    previous = st.session_state.get(NAVIGATION_CURRENT_KEY)
+    history = _navigation_history(current_page=page)
+    if page == "home":
+        history = []
+    elif isinstance(previous, str) and previous in NAVIGATION_PAGES and previous != page:
+        if not history or history[-1] != previous:
+            history.append(previous)
+    st.session_state["navigation.page"] = page
+    st.session_state[NAVIGATION_HISTORY_KEY] = history[-12:]
+    st.session_state[NAVIGATION_CURRENT_KEY] = page
+    return page
+
+
+def render_page_navigation(*, current_page: str) -> None:
+    """홈을 제외한 사용자 화면에 앱 방문 기록 기반 이동 button을 표시한다."""
+
+    if current_page == "home":
+        return
+    history = _navigation_history(current_page=current_page)
+    back_target = history[-1] if history else "home"
+    remaining_history = history[:-1] if history else []
+    with st.container(key="app-page-navigation"):
+        back_column, home_column, _ = st.columns([1, 1, 5])
+        with back_column:
+            if st.button("← 뒤로가기", key="navigation.back", width="stretch"):
+                _navigate(page=back_target, history=remaining_history)
+        with home_column:
+            if st.button("⌂ 홈", key="navigation.home", width="stretch"):
+                _navigate(page="home", history=[])
+
+
+def _navigation_history(*, current_page: str) -> list[str]:
+    """session의 손상된 page 값과 현재 화면의 중복 기록을 제거한다."""
+
+    raw_history = st.session_state.get(NAVIGATION_HISTORY_KEY)
+    history = (
+        [page for page in raw_history if isinstance(page, str) and page in NAVIGATION_PAGES]
+        if isinstance(raw_history, list)
+        else []
+    )
+    while history and history[-1] == current_page:
+        history.pop()
+    return history
+
+
+def _navigate(*, page: str, history: list[str]) -> None:
+    """게임 상태는 보존하고 목적 화면과 검증된 방문 기록만 원자적으로 교체한다."""
+
+    target = page if isinstance(page, str) and page in NAVIGATION_PAGES else "home"
+    if target == "home":
+        # 홈으로 돌아오면 진행 게임 자체를 지우지 않고 목록 projection만 다시 읽는다.
+        for key in ("home.games", "home.games_error", "home.games_loaded_at", "home.games_loading"):
+            st.session_state.pop(key, None)
+        history = []
+    st.session_state["navigation.page"] = target
+    st.session_state[NAVIGATION_CURRENT_KEY] = target
+    st.session_state[NAVIGATION_HISTORY_KEY] = history[-12:]
+    st.rerun()
