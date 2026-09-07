@@ -1,4 +1,7 @@
 import json
+import shutil
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -189,3 +192,84 @@ def test_admin_client_extension_urls_are_encoded():
     assert captured[4].headers["Content-type"] == "application/json"
     assert json.loads(captured[4].data.decode("utf-8"))["filters"]["source_types"] == ["FEEDBACK"]
     assert all(r.headers["X-user-id"] == ADMIN_ID and "X-api-key" not in r.headers for r in captured)
+
+
+def test_browser_admin_uuid_requires_explicit_value_and_preserves_storage_on_failure():
+    """JS bridge는 UUID 자동 생성 없이 입력·새로고침·차단·손상을 구분해야 한다."""
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("브라우저 bridge JS 검증에는 Node.js가 필요합니다.")
+    source = (Path(__file__).parents[1] / "components/browser_components/identity/index.js").read_text()
+    script = r"""
+import assert from 'node:assert/strict';
+const {default: render} = await import('data:text/javascript;base64,' + Buffer.from(SOURCE).toString('base64'));
+const A = '00000000-0000-4000-8000-000000000101';
+const B = '00000000-0000-4000-8000-000000000102';
+let stored = null;
+let blocked = false;
+let writes = 0;
+globalThis.window = {localStorage: {
+  getItem: () => stored,
+  setItem: (_key, value) => {
+    if (blocked) throw Error('synthetic-storage-block');
+    stored = value; writes += 1;
+  },
+}};
+const root = {};
+const outputs = [];
+function run(data = {}, parentElement = root) {
+  render({data: {scope_version: '1', ...data}, parentElement,
+    setStateValue: (_key, value) => outputs.push(value)});
+  return outputs.at(-1);
+}
+assert.equal(run().error_code, 'MISSING_UUID');
+assert.equal(stored, null);
+run();
+assert.equal(outputs.length, 1);
+assert.equal(run({scope_version: '2', replacement: A}).user_id, A);
+assert.equal(writes, 1);
+assert.equal(run({}, {}).user_id, A);
+blocked = true;
+assert.equal(run({scope_version: '3', replacement: B}).error_code, 'STORAGE_BLOCKED');
+assert.equal(stored, A);
+blocked = false;
+assert.equal(run({scope_version: '3', replacement: B}).user_id, B);
+stored = 'broken-value';
+assert.equal(run({}, {}).error_code, 'INVALID_STORED_UUID');
+assert.equal(stored, 'broken-value');
+window.localStorage.getItem = () => { throw Error('synthetic-read-block'); };
+assert.equal(run().error_code, 'STORAGE_BLOCKED');
+console.log('admin identity lifecycle passed');
+""".replace("SOURCE", json.dumps(source))
+    result = subprocess.run([node, "--input-type=module", "-e", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "admin identity lifecycle passed" in result.stdout
+
+
+def test_admin_backend_url_uses_environment_and_explicit_override(monkeypatch):
+    """로컬 별도 포트 설정을 사용하되 호출자가 지정한 주소를 우선한다."""
+
+    monkeypatch.setenv("BACKEND_API_URL", "http://127.0.0.1:18000/")
+    assert AdminApiClient(user_id=ADMIN_ID).api_url == "http://127.0.0.1:18000"
+    assert AdminApiClient(user_id=ADMIN_ID, api_url="http://127.0.0.1:9000").api_url.endswith(":9000")
+    monkeypatch.delenv("BACKEND_API_URL")
+    assert AdminApiClient(user_id=ADMIN_ID).api_url == "http://127.0.0.1:8000"
+
+
+@pytest.mark.parametrize("status", [403, 503])
+def test_real_mode_denial_preserves_identity_input(monkeypatch, status):
+    """접속·권한 오류에서 운영 데이터는 숨기고 UUID 교체 입력은 유지한다."""
+
+    from uuid import UUID
+    from streamlit.testing.v1 import AppTest
+    from frontend_admin.components import identity_bridge
+    from frontend_admin.core import api_client
+
+    monkeypatch.setenv("ADMIN_DEMO_MODE", "false")
+    monkeypatch.setattr(identity_bridge, "load_identity", lambda **kwargs: (UUID(ADMIN_ID), None))
+    monkeypatch.setattr(api_client, "_send", lambda *args: (status, b'{"error":{"code":"SYNTHETIC"}}'))
+    at = AppTest.from_file(str(Path(__file__).parents[1] / "app.py"), default_timeout=15).run()
+    assert at.error and not at.exception and not at.tabs
+    assert at.text_input(key="admin.identity.input") is not None
+    assert at.button(key="admin.access.retry") is not None

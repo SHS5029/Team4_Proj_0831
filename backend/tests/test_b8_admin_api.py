@@ -378,6 +378,8 @@ def test_frontend_live_mode_uses_new_backend_contracts(monkeypatch):
     monkeypatch.setattr(api_client, "_send", transport)
     monkeypatch.setenv("ADMIN_DEMO_MODE", "false")
     at = AppTest.from_file(str(Path(__file__).parents[2] / "frontend_admin/app.py"), default_timeout=20)
+    from frontend_admin.components import identity_bridge
+    monkeypatch.setattr(identity_bridge, "load_identity", lambda **kwargs: (ADMIN, None))
     at.session_state[ADMIN_USER_ID_SESSION_KEY] = ADMIN
     at.run()
     assert not at.exception and not at.error and len(at.tabs) == 4

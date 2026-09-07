@@ -48,9 +48,9 @@ class AdminApiClient:
     # 팀 전달 사항: Backend는 ADMIN_USER_IDS에 정확히 등록된 UUID만 관리자 GET에
     # 접근시키고, 관리자 endpoint에는 mutation·강제 종료 기능을 추가하지 않는다.
 
-    def __init__(self, *, user_id: str | UUID, api_url: str = "http://127.0.0.1:8000", transport: HttpTransport | None = None):
+    def __init__(self, *, user_id: str | UUID, api_url: str | None = None, transport: HttpTransport | None = None):
         self.user_id = UUID(str(user_id))
-        self.api_url = api_url.rstrip("/")
+        self.api_url = (api_url or os.getenv("BACKEND_API_URL", "http://127.0.0.1:8000")).strip().rstrip("/")
         self._transport = transport or _send
 
     def metrics(self, *, from_date: str | None = None,

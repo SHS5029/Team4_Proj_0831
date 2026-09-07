@@ -5,7 +5,7 @@
 200 응답을 받은 경우에만 운영 분석 화면을 표시합니다.
 
 ```bash
-uv run streamlit run frontend_admin/app.py --server.port 8502
+BACKEND_API_URL=http://127.0.0.1:18000 frontend_admin/.venv/bin/python -m streamlit run frontend_admin/app.py --server.address 127.0.0.1 --server.port 8502
 ```
 
 Backend와 관리자 UUID allowlist 없이 화면만 확인하려면 PowerShell에서 개발용
@@ -81,3 +81,7 @@ metrics의 users_total·daily_games, persona-win-rates, feedback, audit-logs 응
 - 진행 중 게임 상세에는 role, 개인 사실, 개별 행동·투표, seed와 Agent private context를
   반환하지 않습니다. Front는 해당 field를 `***`로 마스킹하지 않고 거부합니다.
 - 관리자 앱은 PostgreSQL·Redis·MCP에 직접 연결하지 않으며 모든 기능은 read-only입니다.
+
+Backend 주소는 `BACKEND_API_URL`로 지정하며 미설정 기본값은 `http://127.0.0.1:8000`입니다.
+관리자 식별자 입력에서 기존 allowlist UUID를 확인·적용하면 브라우저에 저장하고 권한을
+다시 확인합니다. 임의 UUID 생성이나 Backend allowlist 자동 등록은 하지 않습니다.

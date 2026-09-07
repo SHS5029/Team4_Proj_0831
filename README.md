@@ -26,8 +26,8 @@
 
 2026-09-07 병합 기준: `frontend_user`는 `Hwanseok`의 `c96821d`를 유지하고,
 `frontend_admin`은 수신한 `origin/chd2`의 `5027155`를 반영했습니다. 관리자 확장에
-필요한 Backend·정본 문서는 자동 병합 결과를 유지합니다. 관리자 UI의 UUID 입력·복구
-흐름은 수신 버전의 제약을 따르며, 상세 실행 방법은
+필요한 Backend·정본 문서는 자동 병합 결과를 유지합니다. 후속 WU-F8 접속 오류 수정에서 Backend 주소 환경 변수와 관리자 UUID 입력·복구를
+반영했습니다. 상세 실행 방법은
 [관리자 README](frontend_admin/README.md)를 참고하세요.
 
 병합 검증 결과는 사용자 Front 374개·관리자 Front 14개·MCP 44개 통과입니다.
@@ -791,6 +791,35 @@ Windows에서 `uv`를 사용하지 않는 경우 프로젝트 가상환경의 Py
 않습니다. 진영별 승리는 시민 540승·마피아 360승 도넛 차트로 표시하며 KPI·페르소나별 AI
 승률은 같은 합성 기록에서 계산합니다.
 실제 API 권한은 기존 UUID allowlist로 검증합니다.
+관리자 UUID는 임의로 생성하지 않습니다. 화면의 **관리자 식별자**에서 Backend의
+`ADMIN_USER_IDS`에 등록된 UUID v4를 입력하고 확인한 뒤 적용합니다. 저장 응답 확인 전에는
+데이터를 조회하지 않으며, 권한 거부와 연결 오류에서는 입력·재시도 경로를 유지합니다.
+Backend의 allowlist가 비어 있으면 모든 관리자 접근이 거부되므로, 허용할 UUID를
+Backend 실행 설정에 등록하고 Backend를 재시작해야 합니다.
+
+2026-09-07 로컬 개발용 관리자 UUID: `33dc60ae-b47e-4fe7-8de9-9c5a3a9fc0a7`. 실행 중인 로컬
+PostgreSQL `127.0.0.1:55432/mafia_qa`의 `public.users`에 생성하고, Git에서 제외된
+루트 `.env`의 `ADMIN_USER_IDS`에 등록했습니다. 팀 공유 DB에는 생성하지 않았습니다.
+관리자 화면 `http://127.0.0.1:8502`에서 **관리자 식별자 → 관리자 UUID v4**에
+위 값을 입력하고 **입력값 확인 → 확인하고 적용**을 누르세요. 이 값은 README에
+공개된 로컬 개발용 식별자이므로 공개 서비스의 관리자 인증에 사용하지 않습니다.
+후속 접속 수정 검증은 관리자 테스트 18개 통과, Backend·사용자 Front 비DB 회귀
+900개 통과·기존 실패 14개·opt-in 8개 건너뜀입니다. 실제 Backend health 200과
+미등록 UUID 403, 관리자 서버 health 응답을 확인했습니다. 실제 DB 변경·유료 API
+호출은 생략했습니다. 후속 관리자 등록에서 로컬 DB 사용자 저장과 Backend 설정
+재로딩을 확인했고, 등록 UUID로 metrics·persona-win-rates·feedback·audit-logs
+네 API가 모두 HTTP 200을 반환했습니다. 브라우저에서는 위 UUID를 직접 적용해야 합니다.
+
+macOS에서 기존 관리자 가상환경으로 실제 API 모드를 실행하려면 저장소 루트에서
+다음 명령을 사용합니다. 접속 주소는 `http://127.0.0.1:8502`이며, 관리자
+클라이언트는 `BACKEND_API_URL`을 사용하며, 미설정 시 `http://127.0.0.1:8000`입니다.
+현재 로컬 Backend는 `18000` 포트이므로 아래처럼 주소를 명시합니다.
+
+```bash
+BACKEND_API_URL=http://127.0.0.1:18000 ADMIN_DEMO_MODE=false \
+  frontend_admin/.venv/bin/python -m streamlit run frontend_admin/app.py \
+  --server.address 127.0.0.1 --server.port 8502 --server.headless true
+```
 
 운영 분석 화면은 전체 사용자·누적 게임·완료율·시민/마피아 승률 KPI, 진영별 도넛,
 얇은 페르소나별 가로 막대와 상세 표를 중복 없이 한 화면에 배치합니다. 최근 게임 목록과
