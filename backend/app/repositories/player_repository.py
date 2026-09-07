@@ -113,6 +113,56 @@ class PostgresPlayerRepository:
         )
         return list(cursor.fetchall())
 
+    def get_kind(self, cursor: Any, *, game_id: UUID, player_id: UUID) -> str | None:
+        """특정 게임 플레이어의 공개 실행 종류를 읽는다.
+
+        AI 차례 여부처럼 실행 조합에 필요한 원장 조회도 서비스가 SQL을 직접
+        작성하지 않도록 플레이어 저장소가 query와 row 변환을 함께 소유한다.
+        존재하지 않는 플레이어는 ``None``으로 반환해 호출부가 안전하게 차례를
+        무시할 수 있게 한다.
+        """
+
+        cursor.execute(
+            """
+            SELECT kind
+            FROM public.game_players
+            WHERE game_id = %s AND id = %s
+            """,
+            (game_id, player_id),
+        )
+        row = cursor.fetchone()
+        return None if row is None else str(row["kind"])
+
+    def update_eliminated_players(self, cursor: Any, *, game_id: UUID, players: list[Any], phase: str, round: int) -> None:
+        """엔진에서 사망 확정된 플레이어를 DB 원장에 반영한다.
+
+        GameState는 transaction 안에서 계산되는 임시 규칙 상태이므로, snapshot이
+        다음 요청에서도 같은 생존자를 복원하려면 game_players에도 함께 기록해야
+        한다. 생존 플레이어는 갱신하지 않아 불필요한 row 변경을 줄인다.
+        """
+
+        allowed_phases = {
+            "DAY_DISCUSSION", "NIGHT_ACTION", "DAY_VOTE", "REVOTE",
+            "FINAL_DISCUSSION", "FINAL_ACCUSATION",
+        }
+        # 엔진은 마지막 처리를 마친 뒤 phase를 ENDED로 바꾼다. DB의 기존
+        # elimination CHECK는 ENDED를 저장하지 않으므로 최종 지목 단계로
+        # 정규화하고, migration을 바꾸지 않은 채 종료 결과를 기록한다.
+        persisted_phase = phase if phase in allowed_phases else "FINAL_ACCUSATION"
+        persisted_round = min(max(round, 1), 5)
+        for player in players:
+            if player.alive:
+                continue
+            cursor.execute(
+                """
+                UPDATE public.game_players
+                SET alive = FALSE, eliminated_phase = %s, eliminated_round = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE game_id = %s AND id = %s AND alive = TRUE
+                """,
+                (persisted_phase, persisted_round, game_id, player.player_id),
+            )
+
     def list_player_facts(
         self,
         cursor: Any,

@@ -17,7 +17,9 @@ class GameProposal(BaseModel):
     action: str = Field(min_length=1, max_length=32)
     target_player_id: UUID | None = None
     source_state_version: int = Field(ge=1)
-    message: str | None = Field(default=None, max_length=2_000)
+    # 공개 발언은 게임 화면과 이벤트 payload에 그대로 들어가므로
+    # 제품 정본의 200자 제한을 Provider schema 단계에서도 동일하게 전달한다.
+    message: str | None = Field(default=None, max_length=200)
 
 
 class NormalizedAgentProposal(BaseModel):
@@ -88,7 +90,7 @@ def agent_proposal_schema() -> dict[str, Any]:
         "properties": {
             "type": {"type": "string", "enum": ["SPEAK", "PASS", "NIGHT_ACTION", "VOTE"]},
             "target_player_id": {"type": ["string", "null"], "format": "uuid"},
-            "message": {"type": ["string", "null"], "maxLength": 2_000},
+            "message": {"type": ["string", "null"], "maxLength": 200},
             "public_rationale": {"type": ["string", "null"], "maxLength": 500},
         },
         "required": ["type", "target_player_id", "message", "public_rationale"],

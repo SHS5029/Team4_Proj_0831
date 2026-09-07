@@ -1,5 +1,11 @@
 # AI 마피아 MVP 공통 마스터플랜
 
+> **MVP 단순화 프로파일(2026-09-05):** DB·스키마·migration 이력은 보존한다.
+> OAuth/OIDC·Front HMAC, custom MCP bootstrap/capability/nonce/session registry,
+> Agent lease/fencing/job 상태 머신, LLM 비용·usage·자동 failover, Redis outbox
+> publisher와 복잡한 reconnect/backoff는 신규 실행 경로의 요구사항에서 제외한다.
+> 관련 migration 구조는 legacy 호환용으로만 남긴다.
+
 **문서 상태:** 구현 목표 계약
 
 **규칙 세트:** `mystery-v1`
@@ -28,6 +34,16 @@ MCP runtime의 구현 구조와 MCP·Data WU 실행 순서는
 이 문서들은 아직 구현되지 않은 목표 상태를 포함한다. 현재 코드의 완료 범위는 루트
 [README.md](../../README.md)를 기준으로 판정하며, 계획에 적혔다는 이유로 구현 완료로
 간주하지 않는다. 계약을 변경할 때는 영향받는 정본 문서를 같은 변경에서 갱신한다.
+
+### 현재 MVP FastMCP 프로파일
+
+현재 전환 작업의 기준은 참고 프로젝트 수준의 얇은 FastMCP adapter다. MCP는 Agent가
+사용하는 Resource·Prompt·Tool 컨텍스트를 제공하고, Tool 호출은 Backend로 전달한다.
+행동 판정·게임 상태 변경·인증·권한·DB·Redis·LLM은 Backend가 소유한다. MCP 내부의
+HMAC·bootstrap token·capability state machine·session registry·idle timeout·DELETE
+cleanup은 현재 FastMCP 전환 범위에서 제외하며, 기존 상세 M2~M8 운영 프로파일은
+후속 별도 WU로 취급한다. 현재 디렉터리 구조는 `mcp_server/mafia_game` 아래에서
+유지한다.
 
 ## 1. 확정 결정
 
@@ -194,11 +210,11 @@ ROLE_REVEAL
 - AI GM이 고정 공개 사건 정보를 설명한다.
 - 생존자 전원이 좌석순으로 `SPEAK` 또는 `PASS`를 정확히 한 번 제출한다.
 - `SPEAK` 본문은 공백 정규화 후 1~200자다.
-- 첫 순환에서 전원이 `PASS`하면 다음 고정 질문을 공개하고 추가 순환을 한 번만 연다.
+- 첫 순환이 끝나면 발언 내용과 관계없이 첫날 밤으로 이동한다.
 
 > 현재 가장 의심되는 플레이어와 그 이유를 한 문장으로 말해 주세요.
 
-- 추가 순환 종료 후 응답 수와 관계없이 첫날 밤으로 이동한다.
+- 첫 순환 종료 후 응답 수와 관계없이 첫날 밤으로 이동한다.
 - 첫날에는 처형 투표나 의심도 투표를 하지 않는다.
 
 게임 시작 안내에는 다음 문장을 사용한다.

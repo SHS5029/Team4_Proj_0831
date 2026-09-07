@@ -40,8 +40,8 @@ def test_speak_command_contains_contract_fields() -> None:
     }
 
 
-def test_target_must_be_in_current_window() -> None:
-    # 팀 전달 사항: valid_targets 밖의 UUID는 Backend에서도 동일하게 거부해야 한다.
+def test_target_uuid_is_forwarded_for_backend_validation() -> None:
+    # Front snapshot의 valid_targets는 stale될 수 있으므로 Backend가 최종 검증한다.
     window = {
         "window_id": "11137761-d31b-46d1-8fb0-144ecf436069",
         "paused": False,
@@ -51,11 +51,20 @@ def test_target_must_be_in_current_window() -> None:
         "valid_targets": [{"player_id": "70d5bd5d-61da-4db4-b218-6d0ac41f2a08", "display_name": "플레이어 2"}],
     }
     snapshot = _snapshot(legal_actions=["SUBMIT_VOTE"], message_window=window)
-    with pytest.raises(ValueError):
-        build_command(snapshot=snapshot, command_type="SUBMIT_VOTE", target_player_id="e15f18b6-ea20-477e-9d99-8a22dc6048f5")
+    command = build_command(snapshot=snapshot, command_type="SUBMIT_VOTE", target_player_id="e15f18b6-ea20-477e-9d99-8a22dc6048f5")
+    assert command["target_player_id"] == "e15f18b6-ea20-477e-9d99-8a22dc6048f5"
 
 
-def test_expired_window_is_rejected() -> None:
+def test_stale_window_is_forwarded_for_backend_validation() -> None:
     window = _snapshot()["action_window"] | {"remaining_ms": 0}
-    with pytest.raises(ValueError):
-        build_command(snapshot=_snapshot(message_window=window), command_type="SPEAK", message="발언")
+    command = build_command(snapshot=_snapshot(message_window=window), command_type="SPEAK", message="발언")
+    assert command["type"] == "SPEAK"
+
+
+@pytest.mark.parametrize("command_type", ["SAVE_AND_EXIT", "RESUME", "FAST_FORWARD"])
+def test_lifecycle_commands_do_not_send_window_id(command_type: str) -> None:
+    """window과 무관한 lifecycle command가 불필요한 필드를 보내지 않는지 확인한다."""
+
+    snapshot = _snapshot(legal_actions=[command_type])
+    command = build_command(snapshot=snapshot, command_type=command_type)
+    assert command == {"type": command_type, "expected_state_version": 12}

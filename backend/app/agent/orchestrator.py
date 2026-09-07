@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID
 
 from backend.app.llm_provider.base import LLMRequest, LLMResponse
@@ -14,7 +14,9 @@ from backend.app.llm_provider.schemas import (
     normalize_agent_proposal,
 )
 from backend.app.mcp.client import AgentContextClient
-from backend.app.repositories.agent_repository import AgentReservation, CapabilityGrant
+
+if TYPE_CHECKING:
+    from backend.app.repositories.agent_repository import AgentReservation, CapabilityGrant
 
 
 class AgentRepository(Protocol):
@@ -104,11 +106,15 @@ class AgentOrchestrator:
         try:
             try:
                 context = {}
+                # 현재 FastMCP adapter는 scope별 별도 projection이 아니라 하나의
+                # canonical snapshot을 반환하므로 같은 snapshot을 네 번 조회하지
+                # 않고 한 번만 읽어 Agent 내부 scope에 재사용한다.
+                snapshot = await self.context_client.get_context(
+                    capability=capability.raw_token,
+                    scope="public",
+                )
                 for scope in self._scopes(spec.subject_type):
-                    context[scope] = await self.context_client.get_context(
-                        capability=capability.raw_token,
-                        scope=scope,
-                    )
+                    context[scope] = snapshot
                 response = await self.provider.generate(self._request(context))
                 try:
                     proposal = normalize_agent_proposal(response.output)
@@ -117,6 +123,7 @@ class AgentOrchestrator:
                     # 모델을 반복 호출하지 않고 규칙 fallback으로 종료한다.
                     repair = await self.provider.generate(self._request(context, repair=True))
                     proposal = normalize_agent_proposal(repair.output)
+                proposal = self._coerce_target_proposal(spec, proposal, context)
                 result = AgentRunResult(status="SUCCEEDED", proposal=proposal)
             except Exception as error:
                 result = AgentRunResult(
@@ -224,10 +231,58 @@ class AgentOrchestrator:
             return NormalizedAgentProposal(type="PASS")
         if spec.job_kind not in {"NIGHT_ACTION", "VOTE"}:
             return None
-        turn_context = context.get("turn", context)
-        targets = turn_context.get("data", {}).get("valid_targets", [])
+        targets = AgentOrchestrator._valid_targets(context)
         target = targets[0].get("player_id") if targets and isinstance(targets[0], dict) else None
         if target is None:
             return None
         proposal_type = "NIGHT_ACTION" if spec.job_kind == "NIGHT_ACTION" else "VOTE"
         return NormalizedAgentProposal(type=proposal_type, target_player_id=target)
+
+    @classmethod
+    def _coerce_target_proposal(
+        cls,
+        spec: AgentJobSpec,
+        proposal: NormalizedAgentProposal,
+        context: dict[str, Any],
+    ) -> NormalizedAgentProposal:
+        """대상 행동에서 PASS 응답을 첫 합법 대상 선택으로 보정한다.
+
+        현재 Dummy Provider는 모든 작업에 PASS를 반환할 수 있고, 일부 LLM도
+        대상 행동에서 PASS를 선택할 수 있다. 밤 행동과 투표는 게임 규칙상
+        PASS가 없으므로 MCP turn context가 제공한 후보만 사용해 결정적으로
+        보정한다. 후보가 없으면 원 proposal을 반환해 상위 계층이 안전하게
+        실패 처리하도록 한다.
+        """
+
+        if spec.job_kind not in {"NIGHT_ACTION", "VOTE"}:
+            return proposal
+        expected_type = "NIGHT_ACTION" if spec.job_kind == "NIGHT_ACTION" else "VOTE"
+        if proposal.type == expected_type and proposal.target_player_id is not None:
+            return proposal
+        targets = cls._valid_targets(context)
+        target = targets[0].get("player_id") if targets and isinstance(targets[0], dict) else None
+        if target is None:
+            return proposal
+        return NormalizedAgentProposal(type=expected_type, target_player_id=target)
+
+    @staticmethod
+    def _valid_targets(context: dict[str, Any]) -> list[Any]:
+        """Fake envelope와 실제 FastMCP snapshot에서 합법 대상을 통일해 읽는다."""
+
+        nested = context.get("context")
+        if isinstance(nested, dict):
+            targets = AgentOrchestrator._valid_targets(nested)
+            if targets:
+                return targets
+        turn_context = context.get("turn", context)
+        if isinstance(turn_context, dict):
+            data = turn_context.get("data", {})
+            if isinstance(data, dict) and isinstance(data.get("valid_targets"), list):
+                return data["valid_targets"]
+            window = turn_context.get("action_window")
+            if isinstance(window, dict) and isinstance(window.get("valid_targets"), list):
+                return window["valid_targets"]
+        window = context.get("action_window")
+        if isinstance(window, dict) and isinstance(window.get("valid_targets"), list):
+            return window["valid_targets"]
+        return []

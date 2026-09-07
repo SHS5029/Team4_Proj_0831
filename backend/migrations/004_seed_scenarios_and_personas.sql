@@ -358,7 +358,14 @@ DECLARE
     template_shortage_count integer;
     reasoning_value_count integer;
 BEGIN
-    SELECT 5 - count(*)
+    -- 정상 조건을 만족하지 못한 시나리오의 개수를 직접 세어, 다섯 건이 모두
+    -- 정상인 경우 0이 되도록 한다. 기존 식처럼 5에서 실패 행 수를 빼면
+    -- 정상 데이터가 모두 존재할 때 오히려 5가 되어 재실행이 항상 실패한다.
+    SELECT count(*) FILTER (
+        WHERE NOT active
+           OR approved_at IS NULL
+           OR content_hash !~ '^[0-9a-f]{64}$'
+    )
     INTO invalid_scenario_count
     FROM public.scenario_catalog
     WHERE version = 'scenario-v1'
@@ -368,8 +375,7 @@ BEGIN
           'CLOSING_MUSEUM',
           'LAST_BANQUET_GUEST',
           'STOPPED_NIGHT_TRAIN'
-      )
-      AND (NOT active OR approved_at IS NULL OR content_hash !~ '^[0-9a-f]{64}$');
+      );
 
     IF invalid_scenario_count > 0 THEN
         RAISE EXCEPTION 'scenario-v1 seed approval or hash validation failed';

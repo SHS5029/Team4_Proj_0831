@@ -256,7 +256,7 @@ ENDED
 | `window_kind` | `varchar(24)` | `SPEECH`, `NIGHT`, `VOTE`, `REVOTE`, `FINAL_VOTE` |
 | `phase` | `varchar(32)` | 생성 당시 phase |
 | `round` | `smallint` | 0~5 |
-| `cycle` | `smallint` | 기본 1, 추가 발언 2 |
+| `cycle` | `smallint` | 현재 MVP에서는 기본 순환 1만 사용 |
 | `turn_player_id` | `uuid` | 개별 발언 차례만 설정 |
 | `opened_state_version` | `bigint` | window를 연 버전 |
 | `status` | `varchar(16)` | `OPEN`, `PAUSED`, `RESOLVING`, `RESOLVED`, `CANCELLED` |

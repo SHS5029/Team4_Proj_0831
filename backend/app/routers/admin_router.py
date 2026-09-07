@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from backend.app.core.errors import ApiError
 from backend.app.core.responses import api_success_response, request_trace_id
-from backend.app.routers.scaffold_game_router import user_id_header
+from backend.app.routers.game_router import user_id_header
 from backend.app.schemas.admin_schema import AdminGameListQuery, AdminMetricsQuery
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])

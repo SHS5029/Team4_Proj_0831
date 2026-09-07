@@ -124,7 +124,10 @@ class PostgresAgentRepository:
         connection_context, cursor_context, _ = contexts
         if hasattr(cursor_context, "__exit__"):
             cursor_context.__exit__(type(error), error, error.__traceback__ if error else None)
-        connection_context.__exit__(type(error), error, error.__traceback__ if error else None)
+        if error is None:
+            connection_context.__exit__(None, None, None)
+        else:
+            connection_context.__exit__(type(error), error, error.__traceback__)
 
     def _run_transaction(self, operation: Callable[[Any], Any]) -> Any:
         """성공·실패와 무관하게 cursor와 connection을 반드시 닫는다.
@@ -191,6 +194,39 @@ class PostgresAgentRepository:
         if lease_expires <= current:
             return None
         job_id, lease_token = uuid4(), uuid4()
+        # 이전 프로세스가 비정상 종료해 lease가 만료된 동일 작업은 새 예약을
+        # 막지 않도록 terminal 상태로 회수한다. 정상적인 RESERVED 작업은
+        # 건드리지 않아 동시에 실행 중인 Agent를 중복 처리하지 않는다.
+        cursor.execute(
+            """
+            UPDATE agent_jobs
+            SET status = 'FAILED', failure_code = 'LEASE_EXPIRED', completed_at = %s
+            WHERE window_id = %s AND player_id IS NOT DISTINCT FROM %s
+              AND job_kind = %s AND status = 'RESERVED'
+              AND lease_expires_at <= %s
+            """,
+            (current, window_id, player_id, job_kind, current),
+        )
+        cursor.execute(
+            """
+            UPDATE agent_jobs
+            SET status = 'RESERVED', reserved_state_version = %s,
+                lease_token = %s, lease_expires_at = %s,
+                normalized_proposal = NULL, failure_code = NULL, completed_at = NULL
+            WHERE window_id = %s AND player_id IS NOT DISTINCT FROM %s
+              AND job_kind = %s AND status IN ('FAILED', 'FALLBACK', 'STALE')
+            RETURNING id, game_id, player_id, window_id, job_kind,
+                      reserved_state_version, lease_token, lease_expires_at
+            """,
+            (state_version, lease_token, lease_expires, window_id, player_id, job_kind),
+        )
+        row = cursor.fetchone()
+        if row is not None:
+            return AgentReservation(
+                job_id=row[0], game_id=row[1], player_id=row[2], window_id=row[3],
+                job_kind=row[4], state_version=row[5], lease_token=row[6],
+                lease_expires_at=row[7],
+            )
         cursor.execute(
             """
             INSERT INTO agent_jobs (

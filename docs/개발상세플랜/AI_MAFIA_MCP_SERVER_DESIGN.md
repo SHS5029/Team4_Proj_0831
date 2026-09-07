@@ -1,10 +1,21 @@
 # AI 마피아 MVP MCP Server·Data Infrastructure 개발 설계서
 
+> **MVP 단순화 프로파일:** 이 문서의 bootstrap token, Engine HMAC, capability
+> state machine, custom session registry, agent lease/fencing, outbox 소비 및
+> 자동 Provider failover 설계는 운영 정본 실행 경로에서 제외한다. DB·스키마·
+> migration은 변경하지 않으며 해당 구조는 legacy 호환 문서로만 보존한다.
+
 **문서 상태:** 구현 기준 확정안
 
 **대상 패키지:** `mcp_server/mafia_game`
 
 **최종 갱신:** 2026-09-03
+
+> **현재 구현 기준 (2026-09-05):** 이 설계서의 bootstrap token, HMAC, nonce,
+> custom session registry, Engine consume와 다중 Resource·Tool WU는 아직 구현하지
+> 않는다. 현재 실행 경로는 [AI_MAFIA_MCP_FASTMCP_MINIMAL_CONNECTION_PLAN.md](../temp/AI_MAFIA_MCP_FASTMCP_MINIMAL_CONNECTION_PLAN.md)의
+> 최소 Resource·Prompt·Tool 등록부와 Backend synthetic endpoint뿐이다. 아래의
+> 확장 설계는 후속 합의 전까지 실행 지시로 사용하지 않는다.
 
 ## 1. 목적과 정본 우선순위
 
@@ -29,6 +40,19 @@ Resource의 상세 `data` field, enum, nullable, union과 길이 제약은 API �
 
 한 coding AI agent 세션은 마스터플랜의 WU 한 개 이하만 구현한다. 이 문서 전체를 한
 세션에 구현하도록 지시하지 않는다.
+
+## 1.1 현재 MVP FastMCP 전환 프로파일
+
+현재 작업은 이 문서의 전체 운영 보안 프로파일을 한 번에 구현하지 않는다. FastMCP는
+`mcp_server/mafia_game/main.py`를 composition root로 사용하고, 기존 디렉터리 안의
+`api/resources/`, `api/prompts/`, `api/tools/` 등록 모듈을 통해 컨텍스트 표면을
+제공한다. Resource·Prompt·Tool handler는 Backend adapter 호출과 결과 전달만
+담당한다. Tool의 게임 판정과 상태 변경은 Backend 책임이다.
+
+현재 FastMCP 전환에서는 MCP 내부 HMAC·bootstrap token·capability state machine·
+session registry·idle timeout·DELETE cleanup을 새로 추가하지 않는다. 이 문서의 기존
+M2~M8 세션·Engine HMAC·proposal 상세는 후속 운영 프로파일이며, 현재 MVP 전환의
+작업 기준과 충돌하는 항목은 현재 프로파일을 우선한다.
 
 ## 2. 확정 결정
 

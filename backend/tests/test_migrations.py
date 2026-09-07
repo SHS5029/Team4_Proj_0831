@@ -102,3 +102,5 @@ def test_seed_migration_contains_fixed_scenarios_and_personas() -> None:
     assert normalized.count("'observation_' || lpad") == 1
     assert normalized.count('"reasoning_skill":0.5') == 5
     assert "all mystery-v1 persona reasoning_skill values must be 0.5" in normalized
+    assert "select count(*) filter" in normalized
+    assert "select 5 - count(*) into invalid_scenario_count" not in normalized

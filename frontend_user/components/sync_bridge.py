@@ -27,7 +27,11 @@ def mount_sse(*, backend_url: str, game_id: str, user_id: UUID, last_sequence: i
     try:
         result = SYNC_COMPONENT(
             data={"backend_url": backend_url, "game_id": game_id, "user_id": str(user_id), "last_sequence": last_sequence},
-            default={"envelope": None}, on_envelope_change=lambda: None,
+            # 데이터 envelope만 state로 등록한다. 연결 상태를 state로 등록하면
+            # 연결·재연결마다 전체 Streamlit rerun이 발생해 화면이 로딩 overlay로
+            # 덮이는 문제가 있으므로, 연결 상태는 JS 내부에서만 관리한다.
+            default={"envelope": None},
+            on_envelope_change=lambda: None,
             key=f"sync-{game_id}",
         )
         envelope = getattr(result, "envelope", None)

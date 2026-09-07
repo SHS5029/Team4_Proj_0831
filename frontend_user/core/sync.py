@@ -44,9 +44,10 @@ def apply_envelope(*, snapshot: dict[str, Any], envelope: dict[str, Any]) -> tup
         if not isinstance(replacement, dict) or not isinstance(replacement.get("game"), dict):
             raise SyncEnvelopeError("SYNC_SNAPSHOT_INVALID")
         return deepcopy(replacement), "SNAPSHOT"
-    operations = data.get("operations")
-    if not isinstance(operations, list):
+    raw_operations = data.get("operations")
+    if not isinstance(raw_operations, list):
         raise SyncEnvelopeError("SYNC_OPERATIONS_INVALID")
+    operations = _flatten_operations(raw_operations)
     expected_sequence = int(current_game.get("last_sequence", 0))
     expected_index = -1
     candidate = deepcopy(snapshot)
@@ -80,6 +81,38 @@ def apply_envelope(*, snapshot: dict[str, Any], envelope: dict[str, Any]) -> tup
     candidate["game"]["last_sequence"] = last_sequence
     candidate["game"]["state_version"] = state_version
     return candidate, "DELTA"
+
+
+def _flatten_operations(raw_operations: list[Any]) -> list[dict[str, Any]]:
+    """Backend sync batch의 sequence 묶음을 검증 가능한 내부 목록으로 펼친다.
+
+    Backend는 하나의 visible transaction을 ``front_sequence``와 그 안의
+    ``operations`` 배열로 묶어 전송한다. Front가 이 경계를 무시하고 바깥
+    항목을 일반 operation으로 처리하면 operation type을 찾지 못해 전체 batch를
+    폐기하게 되므로, sequence는 유지하고 내부 index만 합성해 기존 원자 적용
+    로직에 전달한다. 테스트와 구버전 응답을 위해 이미 평탄한 목록도 허용한다.
+    """
+
+    flattened: list[dict[str, Any]] = []
+    for item in raw_operations:
+        if not isinstance(item, dict):
+            raise SyncEnvelopeError("SYNC_OPERATION_INVALID")
+        sequence = item.get("front_sequence")
+        nested = item.get("operations")
+        if nested is None:
+            flattened.append(item)
+            continue
+        if not isinstance(sequence, int) or not isinstance(nested, list):
+            raise SyncEnvelopeError("SYNC_OPERATION_BATCH_INVALID")
+        for index, operation in enumerate(nested):
+            if not isinstance(operation, dict):
+                raise SyncEnvelopeError("SYNC_OPERATION_INVALID")
+            flattened.append({
+                **operation,
+                "front_sequence": sequence,
+                "operation_index": operation.get("operation_index", index),
+            })
+    return flattened
 
 
 def _apply_operation(snapshot: dict[str, Any], operation: dict[str, Any]) -> None:

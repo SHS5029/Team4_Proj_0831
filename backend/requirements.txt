@@ -1,4 +1,4 @@
-# 현재 구현(identity API)에서 사용하는 의존성
+# Backend API와 데이터 저장에 사용하는 의존성
 fastapi>=0.116,<1.0
 pydantic>=2.11,<3.0
 psycopg[binary]>=3.2,<4.0

@@ -51,6 +51,18 @@ class GameStateKeyring:
         self._keys = dict(keys)
 
     @classmethod
+    def legacy_plaintext(cls) -> GameStateKeyring:
+        """신규 MVP 게임에 사용할 legacy seed adapter를 만든다.
+
+        현재 DB의 필수 `seed_ciphertext`, `seed_nonce`, `seed_key_id` 컬럼은
+        migration 호환을 위해 그대로 채워야 한다. 신규 MVP에서는 별도 keyring을
+        요구하지 않으므로 이 adapter가 seed 원문을 ciphertext 위치에 저장하고,
+        기존 암호화 행은 설정된 keyring을 사용할 때만 복호화한다.
+        """
+
+        return cls(active_key_id="legacy-plaintext", keys={})
+
+    @classmethod
     def from_settings(cls, settings: Settings) -> GameStateKeyring:
         """검증된 설정이 가리키는 JSON keyring을 안전하게 불러온다."""
 
@@ -84,6 +96,12 @@ class GameStateKeyring:
 
         if not isinstance(seed, bytes) or not seed:
             raise ValueError("Game seed must be non-empty bytes")
+        if not self._keys:
+            return EncryptedGameSeed(
+                ciphertext=seed,
+                nonce=b"legacy-mvp",
+                key_id=self._active_key_id,
+            )
         nonce = os.urandom(AES_GCM_NONCE_BYTES)
         ciphertext = AESGCM(self._keys[self._active_key_id]).encrypt(nonce, seed, None)
         return EncryptedGameSeed(
@@ -95,6 +113,10 @@ class GameStateKeyring:
     def decrypt_seed(self, *, ciphertext: bytes, nonce: bytes, key_id: str) -> bytes:
         """DB의 key ID로 기존 seed를 복호화하며 위변조는 즉시 거부한다."""
 
+        if not self._keys and key_id == self._active_key_id and nonce == b"legacy-mvp":
+            if not ciphertext:
+                raise RuntimeError("Legacy game seed is empty")
+            return ciphertext
         key = self._keys.get(key_id)
         if key is None:
             raise RuntimeError("Game state decryption key is unavailable")
@@ -281,7 +303,7 @@ class PostgresGameRepository:
             JOIN public.game_players AS human
               ON human.game_id = g.id AND human.kind = 'HUMAN'
             WHERE g.owner_user_id = %s
-              AND (%s IS NULL OR g.status = %s)
+              AND (%s::varchar IS NULL OR g.status = %s::varchar)
             ORDER BY g.updated_at DESC, g.id DESC
             LIMIT %s
             """,

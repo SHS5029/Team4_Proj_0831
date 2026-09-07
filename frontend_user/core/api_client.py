@@ -62,18 +62,29 @@ class BackendApiConfig:
 class ApiClient:
     """공개 사용자 API를 호출하는 UUID-only client."""
 
-    # 팀 전달 사항: Backend는 일반 사용자 요청에서 X-User-Id와 X-Request-Id만
-    # 읽고, Authorization·OIDC token·Front HMAC은 요구하지 않아야 한다. UUID는
-    # 인증 자격증명이 아니므로 Backend가 최초 쓰기 요청에서 사용자 행을 멱등
-    # 생성하고 게임 소유권은 owner_user_id와 비교해야 한다.
+    # Backend는 일반 사용자 요청에서 UUID 식별자와 요청 추적 ID만 읽는다.
+    # UUID는 인증 자격증명이 아니므로 Backend가 최초 쓰기 요청에서 사용자 행을
+    # 멱등 생성하고 게임 소유권은 owner_user_id와 비교한다.
 
     def __init__(self, *, user_id: UUID | str, api_url: str | None = None,
                  transport: HttpTransport | None = None,
                  request_id_factory: Callable[[], UUID] = uuid4) -> None:
         self.user_id = UUID(str(user_id))
+        if self.user_id.version != 4:
+            raise ValueError("사용자 ID는 UUID v4여야 합니다.")
         self.config = BackendApiConfig(api_url=api_url or os.getenv("BACKEND_API_URL", "http://127.0.0.1:8000"))
         self._transport = transport or _send
         self._request_id_factory = request_id_factory
+
+    def get_health(self) -> dict[str, Any]:
+        """Backend 프로세스의 HTTP 처리 가능 여부를 조회한다."""
+
+        return self._request("GET", "/health")
+
+    def get_ready(self) -> dict[str, Any]:
+        """Backend가 필수 저장소와 함께 요청을 받을 준비가 되었는지 조회한다."""
+
+        return self._request("GET", "/ready")
 
     def get_games(self, *, status: str | None = None, cursor: str | None = None,
                   limit: int = 20) -> dict[str, Any]:

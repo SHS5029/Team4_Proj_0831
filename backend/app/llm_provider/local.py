@@ -18,9 +18,10 @@ from backend.app.llm_provider.errors import (
 class LocalProvider(LLMProvider):
     """LM Studio 등 OpenAI 호환 `/chat/completions` 서버용 adapter다."""
 
-    def __init__(self, base_url: str, model: str) -> None:
+    def __init__(self, base_url: str, model: str, *, keep_alive: str = "10m") -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self.keep_alive = keep_alive
 
     async def generate(self, request: LLMRequest) -> LLMResponse:
         """로컬 응답의 첫 message를 JSON object로 파싱한다."""
@@ -32,9 +33,18 @@ class LocalProvider(LLMProvider):
                     f"{self.base_url}/chat/completions",
                     json={
                         "model": self.model,
+                        "keep_alive": self.keep_alive,
                         "stream": False,
                         "messages": list(request.messages),
                         "max_tokens": request.max_output_tokens,
+                        # 게임 행동 proposal에는 사고 trace가 필요하지 않다. Ollama
+                        # 호환 endpoint가 이를 지원하면 생성량과 응답 지연을 줄이고,
+                        # 지원하지 않는 OpenAI 호환 서버는 이 선택 필드를 무시한다.
+                        "think": False,
+                        # Local OpenAI 호환 서버가 자연어 설명을 섞지 않고 JSON
+                        # object를 반환하도록 요청한다. 최종 field·enum 검증은
+                        # 여전히 Backend 정규화 단계에서 수행한다.
+                        "response_format": {"type": "json_object"},
                     },
                 )
                 response.raise_for_status()

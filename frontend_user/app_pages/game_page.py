@@ -188,8 +188,9 @@ def render(snapshot: dict[str, Any]) -> None:
 
     # GET snapshot·sync 결과가 화면의 단일 기준이다. Backend가 제공한 문자열은
     # 일반 Streamlit 텍스트로만 렌더링하고, CSS용 HTML에는 정적 장식만 사용한다.
-    game = snapshot.get("game", {})
     client = st.session_state["game.client"]
+    game = snapshot.get("game", {})
+    game_id = game.get("game_id")
     envelope = mount_sse(
         backend_url=client.config.api_url,
         game_id=str(game.get("game_id")),
@@ -207,10 +208,39 @@ def render(snapshot: dict[str, Any]) -> None:
             envelope = None
     try:
         snapshot = apply_sync(snapshot=snapshot, envelope=envelope)
+        if _has_delta_operations(envelope):
+            # SSE delta는 공통 공개 operation 중심이므로 사용자별 legal_actions와
+            # valid_targets가 비어 있을 수 있다. 변경 batch를 받은 직후 같은
+            # game_id의 authoritative snapshot으로 전체 projection을 보강한다.
+            try:
+                response = client.get_game(str(game.get("game_id")))
+                refreshed = response.get("data") if isinstance(response.get("data"), dict) else response
+                if isinstance(refreshed, dict) and isinstance(refreshed.get("game"), dict):
+                    snapshot = refreshed
+            except Exception:
+                # delta는 이미 원자적으로 반영했으므로 재조회 일시 실패 시에도
+                # 화면을 비우지 않고 다음 event 또는 polling에서 다시 시도한다.
+                pass
     except SyncEnvelopeError:
-        st.session_state["game.sync_status"] = "STALE"
-        st.warning("게임 상태를 다시 확인하고 있어요.")
+        # sequence/version gap은 기존 화면을 계속 신뢰하면 안 되므로, 부분 적용
+        # 없이 Backend의 전체 snapshot을 다시 읽는다. 재조회도 실패한 경우에만
+        # STALE로 전환해 사용자가 명시적으로 복구를 시도할 수 있게 한다.
+        try:
+            response = client.get_game(str(game.get("game_id")))
+            refreshed = response.get("data") if isinstance(response.get("data"), dict) else response
+            if not isinstance(refreshed, dict) or not isinstance(refreshed.get("game"), dict):
+                raise ValueError("INVALID_RESPONSE")
+            snapshot = refreshed
+            st.session_state["game.latest_snapshot"] = snapshot
+            st.session_state["game.sync_status"] = "POLLING"
+        except Exception:
+            st.session_state["game.sync_status"] = "STALE"
+            st.warning("게임 상태를 다시 확인하고 있어요.")
     else:
+        # SSE·polling으로 반영한 authoritative snapshot을 다음 Streamlit rerun에도
+        # 보존한다. 이 값을 저장하지 않으면 component 상태만 갱신되고, 다른 화면
+        # 전환이나 재렌더링에서 이전 phase·action window가 다시 사용될 수 있다.
+        st.session_state["game.latest_snapshot"] = snapshot
         st.session_state["game.sync_status"] = "LIVE" if envelope else "POLLING"
 
     game = snapshot.get("game", {})
@@ -300,6 +330,18 @@ def render(snapshot: dict[str, Any]) -> None:
         _render_private_panel(me=me)
 
     # 사망자는 위의 전용 분기에서 반환되므로 이 아래에는 생존자 입력만 존재한다.
+
+
+def _has_delta_operations(envelope: dict[str, Any] | None) -> bool:
+    """실제 SSE 변경 batch가 있어 개인 projection 재조회가 필요한지 판단한다."""
+
+    if not isinstance(envelope, dict):
+        return False
+    data = envelope.get("data", envelope)
+    if not isinstance(data, dict) or data.get("mode") != "DELTA":
+        return False
+    operations = data.get("operations")
+    return isinstance(operations, list) and bool(operations)
 
 
 def _render_players(*, snapshot: dict[str, Any], me: dict[str, Any], phase: str) -> None:
