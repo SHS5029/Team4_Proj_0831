@@ -735,6 +735,10 @@ Backend·MCP·일반 사용자 Front를 함께 실행하고, `Ctrl+C` 또는 한
 `http://127.0.0.1:18100/mcp`, Front `http://127.0.0.1:18501`입니다.
 다른 프로젝트와 포트가 겹치면 세 주소를 함께 맞추도록 실행 포트를 바꿀 수 있습니다.
 
+2026-09-08 실행본의 게임별 진행 집계와 `MCP_UNAVAILABLE`, `WORKER_FAILED`,
+`Event loop is closed` 오류 분석은
+[AI 마피아 게임 실행 로그 보고서](docs/AI_MAFIA_GAME_RUN_LOG_20260908.md)에 기록했습니다.
+
 ```bash
 AI_MAFIA_BACKEND_PORT=28000 AI_MAFIA_MCP_PORT=28100 \
 AI_MAFIA_FRONTEND_PORT=28501 ./run_openai.sh
