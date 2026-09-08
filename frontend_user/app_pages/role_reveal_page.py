@@ -8,10 +8,12 @@ import streamlit as st
 
 from frontend_user.app_pages.game_page import (
     _process_shell_pending,
+    _render_save_control,
     _render_shell_command,
+    render_game_back_button,
     render_saved_control,
 )
-from frontend_user.components.theme import render_application_header, render_header_back_button
+from frontend_user.components.theme import render_application_header
 from frontend_user.core.view_models import own_private_view, public_players
 
 ROLE_REVEAL_CSS = """
@@ -137,7 +139,7 @@ def render(snapshot: dict[str, Any]) -> None:
     st.markdown(ROLE_REVEAL_CSS, unsafe_allow_html=True)
     render_application_header(
         title="AI 마피아",
-        action_renderer=lambda: render_header_back_button(current_page="game"),
+        action_renderer=lambda: render_game_back_button(snapshot=snapshot),
     )
 
     scenario = snapshot.get("scenario", {})
@@ -145,6 +147,9 @@ def render(snapshot: dict[str, Any]) -> None:
     client = st.session_state["game.client"]
     game_id = str(game.get("game_id"))
     _process_shell_pending(client=client, game_id=game_id)
+    pending_save = st.session_state.get("game.save_pending")
+    if isinstance(pending_save, dict) and pending_save.get("game_id") == game_id:
+        _render_save_control(client=client, game_id=game_id, snapshot=snapshot)
     me = own_private_view(snapshot)
     role_name, role_icon, role_text = ROLE_PRESENTATION.get(
         me.get("role"),

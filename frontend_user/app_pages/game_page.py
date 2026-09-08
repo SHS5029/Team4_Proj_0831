@@ -323,7 +323,7 @@ def render(snapshot: dict[str, Any]) -> None:
                     snapshot=snapshot,
                 )
         with back_column:
-            render_header_back_button(current_page="game")
+            render_game_back_button(snapshot=snapshot)
 
     render_application_header(
         title="AI 마피아",
@@ -1016,7 +1016,7 @@ def _render_save_control(
         pending = {}
     status = pending.get("status")
     allowed = command_type in snapshot.get("legal_actions", [])
-    locked = bool(st.session_state.get("game.sync_hidden")) or any(
+    locked = _has_pending_deletion(game_id) or bool(st.session_state.get("game.sync_hidden")) or any(
         isinstance(existing := st.session_state.get(key), dict)
         and existing.get("game_id") == game_id
         and existing.get("status") in SHELL_LOCKED
@@ -1248,8 +1248,86 @@ SHELL_COMMANDS = {
 SHELL_LOCKED = {"PENDING_TO_RENDER", "IN_FLIGHT", "RETRYABLE_UNKNOWN", "REFRESH_REQUIRED", "REFRESH_FAILED"}
 
 
-def _render_save_confirmation_dialog(*, game_id: str, snapshot: dict[str, Any]) -> None:
-    """사용자가 저장 시점을 확인한 뒤에만 게임 중단 command를 대기열에 넣는다."""
+def _has_pending_deletion(game_id: str) -> bool:
+    """다른 게임의 미확정 삭제 요청이 현재 게임의 입력까지 잠그지 않게 범위를 확인한다."""
+
+    pending = st.session_state.get("game.delete_pending")
+    return isinstance(pending, dict) and pending.get("game_id") == game_id
+
+
+def _dismiss_exit_dialog() -> None:
+    """닫기·계속 플레이는 화면과 미확정 요청을 보존하고 팝업 표시만 해제한다."""
+
+    st.session_state.pop("game.exit_dialog_id", None)
+
+
+def render_game_back_button(*, snapshot: dict[str, Any]) -> None:
+    """진행 게임의 뒤로가기는 저장·삭제 선택을 기다리고 rerun 중에도 팝업을 유지한다."""
+
+    game = snapshot.get("game", {})
+    game_id = str(game.get("game_id"))
+    pending = st.session_state.get("game.delete_pending")
+    needs_confirmation = game.get("status") == "IN_PROGRESS" or (
+        isinstance(pending, dict) and pending.get("game_id") == game_id
+    )
+    if needs_confirmation:
+        render_header_back_button(
+            current_page="game",
+            on_back=lambda: st.session_state.update({"game.exit_dialog_id": game_id}),
+        )
+        if st.session_state.get("game.exit_dialog_id") == game_id:
+            _render_save_confirmation_dialog(game_id=game_id, snapshot=snapshot, exiting=True)
+    else:
+        _dismiss_exit_dialog()
+        render_header_back_button(current_page="game")
+    if message := st.session_state.pop("game.exit_error", None):
+        st.warning(message)
+
+
+def _delete_from_exit_dialog(*, game_id: str, snapshot: dict[str, Any]) -> None:
+    """응답 유실은 같은 대상·버전으로 재확인하고 삭제가 확인된 경우에만 홈으로 이동한다."""
+
+    pending = st.session_state.get("game.delete_pending")
+    if not isinstance(pending, dict) or pending.get("game_id") != game_id:
+        pending = {"game_id": game_id, "expected_state_version": snapshot["game"]["state_version"]}
+    st.session_state["game.delete_pending"] = pending
+    try:
+        response = st.session_state["game.client"].delete_game(**pending)
+        data = response.get("data", response)
+        if not isinstance(data, dict) or data.get("game_id") != game_id or data.get("deleted") is not True:
+            raise ValueError("INVALID_RESPONSE")
+    except ApiResponseError as error:
+        if error.status_code != 404 or error.code != "GAME_NOT_FOUND":
+            if error.status_code == 409:
+                st.session_state.pop("game.delete_pending", None)
+                st.session_state.pop("game.delete_error", None)
+                _dismiss_exit_dialog()
+                st.session_state["game.exit_error"] = "게임 상태가 바뀌어 삭제하지 않았습니다. 최신 상태를 확인한 뒤 뒤로가기를 다시 눌러 주세요."
+                st.rerun()
+            st.session_state["game.delete_error"] = True
+            st.rerun()
+    except (ValueError, AttributeError):
+        st.session_state["game.delete_error"] = True
+        st.rerun()
+    finish_deleted_game()
+
+
+def finish_deleted_game() -> None:
+    """직접 삭제 응답이나 결과 불명 삭제의 후속 404를 확인한 뒤 홈 상태를 복구한다."""
+
+    # 삭제 응답 또는 후속 조회로 접근 불가를 확인했으므로 관련 화면 cache를 해제한다.
+    # identity·작성 중 피드백은 유지하며 홈 목록은 다음 방문 때 서버에서 다시 읽는다.
+    for key in list(st.session_state):
+        if (str(key).startswith("game.") and key != "game.client") or key in {
+            "home.games", "home.games_error", "home.games_loaded_at", "home.games_loading",
+        }:
+            st.session_state.pop(key, None)
+    st.session_state.update({"navigation.page": "home", "navigation.current_page": "home", "navigation.history": []})
+    st.rerun()
+
+
+def _render_save_confirmation_dialog(*, game_id: str, snapshot: dict[str, Any], exiting: bool = False) -> None:
+    """저장 시점과 삭제 범위를 안내하고 명시적 선택 뒤에만 서버 상태를 변경한다."""
 
     game = snapshot.get("game") if isinstance(snapshot.get("game"), dict) else {}
     window = snapshot.get("action_window") if isinstance(snapshot.get("action_window"), dict) else {}
@@ -1267,9 +1345,9 @@ def _render_save_confirmation_dialog(*, game_id: str, snapshot: dict[str, Any]) 
     else:
         remaining_text = "시간 확인 중"
 
-    @st.dialog("게임 저장")
+    @st.dialog("저장 / 게임 삭제" if exiting else "게임 저장", on_dismiss=_dismiss_exit_dialog)
     def save_dialog() -> None:
-        st.markdown("## 💾 게임 저장")
+        st.markdown("## 게임을 나가시겠어요?" if exiting else "## 💾 게임 저장")
         st.caption("현재 상황")
         with st.container(border=True):
             phase_col, time_col = st.columns([2, 1])
@@ -1277,11 +1355,22 @@ def _render_save_confirmation_dialog(*, game_id: str, snapshot: dict[str, Any]) 
             phase_col.caption(cycle)
             time_col.metric("남은 시간", remaining_text)
         st.info("게임을 저장하고 나가면 나중에 이어서 플레이할 수 있습니다.")
+        locked = bool(st.session_state.get("game.sync_hidden")) or any(
+            isinstance(pending := st.session_state.get(key), dict)
+            and pending.get("game_id") == game_id and pending.get("status") in SHELL_LOCKED
+            for _, _, key in SHELL_COMMANDS.values()
+        )
+        delete_pending = _has_pending_deletion(game_id)
+        if exiting:
+            st.warning("게임 삭제를 선택하면 이 게임의 진행 상황과 기록이 삭제되며 복구할 수 없습니다.")
+            if st.session_state.get("game.delete_error"):
+                st.error("삭제 결과를 확인하지 못했습니다. 같은 삭제 요청 다시 확인을 눌러 주세요.")
         save_col, continue_col = st.columns(2)
         if save_col.button(
             "저장하고 나가기",
             key="game.save_confirm",
             type="primary",
+            disabled=locked or bool(delete_pending) or "SAVE_AND_EXIT" not in snapshot.get("legal_actions", []),
             use_container_width=True,
         ):
             _queue_shell_command(
@@ -1289,13 +1378,22 @@ def _render_save_confirmation_dialog(*, game_id: str, snapshot: dict[str, Any]) 
                 snapshot=snapshot,
                 command_type="SAVE_AND_EXIT",
             )
+            _dismiss_exit_dialog()
             st.rerun()
         if continue_col.button(
             "계속 플레이",
             key="game.save_cancel",
             use_container_width=True,
         ):
+            _dismiss_exit_dialog()
             st.rerun()
+        if exiting and st.button(
+            "같은 삭제 요청 다시 확인" if delete_pending else "게임 삭제",
+            key="game.delete_confirm",
+            disabled=locked,
+            use_container_width=True,
+        ):
+            _delete_from_exit_dialog(game_id=game_id, snapshot=snapshot)
 
     save_dialog()
 
@@ -1369,7 +1467,7 @@ def _render_shell_command(*, client: Any, game_id: str, snapshot: dict[str, Any]
         pending = {}
     status = pending.get("status")
     allowed = command_type in snapshot.get("legal_actions", [])
-    locked = bool(st.session_state.get("game.sync_hidden")) or any(isinstance(p := st.session_state.get(key), dict)
+    locked = _has_pending_deletion(game_id) or bool(st.session_state.get("game.sync_hidden")) or any(isinstance(p := st.session_state.get(key), dict)
                  and p.get("game_id") == game_id and p.get("status") in SHELL_LOCKED
                  for _, _, key in SHELL_COMMANDS.values())
     if allowed or status in SHELL_LOCKED:

@@ -108,6 +108,15 @@ class _Client:
         self.refresh_failures = refresh_failures
         self.calls = []
         self.reads = 0
+        self.delete_calls = []
+
+    def delete_game(self, **kwargs):
+        """실제 게임 없이 삭제 성공·응답 유실·거부를 재현한다."""
+
+        self.delete_calls.append(deepcopy(kwargs))
+        if self.failures:
+            raise self.failures.pop(0)
+        return {"data": {"game_id": kwargs["game_id"], "deleted": True}}
 
     def submit_command(self, **kwargs):
         self.calls.append(deepcopy(kwargs))
@@ -192,10 +201,10 @@ def _page_app(client, snapshot, tick=None, no_envelope=False, hidden=False, comp
     from frontend_user.app_pages import game_page, role_reveal_page
     st.session_state["game.client"] = client
     st.session_state.setdefault("navigation.page", "game")
-    st.session_state.setdefault("game.game_id", snapshot["game"]["game_id"])
     if st.session_state["navigation.page"] == "home":
         st.write("홈으로 이동됨")
         return
+    st.session_state.setdefault("game.game_id", snapshot["game"]["game_id"])
     current = st.session_state.get("game.latest_snapshot", snapshot)
     if current["game"]["phase"] == "ROLE_REVEAL":
         role_reveal_page.render(current)
@@ -783,3 +792,192 @@ def test_back_to_home_clears_history_and_only_invalidates_home_list_projection()
     assert app.session_state["game.game_id"] == GAME
     assert app.session_state["form.feedback.comment"] == "작성 중인 내용"
     assert "home.games" not in app.session_state
+
+
+@pytest.mark.parametrize("phase,alive", [
+    ("ROLE_REVEAL", True), ("DAY_DISCUSSION", True), ("NIGHT_ACTION", True),
+    ("DAY_VOTE", True), ("DAY_DISCUSSION", False),
+])
+def test_game_back_opens_exit_dialog_without_mutating_or_navigating(phase, alive):
+    """역할 공개·진행·관전 모두 뒤로가기로 이탈하지 않고 선택 팝업을 유지한다."""
+
+    snapshot = _snapshot(phase=phase)
+    snapshot["me"]["alive"] = alive
+    client = _Client(snapshot)
+    app = AppTest.from_function(_page_app, args=(client, snapshot)).run()
+    app.button(key="header.back").click().run()
+    assert not app.exception
+    assert app.session_state["navigation.page"] == "game"
+    assert client.calls == client.delete_calls == []
+    assert app.button(key="game.save_confirm").label == "저장하고 나가기"
+    assert app.button(key="game.delete_confirm").label == "게임 삭제"
+    app.run()
+    assert app.button(key="game.save_cancel").label == "계속 플레이"
+    app.button(key="game.save_cancel").click().run()
+    assert not app.exception
+    assert app.session_state["navigation.page"] == "game"
+    assert "game.exit_dialog_id" not in app.session_state
+    assert client.calls == client.delete_calls == []
+    assert not any(button.key == "game.delete_confirm" for button in app.button)
+
+
+@pytest.mark.parametrize("choice", ["save", "delete"])
+def test_exit_dialog_only_mutates_after_explicit_choice(choice):
+    """선택한 작업 하나만 실행하고 서버 성공 뒤 홈으로 이동한다."""
+
+    snapshot = _snapshot()
+    client = _Client(snapshot)
+    app = AppTest.from_function(_page_app, args=(client, snapshot)).run()
+    app.session_state["home.games"] = [GAME]
+    app.session_state["identity.user_id"] = HUMAN
+    app.button(key="header.back").click().run()
+    app.button(key=f"game.{choice}_confirm").click().run()
+    assert not app.exception
+    assert app.session_state["navigation.page"] == "home"
+    assert app.session_state["identity.user_id"] == HUMAN
+    assert "game.game_id" not in app.session_state
+    assert "home.games" not in app.session_state
+    if choice == "save":
+        assert client.calls[0]["command"]["type"] == "SAVE_AND_EXIT"
+        assert client.delete_calls == []
+    else:
+        assert client.delete_calls == [{"game_id": GAME, "expected_state_version": 12}]
+        assert client.calls == []
+
+
+def test_exit_delete_unknown_keeps_game_and_retries_same_request():
+    """응답 유실 이후 자동 재삭제하지 않고 최초 버전의 요청만 재확인한다."""
+
+    snapshot = _snapshot()
+    client = _Client(snapshot, [ApiUnavailableError(status_code=503, code="DEPENDENCY_UNAVAILABLE")])
+    app = AppTest.from_function(_page_app, args=(client, snapshot)).run()
+    app.button(key="header.back").click().run()
+    app.button(key="game.delete_confirm").click().run()
+    assert not app.exception and len(client.delete_calls) == 1
+    assert app.session_state["navigation.page"] == "game"
+    assert app.session_state["game.game_id"] == GAME
+    assert app.button(key="game.save_confirm").disabled
+    assert app.button(key="game.delete_confirm").label == "같은 삭제 요청 다시 확인"
+    app.run()
+    assert len(client.delete_calls) == 1
+    app.button(key="game.delete_confirm").click().run()
+    assert not app.exception
+    assert client.delete_calls[0] == client.delete_calls[1]
+    assert app.session_state["navigation.page"] == "home"
+
+
+def test_exit_delete_stale_keeps_game_and_requires_new_confirmation():
+    """진행 도중 버전이 바뀌면 삭제와 자동 재시도를 중단한다."""
+
+    snapshot = _snapshot()
+    client = _Client(snapshot, [ApiResponseError(status_code=409, code="STALE_STATE_VERSION")])
+    app = AppTest.from_function(_page_app, args=(client, snapshot)).run()
+    app.button(key="header.back").click().run()
+    app.button(key="game.delete_confirm").click().run()
+    assert not app.exception
+    assert len(client.delete_calls) == 1
+    assert app.session_state["navigation.page"] == "game"
+    assert "game.delete_pending" not in app.session_state
+    assert "game.exit_dialog_id" not in app.session_state
+    assert any("게임 상태가 바뀌어" in message.value for message in app.warning)
+
+
+def test_exit_delete_already_missing_returns_home():
+    """삭제 응답을 잃은 뒤 같은 게임의 404를 받으면 접근 불가 상태를 홈에 반영한다."""
+
+    snapshot = _snapshot()
+    client = _Client(snapshot, [ApiResponseError(status_code=404, code="GAME_NOT_FOUND")])
+    app = AppTest.from_function(_page_app, args=(client, snapshot)).run()
+    app.button(key="header.back").click().run()
+    app.button(key="game.delete_confirm").click().run()
+    assert not app.exception
+    assert app.session_state["navigation.page"] == "home"
+
+
+def test_saved_game_back_returns_home_without_exit_dialog():
+    """이미 저장된 게임은 다시 저장·삭제를 요구하지 않고 기존 뒤로가기를 따른다."""
+
+    snapshot = _snapshot(status="SAVED")
+    client = _Client(snapshot)
+    app = AppTest.from_function(_page_app, args=(client, snapshot)).run()
+    app.button(key="header.back").click().run()
+    assert not app.exception
+    assert app.session_state["navigation.page"] == "home"
+    assert client.calls == client.delete_calls == []
+
+
+@pytest.mark.parametrize("blocked", ["hidden", "save_pending", "disallowed_save"])
+def test_exit_dialog_respects_sync_and_pending_command_locks(blocked):
+    """최신 상태 미확인·결과 불명 요청은 저장과 삭제가 충돌하지 않도록 잠근다."""
+
+    snapshot = _snapshot()
+    if blocked == "disallowed_save":
+        snapshot["legal_actions"] = []
+    client = _Client(snapshot)
+    app = AppTest.from_function(_page_app, args=(client, snapshot), kwargs={"hidden": blocked == "hidden"})
+    if blocked == "save_pending":
+        app.session_state["game.save_pending"] = {"game_id": GAME, "status": "RETRYABLE_UNKNOWN"}
+    app.run()
+    app.button(key="header.back").click().run()
+    assert not app.exception
+    assert app.button(key="game.save_confirm").disabled
+    assert app.button(key="game.delete_confirm").disabled is (blocked != "disallowed_save")
+    assert client.calls == client.delete_calls == []
+
+
+def _missing_deleted_game_app(client):
+    """실제 dispatcher의 첫 GET 실패를 합성 identity와 API로 재현한다."""
+
+    from unittest.mock import patch
+    from uuid import UUID
+    import streamlit as st
+    from frontend_user import app as application
+
+    with patch.object(application, "load_identity", return_value=(UUID("00000000-0000-4000-8000-000000000203"), "LOCAL", None)), patch.object(
+        application, "ApiClient", return_value=client,
+    ), patch.object(application, "render_home", side_effect=lambda client: st.write("복구된 홈")), patch.object(
+        application, "should_load_games", return_value=False,
+    ):
+        application.main()
+
+
+@pytest.mark.parametrize("pending_game", [GAME, AI, None])
+def test_dispatcher_recovers_missing_game_only_after_matching_delete_request(pending_game):
+    """소유 게임 삭제 뒤 404는 홈으로 복구하고 일반 조회 실패와 타 게임 요청은 보존한다."""
+
+    from unittest.mock import Mock
+    client = Mock()
+    client.get_game.side_effect = ApiResponseError(status_code=404, code="GAME_NOT_FOUND")
+    app = AppTest.from_function(_missing_deleted_game_app, args=(client,))
+    app.session_state["identity.user_id"] = HUMAN
+    app.session_state["navigation.page"] = "game"
+    app.session_state["game.game_id"] = GAME
+    if pending_game:
+        app.session_state["game.delete_pending"] = {"game_id": pending_game, "expected_state_version": 12}
+    app.run()
+    assert not app.exception
+    if pending_game == GAME:
+        assert app.session_state["navigation.page"] == "home"
+        assert "game.game_id" not in app.session_state
+        assert "game.delete_pending" not in app.session_state
+    else:
+        assert app.session_state["navigation.page"] == "game"
+        assert app.button(key="game.load_home")
+
+
+@pytest.mark.parametrize("phase", ["ROLE_REVEAL", "DAY_DISCUSSION"])
+def test_exit_save_response_loss_keeps_retry_available(phase):
+    """뒤로가기에서 저장을 선택한 뒤 응답이 유실돼도 원래 요청으로 재확인할 수 있다."""
+
+    snapshot = _snapshot(phase=phase)
+    client = _Client(snapshot, [ApiUnavailableError(status_code=503, code="DEPENDENCY_UNAVAILABLE")])
+    app = AppTest.from_function(_page_app, args=(client, snapshot)).run()
+    app.button(key="header.back").click().run()
+    app.button(key="game.save_confirm").click().run()
+    assert not app.exception
+    assert app.session_state["navigation.page"] == "game"
+    assert len(client.calls) == 1
+    app.button(key="game.save_exit_retry").click().run()
+    assert not app.exception
+    assert app.session_state["navigation.page"] == "home"
+    assert client.calls[0] == client.calls[1]

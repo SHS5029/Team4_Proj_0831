@@ -162,7 +162,7 @@ class PostgresActionCommandService(PostgresBeginGameService):
                     else:
                         self._persist_action(cursor, state, window, submissions, resolution,
                                              current_version, current_time, game_row.get("fast_forward_enabled") is True,
-                                             phase, round_number)
+                                             phase, round_number, user_action=not agent)
                     result = self._result(game_id, command, expected_state_version, idempotency_key,
                                           result_version=state.state_version)
                     self._receipts.insert(cursor, principal_type=principal_type, principal_id=principal_id,
@@ -260,7 +260,9 @@ class PostgresActionCommandService(PostgresBeginGameService):
                     restore_action_submissions(state, submissions)
                     resolution = self._resolve(state, phase, round_number, submissions, force=True)
                     self._persist_action(cursor, state, window, submissions, resolution, accepted_version,
-                                         current_time, game.get("fast_forward_enabled") is True, phase, round_number)
+                                         current_time, game.get("fast_forward_enabled") is True,
+                                         phase, round_number,
+                                         user_action=False)
                     return self._result(game_id, "AUTO_RESOLVE_NIGHT" if night else "AUTO_RESOLVE_VOTE", accepted_version)
         except ApiError:
             raise
@@ -354,7 +356,7 @@ class PostgresActionCommandService(PostgresBeginGameService):
     def _persist_action(self, cursor: Any, state: GameState, window: Mapping[str, Any],
                         submissions: list[dict[str, Any]], resolution: dict[str, Any] | None,
                         version: int, now: datetime, fast_forward_enabled: bool,
-                        phase: str, round_number: int) -> None:
+                        phase: str, round_number: int, *, user_action: bool) -> None:
         """원장·탈락 원인·상태·다음 window·공개 결과를 같은 transaction에 저장한다."""
 
         state.state_version = version + 1
@@ -371,7 +373,9 @@ class PostgresActionCommandService(PostgresBeginGameService):
             following = next_window(state, now)
             if following is not None:
                 self._actions.open_window(cursor, following)
-        self._games.update_game_state(cursor, state=state, expected_state_version=version)
+        self._games.update_game_state(
+            cursor, state=state, expected_state_version=version, user_action=user_action,
+        )
         front_sequence = self._games.next_front_sequence(cursor, state.game_id)
         self._append_events(cursor, state=state, next_window=following, front_sequence=front_sequence,
                             now=now, fast_forward_enabled=fast_forward_enabled,
@@ -403,7 +407,9 @@ class PostgresActionCommandService(PostgresBeginGameService):
                     state.state_version = version + 1
                     state.updated_at = now
                     state.fast_forward_enabled = True
-                    self._games.update_game_state(cursor, state=state, expected_state_version=version)
+                    self._games.update_game_state(
+                        cursor, state=state, expected_state_version=version, user_action=True,
+                    )
                     front_sequence = self._games.next_front_sequence(cursor, game_id)
                     window = self._actions.current_window(cursor, game_id=game_id)
                     self._append_events(cursor, state=state, next_window=window, front_sequence=front_sequence,

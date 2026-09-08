@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from uuid import UUID
+from typing import Literal
 
 from fastapi import APIRouter, Header, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -88,6 +89,41 @@ async def get_game(request: Request, game_id: UUID, x_user_id: str | None = Head
     """canonical snapshot만 반환하고 legacy 게임으로 fallback하지 않는다."""
 
     return api_success_response(request, game_runtime(request).snapshot(user_id_header(x_user_id), game_id))
+
+
+@router.delete("/{game_id}")
+async def delete_game(
+    request: Request,
+    game_id: UUID,
+    expected_state_version: int = Query(..., ge=1),
+    x_user_id: str | None = Header(default=None),
+) -> JSONResponse:
+    """사용자가 확인한 버전의 소유 게임 하나만 삭제하도록 업무 서비스에 위임한다."""
+
+    owner = user_id_header(x_user_id)
+    data = await asyncio.to_thread(
+        game_runtime(request).delete_game, owner, game_id,
+        expected_state_version=expected_state_version,
+    )
+    return api_success_response(request, data)
+
+
+@router.get("/{game_id}/vote-insights")
+async def vote_insights(
+    request: Request,
+    game_id: UUID,
+    window_id: UUID = Query(...),
+    scope: Literal["current_discussion", "game"] = Query(default="current_discussion"),
+    x_user_id: str | None = Header(default=None),
+) -> JSONResponse:
+    """앱에 주입된 읽기 서비스의 동기 조회를 이벤트 루프 밖에서 수행한다."""
+    owner = user_id_header(x_user_id)
+    service = request.app.state.vote_insight_service
+    data = await asyncio.to_thread(
+        service.get, owner, game_id, window_id=window_id, scope=scope,
+        analysis_available=not getattr(request.app.state, "speech_analysis_start_failed", False),
+    )
+    return api_success_response(request, data)
 
 
 @router.post("/{game_id}/commands")

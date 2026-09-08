@@ -81,8 +81,18 @@ class PostgresActionRepository:
         return [dict(row) for row in cursor.fetchall()]
 
     def expired_discussions(self, cursor: Any, *, now: Any) -> list[dict[str, Any]]:
-        """열린 자유 토론만 선택하며 서비스가 다시 잠가 마감 여부를 확정한다."""
-        cursor.execute("SELECT g.id, g.owner_user_id FROM public.games g JOIN public.action_windows w ON w.game_id=g.id WHERE g.status='IN_PROGRESS' AND w.status='OPEN' AND w.window_kind='SPEECH' AND w.deadline_at<=%s", (now,))
+        """분석 대기 후에도 같은 토론인지 재검증할 window와 날짜를 함께 반환한다."""
+
+        cursor.execute(
+            """
+            SELECT g.id, g.owner_user_id, w.id AS window_id, g.phase, g.day_number
+            FROM public.games g
+            JOIN public.action_windows w ON w.game_id = g.id
+            WHERE g.status = 'IN_PROGRESS' AND w.status = 'OPEN'
+              AND w.window_kind = 'SPEECH' AND w.deadline_at <= %s
+            """,
+            (now,),
+        )
         return [dict(row) for row in cursor.fetchall()]
 
     def list_ai_speech_turns(self, cursor: Any) -> list[dict[str, Any]]:
@@ -312,24 +322,50 @@ class PostgresActionRepository:
 
         게임 행에는 누가 이미 발언했는지 직접 저장하지 않는다. 따라서 서버가
         재시작해도 action_submissions 원장을 다시 읽어 다음 차례를 복원해야 한다.
-        과거 날짜·다른 질문 순환의 발언을 섞으면 정상 발언을 중복으로 거부할 수 있어
-        phase, round, cycle을 모두 조건으로 사용한다.
+        구형 게임은 서로 다른 날짜에 round·cycle을 재사용하므로 이 값만으로
+        날짜를 추정하지 않는다. 공개 SET_GAME_STATE에서 현재 날짜·phase로
+        연속 진입한 최초 버전을 찾아 그 이후의 여러 window를 함께 복원한다.
+        진입 근거가 없으면 과거 원장을 임의로 복원하지 않으며 DB는 변경하지 않는다.
         """
 
         cursor.execute(
             """
+            WITH current_game AS (
+                SELECT id, phase, round, day_number, state_version
+                FROM public.games
+                WHERE id = %s AND phase = %s AND round = %s
+            ), state_events AS (
+                SELECT event.state_version,
+                       (event.payload ->> 'phase' = game.phase
+                        AND event.payload ->> 'day_number' = CAST(game.day_number AS TEXT)) AS is_current
+                FROM public.game_events AS event
+                JOIN current_game AS game ON game.id = event.game_id
+                WHERE event.audience = 'PUBLIC'
+                  AND event.operation_type = 'SET_GAME_STATE'
+                  AND event.state_version <= game.state_version
+            ), discussion_entry AS (
+                SELECT MIN(state_version) AS state_version
+                FROM state_events
+                WHERE is_current
+                  AND state_version > COALESCE(
+                      (SELECT MAX(state_version) FROM state_events WHERE is_current IS NOT TRUE), 0
+                  )
+            )
             SELECT submission.actor_player_id, submission.action_type, submission.message
             FROM public.action_submissions AS submission
+            JOIN current_game AS game ON game.id = submission.game_id
             JOIN public.action_windows AS action_window
               ON action_window.id = submission.window_id
              AND action_window.game_id = submission.game_id
             JOIN public.game_players AS player
               ON player.id = submission.actor_player_id
              AND player.game_id = submission.game_id
-            WHERE submission.game_id = %s
-              AND action_window.phase = %s
-              AND action_window.round = %s
+            WHERE action_window.phase = game.phase
+              AND action_window.round = game.round
               AND action_window.cycle = %s
+              AND action_window.opened_state_version >= (SELECT state_version FROM discussion_entry)
+              AND action_window.opened_state_version <= game.state_version
+              AND submission.observed_state_version <= game.state_version
               AND submission.action_type IN ('SPEAK', 'PASS')
             ORDER BY player.seat, submission.submitted_at, submission.id
             """,

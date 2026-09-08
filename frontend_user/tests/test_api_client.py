@@ -111,3 +111,25 @@ def test_backend_url_rejects_untrusted_http_endpoint() -> None:
 
     with pytest.raises(ApiClientConfigurationError):
         ApiClient(user_id=USER_ID, api_url="http://backend.internal:8000")
+
+
+def test_delete_game_sends_owner_and_confirmed_version() -> None:
+    """삭제 대상과 확인 버전을 보내며 다른 게임이나 암묵적 최신 버전으로 바꾸지 않는다."""
+
+    captured = []
+
+    def transport(request, timeout):
+        captured.append(request)
+        return 200, b'{"data":{"deleted":true}}'
+
+    client = ApiClient(user_id=USER_ID, transport=transport)
+    client.delete_game(game_id=REQUEST_ID, expected_state_version=12)
+    request = captured[0]
+    assert request.method == "DELETE"
+    assert request.full_url.endswith(f"/api/v1/games/{REQUEST_ID}?expected_state_version=12")
+    assert _header(request.headers, "X-User-Id") == USER_ID
+    assert request.data is None
+    for version in (True, 0, -1, "12"):
+        with pytest.raises(ValueError):
+            client.delete_game(game_id=REQUEST_ID, expected_state_version=version)
+    assert len(captured) == 1

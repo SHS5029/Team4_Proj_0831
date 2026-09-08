@@ -313,6 +313,83 @@ def test_postgres_save_and_resume_round_trip() -> None:
         _cleanup_redis_test_namespace(settings, test_run_id=test_run_id)
 
 
+def test_postgres_user_activity_changes_only_on_successful_user_commands() -> None:
+    """실제 DB에서 조회·재전송·AI 처리와 성공한 인간 command의 보존 시각을 구분한다."""
+
+    settings = get_settings()
+    user_id = uuid4()
+    test_run_id = uuid4().hex
+
+    def activity_time(game_id):
+        """합성 게임 한 건의 DB 시각만 읽으며 저장된 사용자 내용은 출력하지 않는다."""
+
+        with psycopg.connect(settings.effective_database_url) as connection:
+            return connection.execute(
+                "SELECT last_user_action_at FROM public.games WHERE id = %s",
+                (game_id,),
+            ).fetchone()[0]
+
+    try:
+        application = create_app(settings=settings, enable_background_worker=False)
+        with TestClient(application) as client:
+            headers = {"X-User-Id": str(user_id), "X-Test-Run-Id": test_run_id}
+            created = client.post(
+                "/api/v1/games", headers={**headers, "Idempotency-Key": str(uuid4())},
+                json={"player_count": 6, "ruleset_version": "mystery-v1",
+                      "scenario_version": "scenario-v1"},
+            )
+            assert created.status_code == 201
+            game_id = created.json()["data"]["game_id"]
+            initial = activity_time(game_id)
+            path = f"/api/v1/games/{game_id}"
+            assert client.get(path, headers=headers).status_code == 200
+            assert client.get("/api/v1/games", headers=headers).status_code == 200
+            assert activity_time(game_id) == initial
+
+            begin_headers = {**headers, "Idempotency-Key": str(uuid4())}
+            begin_body = {"type": "BEGIN_GAME", "expected_state_version": 1}
+            begun = client.post(path + "/commands", headers=begin_headers, json=begin_body)
+            assert begun.status_code == 200
+            begun_at = activity_time(game_id)
+            assert begun_at > initial
+            replay = client.post(path + "/commands", headers=begin_headers, json=begin_body)
+            assert replay.status_code == 200 and replay.json()["meta"]["replayed"]
+            assert activity_time(game_id) == begun_at
+
+            snapshot = client.get(path, headers=headers).json()["data"]
+            window = snapshot["action_window"]
+            # Provider를 부르지 않고 검증된 AI PASS 저장 경로만 실행한다.
+            application.state.game_runtime.agent_pass(
+                user_id, UUID(game_id), UUID(window["turn_player_id"]),
+                expected_state_version=snapshot["game"]["state_version"],
+                window_id=UUID(window["window_id"]),
+            )
+            assert activity_time(game_id) == begun_at
+            rejected = client.post(
+                path + "/commands", headers={**headers, "Idempotency-Key": str(uuid4())},
+                json={"type": "SAVE_AND_EXIT", "expected_state_version": 1},
+            )
+            assert rejected.status_code == 409
+            assert activity_time(game_id) == begun_at
+
+            previous = begun_at
+            for command, status in (("SAVE_AND_EXIT", "SAVED"), ("RESUME", "IN_PROGRESS")):
+                snapshot = client.get(path, headers=headers).json()["data"]
+                response = client.post(
+                    path + "/commands", headers={**headers, "Idempotency-Key": str(uuid4())},
+                    json={"type": command,
+                          "expected_state_version": snapshot["game"]["state_version"]},
+                )
+                assert response.status_code == 200
+                current = activity_time(game_id)
+                assert current > previous
+                assert client.get(path, headers=headers).json()["data"]["game"]["status"] == status
+                previous = current
+    finally:
+        _cleanup_postgres_test_data(settings, user_id=user_id)
+        _cleanup_redis_test_namespace(settings, test_run_id=test_run_id)
+
+
 def _cleanup_postgres_test_data(settings: Settings, *, user_id) -> None:
     """테스트가 만든 사용자와 게임만 명시적인 UUID로 정리한다."""
 

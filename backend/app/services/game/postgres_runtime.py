@@ -6,12 +6,14 @@ from datetime import UTC, datetime
 import asyncio
 from hashlib import sha256
 import logging
+import os
 from typing import Any
 from threading import RLock
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 from psycopg.rows import dict_row
+from psycopg.errors import LockNotAvailable, QueryCanceled
 from redis import Redis
 
 from backend.app.core.config import Settings
@@ -98,15 +100,74 @@ class PostgresGameRuntime:
         self._agent_discussion = PostgresAgentDiscussionService(**common)
         self._actions = PostgresActionCommandService(**common)
         self._ai_worker = AiProgressWorker(self)
+        self.configure_speech_analysis(None)
+
+    def configure_speech_analysis(self, repository: Any | None) -> None:
+        """실제로 시작된 분석 worker의 저장소만 연결하여 초기화 실패 시 대기를 남기지 않는다."""
+
+        self._speech_analysis_repository = repository
+        self._discussion.wait_for_speech_analysis = repository is not None
+        self._agent_discussion.wait_for_speech_analysis = repository is not None
 
     def expire_discussions(self) -> None:
-        """모델 응답과 독립적으로 마감된 자유 토론을 조회하고 잠금 안에서 확정한다."""
+        """토론 마감 뒤 분석이 끝난 게임만 투표 창을 열고 새 제한 시간을 부여한다."""
         from backend.app.services.game.discussion_transaction import expire_discussion
         with self._transactions.transaction() as connection:
             with connection.cursor(row_factory=dict_row) as cursor:
                 rows = self._actions_repository.expired_discussions(cursor, now=datetime.now(UTC))
         for row in rows:
-            self._mutation(row["owner_user_id"], row["id"], lambda: expire_discussion(self._discussion, row["owner_user_id"], row["id"]))
+            repository = self._speech_analysis_repository
+            voting_next = row["phase"] == "FINAL_DISCUSSION" or (
+                row["phase"] == "DAY_DISCUSSION" and row["day_number"] >= 2
+            )
+            analysis_state = "DISABLED" if repository is None else "NOT_REQUIRED"
+            if repository is not None and voting_next:
+                try:
+                    # 모델 호출과 분석 선점은 독립 worker가 맡는다. 게임 잠금과 runtime의
+                    # mutation lock을 잡지 않아 다른 게임·저장 요청이 함께 대기하지 않는다.
+                    settings = self._settings
+                    ready = repository.prepare_for_vote(
+                        game_id=row["id"],
+                        analysis_version=settings.effective_speech_analysis_version,
+                        embedding_model=settings.speech_analysis_embedding_model,
+                        dimensions=settings.speech_analysis_dimensions,
+                        claims_model=settings.speech_analysis_claims_model,
+                        max_attempts=settings.speech_analysis_max_attempts,
+                    )
+                    if not ready:
+                        continue
+                    analysis_state = "READY"
+                except Exception as error:
+                    # 분석 저장소 장애는 게임 원장을 영구 정지시키지 않는다. 예외 원문을
+                    # 기록하지 않고 이번 투표는 확보된 부분 결과로 진행한다.
+                    analysis_state = "FAILED"
+                    reason = (
+                        "DB_LOCK_TIMEOUT" if isinstance(error, LockNotAvailable)
+                        else "DB_QUERY_CANCELED" if isinstance(error, QueryCanceled)
+                        else "DEPENDENCY_TIMEOUT" if isinstance(error, TimeoutError)
+                        else "PREPARE_ERROR"
+                    )
+                    logging.getLogger(__name__).warning(
+                        "SPEECH_ANALYSIS_PRE_VOTE_FAILED game_id=%s window_id=%s "
+                        "pid=%s reason_code=%s",
+                        row["id"], row["window_id"], os.getpid(), reason,
+                    )
+            try:
+                result = self._mutation(row["owner_user_id"], row["id"], lambda: expire_discussion(
+                    self._discussion, row["owner_user_id"], row["id"],
+                    expected_window_id=row["window_id"],
+                ))
+                # 다른 프로세스가 먼저 전환하거나 창이 교체된 경우에는 성공 로그를
+                # 남기지 않는다. 실제 전환을 확정한 프로세스와 분석 우회 여부를 구분한다.
+                if result is not None:
+                    logging.getLogger(__name__).info(
+                        "DISCUSSION_TRANSITION_APPLIED game_id=%s window_id=%s "
+                        "pid=%s analysis=%s",
+                        row["id"], row["window_id"], os.getpid(), analysis_state,
+                    )
+            except Exception:
+                # 한 게임의 원장 오류가 다른 게임의 완료된 분석과 투표 전환을 막지 않는다.
+                logging.getLogger(__name__).warning("DISCUSSION_TRANSITION_FAILED")
 
     def list_ai_speech_turns(self) -> list[dict[str, Any]]:
         """열린 AI 발언 차례를 조회해 중앙 worker에 전달한다.
@@ -306,6 +367,20 @@ class PostgresGameRuntime:
 
         self._ai_worker.start()
 
+    def cleanup_stale_games(self) -> int:
+        """15분간 사용자 command가 없는 진행 게임과 공개 cache를 정리한다.
+
+        PostgreSQL 삭제가 권위 결과다. Redis 장애나 이미 만료된 cache miss는 DB
+        transaction을 되돌리지 않으며 cache TTL도 후속 안전망으로 유지한다.
+        """
+
+        with self._transactions.transaction() as connection:
+            with connection.cursor(row_factory=dict_row) as cursor:
+                game_ids = self._games.delete_stale_in_progress(cursor, limit=100)
+        for game_id in game_ids:
+            self._conversation_history.delete(str(game_id))
+        return len(game_ids)
+
     def _fallback_target_proposal(self, owner_user_id: UUID, game_id: UUID, player_id: UUID, *,
                                   expected_type: str, state_version: int, window_id: UUID, phase: str) -> NormalizedAgentProposal | None:
         """인간 snapshot 대신 소유권·AI 권한을 검증한 현재 actor turn에서만 고른다."""
@@ -491,6 +566,20 @@ class PostgresGameRuntime:
 
         snapshot = self._read.snapshot(owner_user_id, game_id)
         return {**snapshot, "agent_activity": self._activity.recent(owner_user_id, game_id)}
+
+    def delete_game(
+        self, owner_user_id: UUID, game_id: UUID, *, expected_state_version: int,
+    ) -> dict[str, Any]:
+        """수동 삭제의 DB 확정 뒤 공개 cache를 정리하며 Redis 장애는 성공을 취소하지 않는다."""
+
+        from backend.app.services.game.lifecycle_service import delete_game
+
+        result = delete_game(self, owner_user_id, game_id, expected_state_version=expected_state_version)
+        try:
+            self._conversation_history.delete(str(game_id))
+        except Exception:
+            logging.getLogger(__name__).warning("삭제된 게임의 공개 대화 cache 정리를 완료하지 못했습니다.")
+        return result
 
     def command(
         self,

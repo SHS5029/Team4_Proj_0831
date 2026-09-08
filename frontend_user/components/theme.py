@@ -173,8 +173,8 @@ def render_application_header(
             action_renderer()
 
 
-def render_header_back_button(*, current_page: str) -> None:
-    """이미 배치된 헤더 열 안에서 중복 없이 뒤로가기 button을 렌더링한다."""
+def render_header_back_button(*, current_page: str, on_back: Callable[[], None] | None = None) -> None:
+    """게임은 확인 콜백을 먼저 실행하고 일반 화면은 검증된 방문 기록으로 이동한다."""
 
     if current_page == "home":
         return
@@ -182,7 +182,10 @@ def render_header_back_button(*, current_page: str) -> None:
     back_target = history[-1] if history else "home"
     remaining_history = history[:-1] if history else []
     if st.button("← 뒤로가기", key="header.back", width="stretch"):
-        _navigate(page=back_target, history=remaining_history)
+        if on_back is not None:
+            on_back()
+        else:
+            _navigate(page=back_target, history=remaining_history)
 
 
 def _navigation_history(*, current_page: str) -> list[str]:

@@ -13,6 +13,7 @@ import streamlit as st
 
 from frontend_user.core.api_client import ApiClient, ApiResponseError, ApiUnavailableError
 from frontend_user.core.commands import build_command
+from frontend_user.components import vote_insights
 
 ASSET_DIR = Path(__file__).with_name("browser_components") / "action_attention"
 ACTION_ATTENTION_COMPONENT = st.components.v2.component(
@@ -145,6 +146,7 @@ def render(*, client: ApiClient, game_id: str, snapshot: dict[str, Any]) -> None
     # 남겨 초당 네트워크 요청이나 결과 불명 command의 자동 재전송을 만들지 않는다.
     interval = 1 if _timer_is_running(snapshot) and remaining and remaining > 0 else None
     st.fragment(run_every=interval)(_render_actions)(game_id=game_id, snapshot=snapshot)
+    vote_insights.render(client=client, game_id=game_id, snapshot=snapshot)
 
 
 def _render_actions(*, game_id: str, snapshot: dict[str, Any]) -> None:
@@ -189,34 +191,28 @@ def _render_discussion(*, game_id: str, snapshot: dict[str, Any]) -> None:
             return
 
         locked = _is_locked(window=window, pending=pending)
-        message_key = f"form.message.{window.get('window_id', 'current')}"
-        message = st.text_area(
-            "발언 내용",
+        # 자유 토론에서는 다른 플레이어의 발언마다 window가 교체된다. 입력 키를
+        # game 범위로 고정해 동기화 rerun이 사용자가 작성 중인 초안을 지우지 않게 한다.
+        message_key = f"form.message.{game_id}"
+        st.markdown("**발언 내용**")
+        message = st.chat_input(
+            "이곳에 발언을 입력하세요. (최대 200자)",
             max_chars=200,
-            height=146,
-            disabled=locked,
+            disabled=locked or "SPEAK" not in legal,
             key=message_key,
-            placeholder="이곳에 발언을 입력하세요. (최대 200자)",
         )
-        speak_col, pass_col = st.columns([1.2, 1])
-        if speak_col.button(
-            "💬 발언하기",
-            key="action.SPEAK",
-            disabled=locked or "SPEAK" not in legal or not message.strip(),
-            use_container_width=True,
-            type="primary",
-        ):
+        if isinstance(message, str):
             _queue_command(
                 game_id=game_id, snapshot=snapshot, command_type="SPEAK", message=message
             )
-        if pass_col.button(
+        if st.button(
             "PASS",
             key="action.PASS",
             disabled=locked or "PASS" not in legal,
             use_container_width=True,
         ):
             _queue_command(game_id=game_id, snapshot=snapshot, command_type="PASS")
-        st.caption("🔒 제출 후에는 내용을 변경할 수 없습니다.")
+        st.caption("Enter로 발언 · Shift+Enter로 줄바꿈 · 제출 후에는 변경할 수 없습니다.")
 
 
 def _render_night_action(*, game_id: str, snapshot: dict[str, Any]) -> None:

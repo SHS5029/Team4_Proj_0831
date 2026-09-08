@@ -131,6 +131,28 @@ class ApiClient:
 
         return self._request("GET", f"/api/v1/games/{UUID(str(game_id))}")
 
+    def delete_game(self, *, game_id: UUID | str, expected_state_version: int) -> dict[str, Any]:
+        """삭제 재확인도 최초 대상·버전을 유지하고 사용자 UUID는 header로만 전달한다."""
+
+        if type(expected_state_version) is not int or expected_state_version < 1:
+            raise ValueError("게임 상태 버전이 올바르지 않습니다.")
+        return self._request(
+            "DELETE", f"/api/v1/games/{UUID(str(game_id))}"
+            f"?expected_state_version={expected_state_version}",
+        )
+
+    def get_vote_insights(self, *, game_id: UUID | str, window_id: UUID | str,
+                          scope: str = "current_discussion") -> dict[str, Any]:
+        """보조 조회 지연이 투표 입력을 오래 막지 않도록 짧은 timeout을 적용한다."""
+
+        if scope not in {"current_discussion", "game"}:
+            raise ValueError("발언 분석 범위가 올바르지 않습니다.")
+        return self._request(
+            "GET", f"/api/v1/games/{UUID(str(game_id))}/vote-insights"
+            f"?window_id={UUID(str(window_id))}&scope={scope}",
+            timeout_seconds=min(self.config.timeout_seconds, 0.75),
+        )
+
     def submit_command(self, *, game_id: UUID | str, command: dict[str, Any],
                        idempotency_key: UUID | str) -> dict[str, Any]:
         """고정된 command body와 idempotency key로 게임 변경을 요청한다."""
@@ -169,7 +191,8 @@ class ApiClient:
         return self._request("POST", "/api/v1/feedback", body, extra_headers={"Idempotency-Key": str(key)})
 
     def _request(self, method: str, path: str, body: dict[str, Any] | None = None,
-                 *, extra_headers: dict[str, str] | None = None) -> dict[str, Any]:
+                 *, extra_headers: dict[str, str] | None = None,
+                 timeout_seconds: float | None = None) -> dict[str, Any]:
         """UUID를 header에만 넣고 JSON object 응답을 검증한다."""
 
         request_id = str(self._request_id_factory())
@@ -181,7 +204,9 @@ class ApiClient:
             headers.update(extra_headers)
         request = Request(f"{self.config.api_url}{path}", data=raw, method=method, headers=headers)
         try:
-            status_code, response_body = self._transport(request, self.config.timeout_seconds)
+            status_code, response_body = self._transport(
+                request, self.config.timeout_seconds if timeout_seconds is None else timeout_seconds
+            )
         except (OSError, URLError, TimeoutError) as exc:
             raise ApiUnavailableError(status_code=503, code="DEPENDENCY_UNAVAILABLE", request_id=request_id) from exc
         try:

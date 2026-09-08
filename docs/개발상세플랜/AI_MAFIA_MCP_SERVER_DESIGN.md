@@ -49,11 +49,17 @@ Resource의 상세 `data` field, enum, nullable, union과 길이 제약은 API �
 
 ## 1.1 현재 MVP FastMCP 전환 프로파일
 
+2026-09-07 투표 보조 정보의 WU-M9는 Backend 소유 006 migration의 실행·재실행과
+계정·권한·health 검증만 담당한다. pgvector가 없는 PostgreSQL에서도 적용하며
+저장 상세는 DB 정본의 공개 AI 발언 분석 절을 따른다. 검증은 별도 합성 QA DB에서
+수행하고 사용 중 DB와 구분한다. 발언 분석·OpenAI 호출·조회 API는 Backend가
+소유하며 MCP runtime의 Resource schema나 DB 접근 권한은 추가하지 않는다.
+
 현재 작업은 이 문서의 전체 운영 보안 프로파일을 한 번에 구현하지 않는다. FastMCP는
 `mcp_server/mafia_game/main.py`를 composition root로 사용하고, 기존 디렉터리 안의
 `api/resources/`, `api/prompts/`, `api/tools/` 등록 모듈을 통해 컨텍스트 표면을
-제공한다. Resource·Prompt·Tool handler는 Backend adapter 호출과 결과 전달만
-담당한다. Tool의 게임 판정과 상태 변경은 Backend 책임이다.
+제공한다. Resource·Tool handler는 Backend adapter 호출과 결과 전달을 담당하고,
+Prompt는 MCP 소유 지침 생성 모듈을 사용한다. Tool의 게임 판정과 상태 변경은 Backend 책임이다.
 
 현재 FastMCP 전환에서는 MCP 내부 HMAC·bootstrap token·capability state machine·
 session registry·idle timeout·DELETE cleanup을 새로 추가하지 않는다. 이 문서의 기존
@@ -717,6 +723,20 @@ no persistent spool과 fresh credential이다. Resource context no-cache는 이�
 - [ ] 사용자 승인 없이 commit·push하지 않았는가
 
 이번 단일 WU-M3 보완은 사용자가 요청한 운영 FastMCP 모델 입력 축약·게임 규칙 안내 추가다. 기존 Resource 등록 파일에서만 변환하며 상세 계약은 API 명세의 FastMCP 모델 입력 축약 절을 따른다. Backend MCP 소비 클라이언트는 기존·축약 응답을 함께 허용하는 최소 호환 변경을 포함한다. DB·게임 판정은 변경하지 않는다.
+
+## 2026-09-08 역할별 프롬프트 이관 (WU-M6)
+
+사용자 승인에 따라 `api/prompts/instructions.py`가 네 역할의 승리 전략·단계별 행동·성향
+해석을 소유한다. 운영 Resource 등록부에서 동일 renderer를 사용하여 추가 HTTP 호출
+없이 본인 역할 지침과 말투 지침을 전달한다. 상세 응답 변경은 API 명세의 같은 날짜
+계약을 따른다. 공통 system·출력 검증·Provider 호출은 Backend가 유지하고, MCP Prompt는
+더 이상 Backend prompt endpoint에서 본문을 가져오지 않는다.
+
+같은 WU의 패키지 구조 보완으로 `api/prompts/instructions.py`에 지침 생성 코드를,
+`api/prompts/registry.py`에 Prompt 등록을 둔다. Resource·Tool 등록도 각각
+`api/resources/registry.py`, `api/tools/registry.py`로 분리한다. 세 API 패키지의
+`__init__.py`에는 설명 docstring만 남기고 composition root와 소비자는 구현 모듈을
+직접 import한다. 등록명·URI·인자·프롬프트 내용은 유지한다.
 
 ## 2026-09-07 자유 토론 변경 (사용자 승인 WU-B4)
 
