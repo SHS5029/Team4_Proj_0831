@@ -11,7 +11,7 @@ import streamlit as st
 
 from frontend_user.components.theme import render_application_header
 from frontend_user.core.api_client import ApiClient, ApiResponseError, ApiUnavailableError
-from frontend_user.core.scenario_images import scenario_image_path
+from frontend_user.core.scenario_images import home_image_path, scenario_image_path
 
 HOME_GAMES_TTL_SECONDS = 30
 
@@ -32,6 +32,8 @@ HOME_CSS = """
 .home-hero h1 { margin:0; color:var(--home-ink); font-size:clamp(2rem,4vw,3rem); line-height:1.15; letter-spacing:-.055em; }
 .home-hero p { margin:.8rem 0 1.5rem; color:var(--home-muted); font-size:1rem; }
 .home-hero-art { min-height:13.5rem; overflow:hidden; position:relative; border-radius:.65rem; background:linear-gradient(160deg,#102e5c,#061327 65%,#1b3152); box-shadow:0 1rem 2rem rgba(20,42,81,.14); }
+[class*="st-key-home-hero-image"] { overflow:hidden; padding:0 !important; border-radius:.65rem; box-shadow:0 1rem 2rem rgba(20,42,81,.14); }
+[class*="st-key-home-hero-image"] img { display:block; width:100%; height:auto; }
 .home-hero-art::before { content:"☾"; position:absolute; top:.75rem; right:24%; color:#8ec8fa; font-size:3rem; }
 .home-hero-art::after { content:"🤖  🤖  🤖  🤖  🤖  🤖"; position:absolute; right:1rem; bottom:.85rem; color:#f6f8fb; font-size:2.1rem; letter-spacing:-.5rem; filter:saturate(.8); }
 .home-hero-scene { position:absolute; right:1rem; bottom:4.1rem; color:#80a6d6; font-size:.75rem; letter-spacing:.35rem; }
@@ -44,7 +46,6 @@ HOME_CSS = """
 .home-card-title { margin-top:.65rem; color:var(--home-ink); font-size:1rem; font-weight:800; }
 .home-card-meta { margin:.25rem 0 .6rem; color:var(--home-muted); font-size:.75rem; }
 [class*="st-key-home-game-card"] { padding:.55rem !important; }
-[class*="st-key-home-game-card"] [data-testid="stImage"] img { height:6.5rem; object-fit:cover; }
 .home-card-badge { display:inline-block; padding:.25rem .45rem; border-radius:.35rem; color:#16864d; background:#e5f8ec; font-size:.72rem; }
 .home-card-badge.saved { color:#c66c08; background:#fff2d9; }
 [data-testid="stButton"] button:not([kind="primary"]), [data-testid="baseButton-secondary"] { color:#1f4fbd !important; background:#f7faff !important; border:1px solid #b8cdf8 !important; }
@@ -97,14 +98,25 @@ def render(client: ApiClient) -> None:
             st.rerun()
 
     render_application_header(title="AI 마피아", action_renderer=render_header_actions)
-    st.markdown(
-        '<section class="home-hero"><div class="home-hero-copy">'
-        "<h1>AI 마피아게임</h1>"
-        "<p>한 명의 플레이어와 개성 있는 AI들이 펼치는 마피아 게임</p>"
-        "<p>6~9명 · 약 15분</p>"
-        '</div><div class="home-hero-art"><span class="home-hero-scene">▰ ▰ ▰ ▰ ▰</span></div></section>',
-        unsafe_allow_html=True,
-    )
+    hero_copy, hero_art = st.columns([.9, 1.1], gap="large")
+    with hero_copy:
+        st.markdown(
+            '<div class="home-hero-copy"><h1>AI 마피아게임</h1>'
+            "<p>매번 새로운 AI 플레이어들과 펼치는 예측 불허 심리 추리전!</p>"
+            "</p>시민이 되어 마피아를 찾을 것인가, 마피아가 되어 AI를 지배할 것인가?</p>"
+            "<p>6~9명 · 약 15분</p></div>",
+            unsafe_allow_html=True,
+        )
+    with hero_art:
+        main_path = home_image_path()
+        if main_path is not None:
+            with st.container(key="home-hero-image"):
+                st.image(str(main_path), width="stretch")
+        else:
+            st.markdown(
+                '<div class="home-hero-art"><span class="home-hero-scene">▰ ▰ ▰ ▰ ▰</span></div>',
+                unsafe_allow_html=True,
+            )
     with st.container(border=True):
         st.markdown('<div class="home-player-title">플레이어 정보</div>', unsafe_allow_html=True)
         st.caption("현재 구조에서는 UUID를 게임 식별자로 사용합니다. 닉네임은 저장하지 않습니다.")
@@ -129,7 +141,7 @@ def render(client: ApiClient) -> None:
         st.rerun()
 
     home_tab, custom_role_tab, rules_tab = st.tabs(
-        ["홈", "직업 생성 커스텀", "게임 규칙 확인"]
+        ["홈", "직업 생성 커스텀", "게임 규칙"]
     )
     with home_tab:
         # UUID를 확인하기 전에는 다른 게임의 시나리오·진행 상태를 노출하지 않는다.
@@ -182,15 +194,48 @@ def render(client: ApiClient) -> None:
             st.caption("새 게임 설정에서 커스텀 직업 사용 여부를 확인할 수 있습니다.")
 
     with rules_tab:
-        st.markdown('<div class="home-section-title">게임 규칙 확인</div>', unsafe_allow_html=True)
+        st.markdown('<div class="home-section-title">AI 마피아 게임 규칙</div>', unsafe_allow_html=True)
         with st.container(border=True):
-            st.subheader("AI 마피아 게임 규칙")
+            st.markdown("### 게임 방식")
+            st.write(
+                "AI 마피아는 1명의 사용자와 AI 플레이어들이 함께 진행하는 추리 게임입니다."
+                "사용자는 자신의 역할에 따라 시민 진영이면 마피아를 찾고, "
+                "마피아면 정체를 숨기며 게임을 진행합니다."
+            )
+
+            st.divider()
+            st.markdown("### 기본 진행")
             st.markdown(
-                "- 6~9명의 플레이어로 진행합니다.\n"
+                "- 6~9명의 플레이어가 참여합니다.\n"
                 "- 역할은 게임 시작 시 무작위로 배정됩니다.\n"
-                "- 낮에는 토론과 투표, 밤에는 역할별 행동을 진행합니다.\n"
-                "- 게임은 최대 5번째 밤까지 진행될 수 있습니다.\n"
-                "- 진행 중인 게임은 언제든 저장하고 나중에 이어할 수 있습니다."
+                "- 낮에는 사건 정보를 확인하고 토론 후 투표합니다.\n"
+                "- 밤에는 각 역할에 맞는 행동을 진행합니다.\n"
+                "- 첫날은 토론만 진행하며 투표하지 않습니다.\n"
+                "- 게임은 최대 5번째 밤까지 진행됩니다."
+            )
+
+            st.divider()
+            st.markdown("### 직업별 역할")
+            st.markdown(
+                "- **마피아**: 밤에 공격할 플레이어를 선택합니다.\n"
+                "- **탐정**: 밤에 한 명을 조사해 마피아 여부를 확인합니다.\n"
+                "- **의사**: 밤에 본인을 포함해 한 명을 보호합니다.\n"
+                "- **시민**: 밤 행동 없이 토론과 투표로 마피아를 찾습니다."
+            )
+
+            st.divider()
+            st.markdown("### 승리 조건")
+            st.markdown(
+                "- **시민 진영**: 모든 마피아를 제거하면 승리합니다.\n"
+                "- **마피아 진영**: 생존 마피아 수가 시민 진영 생존자 수 이상이면 승리합니다.\n"
+                "- 마지막 지목에서 마피아를 찾으면 시민 승리, 시민을 지목하면 마피아 승리입니다."
+            )
+
+            st.divider()
+            st.markdown("### 직업 커스텀")
+            st.markdown(
+                "- 홈 화면에서 원하는 직업의 역할을 선택해 새로운 직업을 커스텀할 수 있습니다.\n"
+                "- 새 게임 설정에서 커스텀 직업 사용 여부를 선택할 수 있습니다."
             )
 
 
