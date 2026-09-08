@@ -57,11 +57,12 @@ def _create_app(client):
 
 
 def _home_app(client):
-    """홈의 기존 loading 단계와 목록 렌더링 순서를 재현한다."""
+    """브라우저 UUID 초기화가 끝난 홈의 loading 단계와 목록 렌더링을 재현한다."""
 
     import streamlit as st
     from frontend_user.app_pages import home_page
 
+    st.session_state.setdefault("identity.user_id", "00000000-0000-4000-8000-000000000202")
     if st.session_state.get("navigation.page", "home") != "home":
         st.write(st.session_state["navigation.page"])
         return
@@ -80,9 +81,14 @@ def _completed_app(pending):
     render(pending)
 
 
-def _home_render_app(client):
+def _home_render_app(client, identity_ready=True):
+    """기본값은 합성 UUID를 준비하고, 초기화 전 화면 검증만 명시적으로 제외한다."""
+
+    import streamlit as st
     from frontend_user.app_pages.home_page import render
 
+    if identity_ready:
+        st.session_state.setdefault("identity.user_id", "00000000-0000-4000-8000-000000000202")
     render(client)
 
 
@@ -195,7 +201,7 @@ def test_home_displays_three_resumable_and_completed_games():
         for index in range(3):
             assert f"{status} 사건 {index}" in _html(app)
         assert f"{status} 사건 3" not in _html(app)
-    assert app.button(key="home.game.COMPLETED-0").label == "결과 보기  ›"
+    assert app.button(key="home.card.COMPLETED-0").label == "결과 보기  ›"
 
 
 def test_unknown_create_keeps_body_and_key_until_same_request_retry():
@@ -251,6 +257,35 @@ def test_home_loading_state_does_not_show_empty_list():
     assert app.info[0].value == "게임 목록을 불러오는 중이에요."
 
 
+def test_home_without_uuid_disables_start_and_hides_cached_games():
+    """UUID 초기화 전에는 이전에 남은 모든 상태의 게임 카드도 노출하지 않는다."""
+
+    client = _Client()
+    games = [
+        {"game_id": f"cached-{status}", "status": status, "scenario_title": f"캐시 사건 {status}"}
+        for status in ("IN_PROGRESS", "SAVED", "COMPLETED", "FAILED")
+    ]
+    app = AppTest.from_function(
+        _home_render_app, args=(client,), kwargs={"identity_ready": False},
+    )
+    app.session_state["home.games"] = games
+    app.run()
+
+    assert not app.exception
+    assert "identity.user_id" not in app.session_state
+    assert app.text_input(key="home.user_id").value == ""
+    assert app.button(key="home.new_game").disabled
+    home_tab = next(tab for tab in app.tabs if tab.label == "홈")
+    assert [info.value for info in home_tab.info] == [
+        "게임 식별자를 확인한 뒤 게임 목록을 불러올 수 있어요.",
+    ]
+    assert not home_tab.button
+    assert all(game["scenario_title"] not in _html(app) for game in games)
+    assert app.session_state["home.games"] == games
+    assert not client.loaded
+    assert not client.created
+
+
 def test_home_error_waits_for_retry_and_then_displays_latest_list():
     client = _Client()
     client.list_error = True
@@ -282,7 +317,11 @@ def test_home_malformed_response_shows_error_instead_of_empty(response):
 
     assert not app.exception
     assert app.error
-    assert not app.info
+    # 커스텀 직업 탭의 상시 안내와 분리해 홈에 빈 목록 안내가 없는지 확인한다.
+    home_tab = next(tab for tab in app.tabs if tab.label == "홈")
+    assert not home_tab.info
+    assert app.session_state["home.games_error"] == "INVALID_RESPONSE"
+    assert "home.games" not in app.session_state
 
 
 def test_home_manual_refresh_replaces_cached_list():
@@ -301,7 +340,7 @@ def test_home_game_navigation_invalidates_cache_for_next_home_entry(status):
     client = _Client()
     client.items = [{"game_id": GAME_ID, "status": status, "scenario_title": "변경 전 사건"}]
     app = AppTest.from_function(_home_app, args=(client,)).run()
-    app.button(key=f"home.game.{GAME_ID}").click().run()
+    app.button(key=f"home.card.{GAME_ID}").click().run()
 
     assert not app.exception
     assert app.session_state["navigation.page"] == "game"

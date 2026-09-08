@@ -382,7 +382,7 @@ def test_frontend_live_mode_uses_new_backend_contracts(monkeypatch):
     monkeypatch.setattr(identity_bridge, "load_identity", lambda **kwargs: (ADMIN, None))
     at.session_state[ADMIN_USER_ID_SESSION_KEY] = ADMIN
     at.run()
-    assert not at.exception and not at.error and len(at.tabs) == 4
+    assert not at.exception and not at.error and len(at.tabs) == 3
     assert {"/api/v1/admin/persona-win-rates", "/api/v1/admin/feedback", "/api/v1/admin/audit-logs"} <= set(routes)
     assert "<script>가상 의견</script>" in at.dataframe[1].value["의견"].tolist()
     repository.list_feedback = lambda **kwargs: (_ for _ in ()).throw(RuntimeError("synthetic"))

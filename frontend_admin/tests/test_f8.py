@@ -32,6 +32,30 @@ def test_admin_403_is_fail_closed() -> None:
     assert error.value.code == "ADMIN_ACCESS_DENIED"
 
 
+def test_live_dashboard_revoked_access_returns_to_identity_flow(monkeypatch) -> None:
+    """주기 조회의 403도 권한 표시를 지우고 UUID bridge가 있는 전체 화면으로 복귀한다."""
+
+    from unittest.mock import Mock
+
+    from frontend_admin import app
+
+    state = {app.ADMIN_ACCESS_SESSION_KEY: True}
+    ui = Mock(session_state=state)
+    ui.rerun.side_effect = RuntimeError("인증 화면 재실행")
+    monkeypatch.setattr(app, "st", ui)
+    client = Mock()
+    client.metrics.side_effect = AdminApiError(403, "ADMIN_ACCESS_DENIED")
+    dashboard = Mock()
+    monkeypatch.setattr(app, "render_dashboard", dashboard)
+
+    with pytest.raises(RuntimeError, match="인증 화면 재실행"):
+        app._render_live_dashboard.__wrapped__(client)
+
+    assert state[app.ADMIN_ACCESS_SESSION_KEY] is False
+    ui.rerun.assert_called_once_with(scope="app")
+    dashboard.assert_not_called()
+
+
 def test_private_fields_are_rejected_instead_of_masked() -> None:
     with pytest.raises(ValueError, match="ADMIN_PRIVATE_FIELD"):
         reject_private_fields({"status": "IN_PROGRESS", "role": "MAFIA"})

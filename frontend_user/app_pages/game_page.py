@@ -13,6 +13,9 @@ import streamlit as st
 from frontend_user.components import vote_insights
 from frontend_user.components.action_panel import render as render_action_panel
 from frontend_user.components.action_panel import render_status_bar
+from frontend_user.components.action_panel import (
+    maintain_speech_queue, prefer_current_snapshot, speech_queue_busy,
+)
 from frontend_user.components.sync_bridge import apply_sync, mount_sse
 from frontend_user.components.theme import render_application_header, render_header_back_button
 from frontend_user.core.api_client import ApiResponseError, ApiUnavailableError
@@ -366,8 +369,7 @@ def render(snapshot: dict[str, Any]) -> None:
         with left:
             _render_players(snapshot=snapshot, me=me, phase=str(phase))
         with center:
-            _render_timeline(snapshot=snapshot, scenario=scenario, phase=str(phase), day_number=day_number)
-            _render_agent_activity(snapshot=snapshot)
+            _render_live_updates(client=client, snapshot=snapshot)
         return
 
     if spectating:
@@ -381,9 +383,11 @@ def render(snapshot: dict[str, Any]) -> None:
 
     action_in_right_panel = phase in RIGHT_ACTION_PHASES
     if action_in_right_panel:
-        # 밤 행동·투표에서는 공개 대화와 중복되는 내 정보·플레이어 목록 카드를
-        # 제거하고, 역할·대상·제출에 집중하는 행동 카드만 전체 폭으로 표시한다.
-        with st.container(key="action-only-region"):
+        # 행동 카드는 새 레이아웃의 전체 폭을 유지한다. 공개 기록 fragment도
+        # 연결해 제출 대기 중에도 마감·사망·종료 전이를 서버에서 받아 온다.
+        action_region = st.container(key="action-only-region")
+        _render_live_updates(client=client, snapshot=snapshot)
+        with action_region:
             _render_visible_action_panel(
                 client=client,
                 game_id=str(game.get("game_id")),
@@ -396,19 +400,13 @@ def render(snapshot: dict[str, Any]) -> None:
     with left:
         _render_players(snapshot=snapshot, me=me, phase=str(phase))
     with center:
-        _render_timeline(
-            snapshot=snapshot,
-            scenario=scenario,
-            phase=str(phase),
-            day_number=day_number,
-        )
+        _render_live_updates(client=client, snapshot=snapshot)
         with st.container(key="current-action-region"):
             _render_visible_action_panel(
                 client=client,
                 game_id=str(game.get("game_id")),
                 snapshot=snapshot,
             )
-        _render_agent_activity(snapshot=snapshot)
 
     # 사망자는 위의 전용 분기에서 반환되므로 이 아래에는 생존자 입력만 존재한다.
 
@@ -554,7 +552,10 @@ def _render_live_updates(*, client: Any, snapshot: dict[str, Any]) -> None:
     game = latest.get("game", {})
     _render_agent_activity(snapshot=latest)
     if own_private_view(latest).get("alive") is False:
-        _render_spectator_timeline(snapshot=latest)
+        _render_spectator_timeline(snapshot=latest, me=own_private_view(latest))
+        if game.get("status") == "SAVED":
+            # 저장 화면에는 관전 전용 우측 패널이 없으므로 본인 결과를 여기서 복원한다.
+            _render_investigation_results(snapshot=latest)
     else:
         _render_timeline(snapshot=latest, scenario=latest.get("scenario", {}),
                          phase=str(game.get("phase", "")), day_number=game.get("day_number", 1))
@@ -674,8 +675,8 @@ def _render_phase_briefing(*, snapshot: dict[str, Any], phase: str, day_number: 
     elif day_number == 1:
         default_briefing = (
             "사건 정보와 플레이어들의 알리바이를 비교해 마피아를 추리하세요. "
-            "첫날은 투표 없이 토론만 진행합니다. 의심되는 점은 발언하고, "
-            "할 말이 없으면 PASS를 선택하세요."
+            "첫날은 투표 없이 토론만 진행하며 PASS는 사용할 수 없습니다. "
+            "의심되는 점이나 자신의 관찰 내용을 발언해 주세요."
         )
     else:
         default_briefing = "공개된 사건 정보와 앞선 기록을 확인한 뒤 의견을 나눠 주세요."
@@ -890,8 +891,7 @@ def _render_spectator_layout(
         with st.container(key="spectator-notice", border=True):
             st.markdown("### ℹ️ 플레이어가 사망하여 관전 모드로 전환되었습니다.")
             st.caption("게임은 AI 플레이어끼리 계속 진행되며 공개 범위의 정보만 표시됩니다.")
-        _render_spectator_timeline(snapshot=snapshot, me=me)
-        _render_agent_activity(snapshot=snapshot)
+        _render_live_updates(client=client, snapshot=snapshot)
         _render_spectator_controls(client=client, game_id=game_id, snapshot=snapshot)
     with right:
         _render_spectator_private(snapshot=snapshot, me=me)
@@ -1089,6 +1089,10 @@ def _render_timeline(
         # 대화로 자동 스크롤돼도 낮·밤 전환과 사건의 공개 안내를 계속 확인할 수 있다.
         me = own_private_view(snapshot)
         _render_incident_summary(scenario, me=me)
+        # 이전 별도 내 정보 열이 사라져도 본인 탐정의 확정 결과는 계속 제공한다.
+        # 공개 채팅 event와 분리된 영역에서 기존 private projection 검증을 재사용한다.
+        with st.container(key="game-investigation-results"):
+            _render_investigation_results(snapshot=snapshot)
         _render_phase_briefing(snapshot=snapshot, phase=phase, day_number=day_number)
         events = _player_conversation_events(snapshot)
         # 공개 대화가 게임의 핵심이므로 독립 스크롤 영역을 크게 확보한다. 이벤트가
@@ -1829,7 +1833,86 @@ SHELL_LOCKED = {"PENDING_TO_RENDER", "IN_FLIGHT", "RETRYABLE_UNKNOWN", "REFRESH_
 SAVE_DIALOG_GAME_KEY = "game.save_dialog_game_id"
 
 
-def _render_save_confirmation_dialog(*, game_id: str, snapshot: dict[str, Any]) -> None:
+def _has_pending_deletion(game_id: str) -> bool:
+    """다른 게임의 미확정 삭제 요청이 현재 게임의 입력까지 잠그지 않게 범위를 확인한다."""
+
+    pending = st.session_state.get("game.delete_pending")
+    return isinstance(pending, dict) and pending.get("game_id") == game_id
+
+
+def _dismiss_exit_dialog() -> None:
+    """닫기·계속 플레이는 화면과 미확정 요청을 보존하고 팝업 표시만 해제한다."""
+
+    st.session_state.pop("game.exit_dialog_id", None)
+    st.session_state.pop(SAVE_DIALOG_GAME_KEY, None)
+
+
+def render_game_back_button(*, snapshot: dict[str, Any]) -> None:
+    """진행 게임의 뒤로가기는 저장·삭제 선택을 기다리고 rerun 중에도 팝업을 유지한다."""
+
+    game = snapshot.get("game", {})
+    game_id = str(game.get("game_id"))
+    pending = st.session_state.get("game.delete_pending")
+    needs_confirmation = game.get("status") == "IN_PROGRESS" or (
+        isinstance(pending, dict) and pending.get("game_id") == game_id
+    )
+    if needs_confirmation:
+        render_header_back_button(
+            current_page="game",
+            on_back=lambda: st.session_state.update({"game.exit_dialog_id": game_id}),
+        )
+        if st.session_state.get("game.exit_dialog_id") == game_id:
+            _render_save_confirmation_dialog(game_id=game_id, snapshot=snapshot, exiting=True)
+    else:
+        _dismiss_exit_dialog()
+        render_header_back_button(current_page="game")
+    if message := st.session_state.pop("game.exit_error", None):
+        st.warning(message)
+
+
+def _delete_from_exit_dialog(*, game_id: str, snapshot: dict[str, Any]) -> None:
+    """응답 유실은 같은 대상·버전으로 재확인하고 삭제가 확인된 경우에만 홈으로 이동한다."""
+
+    pending = st.session_state.get("game.delete_pending")
+    if not isinstance(pending, dict) or pending.get("game_id") != game_id:
+        pending = {"game_id": game_id, "expected_state_version": snapshot["game"]["state_version"]}
+    st.session_state["game.delete_pending"] = pending
+    try:
+        response = st.session_state["game.client"].delete_game(**pending)
+        data = response.get("data", response)
+        if not isinstance(data, dict) or data.get("game_id") != game_id or data.get("deleted") is not True:
+            raise ValueError("INVALID_RESPONSE")
+    except ApiResponseError as error:
+        if error.status_code != 404 or error.code != "GAME_NOT_FOUND":
+            if error.status_code == 409:
+                st.session_state.pop("game.delete_pending", None)
+                st.session_state.pop("game.delete_error", None)
+                _dismiss_exit_dialog()
+                st.session_state["game.exit_error"] = "게임 상태가 바뀌어 삭제하지 않았습니다. 최신 상태를 확인한 뒤 뒤로가기를 다시 눌러 주세요."
+                st.rerun()
+            st.session_state["game.delete_error"] = True
+            st.rerun()
+    except (ValueError, AttributeError):
+        st.session_state["game.delete_error"] = True
+        st.rerun()
+    finish_deleted_game()
+
+
+def finish_deleted_game() -> None:
+    """직접 삭제 응답이나 결과 불명 삭제의 후속 404를 확인한 뒤 홈 상태를 복구한다."""
+
+    # 삭제 응답 또는 후속 조회로 접근 불가를 확인했으므로 관련 화면 cache를 해제한다.
+    # identity·작성 중 피드백은 유지하며 홈 목록은 다음 방문 때 서버에서 다시 읽는다.
+    for key in list(st.session_state):
+        if (str(key).startswith("game.") and key != "game.client") or key in {
+            "home.games", "home.games_error", "home.games_loaded_at", "home.games_loading",
+        }:
+            st.session_state.pop(key, None)
+    st.session_state.update({"navigation.page": "home", "navigation.current_page": "home", "navigation.history": []})
+    st.rerun()
+
+
+def _render_save_confirmation_dialog(*, game_id: str, snapshot: dict[str, Any], exiting: bool = False) -> None:
     """사용자가 저장 시점을 확인한 뒤에만 게임 중단 command를 대기열에 넣는다."""
 
     game = snapshot.get("game") if isinstance(snapshot.get("game"), dict) else {}
@@ -1882,14 +1965,14 @@ def _render_save_confirmation_dialog(*, game_id: str, snapshot: dict[str, Any]) 
                 snapshot=snapshot,
                 command_type="SAVE_AND_EXIT",
             )
-            st.session_state.pop(SAVE_DIALOG_GAME_KEY, None)
+            _dismiss_exit_dialog()
             st.rerun()
         if continue_col.button(
             "계속 플레이",
             key="game.save_cancel",
             use_container_width=True,
         ):
-            st.session_state.pop(SAVE_DIALOG_GAME_KEY, None)
+            _dismiss_exit_dialog()
             st.rerun()
         if exiting and st.button(
             "같은 삭제 요청 다시 확인" if delete_pending else "게임 삭제",

@@ -148,6 +148,9 @@ def render(snapshot: dict[str, Any]) -> None:
     scenario = snapshot.get("scenario", {})
     client = st.session_state["game.client"]
     _process_shell_pending(client=client, game_id=game_id)
+    # 이탈 팝업에서 저장 요청이 전송된 뒤 응답이 유실되어도 최초 요청의
+    # 재확인 제어를 유지한다. 아직 게임을 시작하지 않은 역할 공개도 같은 경계다.
+    _render_save_control(client=client, game_id=game_id, snapshot=snapshot)
     render_status_bar(game_id=game_id, snapshot=snapshot)
     me = own_private_view(snapshot)
     role_name, role_icon, role_text = ROLE_PRESENTATION.get(

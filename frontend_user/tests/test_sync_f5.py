@@ -97,7 +97,7 @@ def _speech_recovery_view(monkeypatch):
     client = Mock(user_id="synthetic")
     client.get_game.side_effect = lambda *_: {"data": deepcopy(current)}
     client.submit_command.return_value = {"data": {"command_type": "SPEAK"}}
-    monkeypatch.setattr(action_panel, "_render_clock", Mock())
+    monkeypatch.setattr(action_panel, "_render_status_bar_tick", Mock())
     monkeypatch.setattr(action_panel, "SpeechQueue", _SpeechQueueDouble)
     monkeypatch.setattr(game_page, "_sync_snapshot", lambda **kwargs: kwargs["snapshot"])
     monkeypatch.setattr(game_page.vote_insights, "render", Mock())
@@ -250,7 +250,7 @@ def test_enter_is_captured_before_the_next_script_reads(monkeypatch, command_typ
     from streamlit.testing.v1 import AppTest
     from frontend_user.components import action_panel
 
-    monkeypatch.setattr(action_panel, "_render_clock", Mock())
+    monkeypatch.setattr(action_panel, "_render_status_bar_tick", Mock())
 
     monkeypatch.setattr(action_panel, "SpeechQueue", _SpeechQueueDouble)
 
@@ -264,7 +264,7 @@ def test_enter_is_captured_before_the_next_script_reads(monkeypatch, command_typ
         observed = st.session_state.setdefault("test.before_reads", [])
         observed.append(bool(st.session_state.get("game.command_pending")
                              or st.session_state.get("game.speech_queue")))
-        action_panel._render_discussion(game_id=current["game"]["game_id"], snapshot=current)
+        action_panel._render_discussion(client=None, game_id=current["game"]["game_id"], snapshot=current)
 
     view = AppTest.from_function(app_body, args=(_discussion_snapshot(),)).run()
     if command_type == "SPEAK":
@@ -332,7 +332,7 @@ def test_clock_does_not_drop_unknown_body_and_retry_keeps_original_key(monkeypat
     monkeypatch.setattr(action_panel.st, "session_state", state)
     monkeypatch.setattr(action_panel, "ACTION_ATTENTION_COMPONENT", Mock())
     for _ in range(3):
-        action_panel._render_clock_tick(game_id=GAME_ID, snapshot=current, running=True)
+        action_panel._render_status_bar_tick(game_id=GAME_ID, snapshot=current, running=True)
     assert state["game.command_pending"] == pending
     state["game.command_pending"]["status"] = "IN_FLIGHT"
     client = Mock()
@@ -365,7 +365,7 @@ def test_speech_fifo_connection_change_cannot_consume_enter(monkeypatch):
 
     monkeypatch.setattr(game_page, "_sync_snapshot", sync)
     monkeypatch.setattr(game_page.vote_insights, "render", Mock())
-    monkeypatch.setattr(action_panel, "_render_clock", Mock())
+    monkeypatch.setattr(action_panel, "_render_status_bar_tick", Mock())
     monkeypatch.setattr(action_panel, "SpeechQueue", _SpeechQueueDouble)
     client = Mock(user_id="synthetic")
     client.get_game.return_value = {"data": latest}
@@ -506,15 +506,73 @@ def test_clock_expiry_requests_one_cached_shell_refresh(monkeypatch):
     state = {"game.latest_snapshot": current}
     monkeypatch.setattr(action_panel.st, "session_state", state)
     monkeypatch.setattr(action_panel, "_countdown_remaining_ms", lambda **kwargs: 0)
-    monkeypatch.setattr(action_panel.st, "rerun", Mock(side_effect=RuntimeError("rerun")))
+    rerun = Mock(side_effect=RuntimeError("rerun"))
+    monkeypatch.setattr(action_panel.st, "rerun", rerun)
+    monkeypatch.setattr(action_panel, "_render_action_status", Mock())
+    monkeypatch.setattr(action_panel, "_mount_action_attention", Mock())
     with pytest.raises(RuntimeError, match="rerun"):
-        action_panel._render_clock_tick(game_id=GAME_ID, snapshot=current, running=True)
+        action_panel._render_status_bar_tick(game_id=GAME_ID, snapshot=current, running=True)
     assert state["game.sync_render_snapshot"] is True
+    for _ in range(3):
+        action_panel._render_status_bar_tick(game_id=GAME_ID, snapshot=current, running=True)
+    rerun.assert_called_once_with(scope="app")
     assert "game.command_pending" not in state
 
 
-def test_streamlit_assigns_sync_clock_and_chat_to_separate_render_scopes(monkeypatch):
-    """실제 Streamlit 실행에서도 GET fragment와 시계 fragment가 채팅을 소유하지 않는다."""
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_clock_uses_latest_snapshot_for_status_and_panel_without_mutating_inputs(monkeypatch, wrapped):
+    """공개 영역 sync 뒤 이전 callback도 최신 서버 시각을 사용하고 입력·네트워크는 건드리지 않는다."""
+
+    from frontend_user.components import action_panel
+
+    current = _discussion_snapshot()
+    latest = deepcopy(current)
+    latest["game"].update(state_version=13, last_sequence=43)
+    latest["action_window"].update(server_time="2026-09-08T00:01:00Z", remaining_ms=45000)
+    before = deepcopy(latest)
+    client = Mock()
+    state = {"game.latest_snapshot": {"data": latest} if wrapped else latest,
+             "game.client": client, f"form.message.{GAME_ID}": "작성 중인 발언"}
+    monkeypatch.setattr(action_panel.st, "session_state", state)
+    now = [1000.0]
+    monkeypatch.setattr(action_panel, "monotonic", lambda: now[0])
+    status, text, attention = Mock(), Mock(), Mock()
+    monkeypatch.setattr(action_panel, "_render_action_status", status)
+    monkeypatch.setattr(action_panel, "_mount_action_attention", attention)
+    monkeypatch.setattr(action_panel.st, "markdown", text)
+    action_panel._render_status_bar_tick(game_id=GAME_ID, snapshot=current, running=True)
+    assert status.call_args.kwargs["snapshot"]["action_window"]["remaining_ms"] == 45000
+    now[0] += 1
+    action_panel._render_panel_time_tick(game_id=GAME_ID, snapshot=current)
+    assert text.call_args.args == ("## 00:44",)
+    assert state[f"form.message.{GAME_ID}"] == "작성 중인 발언"
+    assert latest == before
+    assert current["action_window"]["remaining_ms"] == 105000
+    client.assert_not_called()
+    assert client.mock_calls == []
+
+
+def test_clock_expiry_does_not_dismiss_open_save_dialog(monkeypatch):
+    """기존 타이머 callback이 늦게 실행되어도 저장 확인창을 닫는 전체 rerun은 막는다."""
+
+    from frontend_user.components import action_panel
+
+    current = _discussion_snapshot()
+    state = {"game.latest_snapshot": current, "game.save_dialog_game_id": GAME_ID}
+    monkeypatch.setattr(action_panel.st, "session_state", state)
+    monkeypatch.setattr(action_panel, "_countdown_remaining_ms", lambda **kwargs: 0)
+    monkeypatch.setattr(action_panel, "_render_action_status", Mock())
+    monkeypatch.setattr(action_panel, "_mount_action_attention", Mock())
+    rerun = Mock()
+    monkeypatch.setattr(action_panel.st, "rerun", rerun)
+    action_panel._render_status_bar_tick(game_id=GAME_ID, snapshot=current, running=True)
+    rerun.assert_not_called()
+    assert "game.sync_render_snapshot" not in state
+
+
+@pytest.mark.parametrize("phase", ["DAY_DISCUSSION", "NIGHT_ACTION", "DAY_VOTE"])
+def test_streamlit_assigns_sync_clock_and_inputs_to_separate_render_scopes(monkeypatch, phase):
+    """실제 Streamlit 실행에서 GET·시계 fragment는 채팅과 대상 선택을 소유하지 않는다."""
 
     from streamlit.runtime.scriptrunner import get_script_run_ctx
     from streamlit.testing.v1 import AppTest
@@ -536,22 +594,34 @@ def test_streamlit_assigns_sync_clock_and_chat_to_separate_render_scopes(monkeyp
         owners["sync"] = fragment_owner()
         return None
 
-    original_discussion = action_panel._render_discussion
+    input_function = {
+        "DAY_DISCUSSION": "_render_discussion", "NIGHT_ACTION": "_render_night_action",
+        "DAY_VOTE": "_render_vote_action",
+    }[phase]
+    original_input = getattr(action_panel, input_function)
 
-    def discussion(**kwargs):
-        owners["chat"] = fragment_owner()
-        return original_discussion(**kwargs)
+    def render_input(**kwargs):
+        owners["input"] = fragment_owner()
+        return original_input(**kwargs)
 
     def attention(**kwargs):
         owners["clock"] = fragment_owner()
 
     monkeypatch.setattr(game_page, "mount_sse", mount)
     monkeypatch.setattr(game_page.vote_insights, "render", Mock())
-    monkeypatch.setattr(action_panel, "_render_discussion", discussion)
+    monkeypatch.setattr(action_panel, input_function, render_input)
     monkeypatch.setattr(action_panel, "_mount_action_attention", attention)
     current = _discussion_snapshot()
-    current["me"].update(role="CITIZEN")
+    current["game"]["phase"] = phase
+    current["me"].update(role="DOCTOR", player_id="00000000-0000-4000-8000-000000000010")
     current["players"] = []
+    if phase != "DAY_DISCUSSION":
+        target = {"player_id": "00000000-0000-4000-8000-000000000011", "display_name": "합성 후보"}
+        current["players"] = [{**target, "alive": True}]
+        current["legal_actions"] = ["SUBMIT_NIGHT_ACTION" if phase == "NIGHT_ACTION" else "SUBMIT_VOTE"]
+        current["action_window"].update(
+            kind="NIGHT" if phase == "NIGHT_ACTION" else "VOTE", valid_targets=[target],
+        )
 
     def app_body(snapshot):
         import streamlit as st
@@ -567,10 +637,11 @@ def test_streamlit_assigns_sync_clock_and_chat_to_separate_render_scopes(monkeyp
 
     view = AppTest.from_function(app_body, args=(current,)).run()
     assert not view.exception
-    assert owners["chat"] is None
+    assert owners["input"] is None
     assert owners["sync"] is not None and owners["clock"] is not None
     assert owners["sync"] != owners["clock"]
-    assert len(view.chat_input) == 1 and view.chat_input[0].disabled is False
+    inputs = view.chat_input if phase == "DAY_DISCUSSION" else view.radio
+    assert len(inputs) == 1 and inputs[0].disabled is False
 
 
 @pytest.mark.parametrize("reuse_reason", ["sync", "PENDING_TO_RENDER", "IN_FLIGHT"])
@@ -1302,6 +1373,7 @@ let now = 0, nextTimer = 1;
 const timers = new Map();
 globalThis.setTimeout = (fn, delay = 0) => { const id = nextTimer++; timers.set(id, {fn, at: now + delay}); return id; };
 globalThis.clearTimeout = id => timers.delete(id);
+globalThis.requestAnimationFrame = fn => setTimeout(fn, 0);
 Date.now = () => 100000 + now;
 Math.random = () => 0.5;
 const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
@@ -1329,7 +1401,9 @@ function eventTarget(extra = {}) {
     fire(type) { for (const fn of [...(listeners.get(type) || [])]) fn(); },
   };
 }
-globalThis.document = eventTarget({visibilityState: 'visible'});
+const scrolls = [];
+const timeline = {scrollHeight: 900, scrollTo: options => scrolls.push(options)};
+globalThis.document = eventTarget({visibilityState: 'visible', querySelector: () => timeline});
 globalThis.window = eventTarget();
 Object.defineProperty(globalThis, 'navigator', {value: {onLine: true}, configurable: true});
 let sseHealthy = false, pollingHealthy = true, pendingPoll = false;
@@ -1362,7 +1436,7 @@ globalThis.fetch = async (url, options) => {
 const props = {backend_url: 'http://127.0.0.1:8000', game_id: 'game-one', user_id: 'user-one',
   component_instance_id: 'component-one', scope_version: 'scope-one', schema_version: 1,
   last_sequence: 42, after_sequence: 42, after_state_version: 12, policy: POLICY_VALUE};
-const root = {};
+const root = {ownerDocument: document};
 let cleanup;
 function run(data = props) {
   cleanup = render({data, parentElement: root, setStateValue: (key, value) => outputs.push({key, value, at: now})});
@@ -1374,6 +1448,7 @@ const envelopes = () => outputs.filter(output => output.key === 'envelope');
 run();
 await advance(5000);
 assert.deepEqual(polls().map(request => request.at), [0, 2000, 4000]);
+assert.deepEqual(scrolls, [{top: 900, behavior: 'smooth'}]);
 assert.deepEqual(sse().map(request => request.at), [0, 1000, 3000]);
 assert.equal(envelopes().length, 0);
 assert.equal(ticks().length, 2);
@@ -1395,6 +1470,7 @@ run();
 await advance(0);
 assert.equal(liveRequest.options.signal.aborted, false);
 assert.equal(sse().length, 4);
+assert.equal(scrolls.length, 1);
 
 // frame 조각·다중 data line은 완성 뒤 한 번만 전달하고 수신 cursor를 독자 전진시키지 않는다.
 const event = {...noOp('game-one', 43, 13), from_state_version: 12,
@@ -1418,6 +1494,7 @@ const accepted = {...props, last_sequence: 43, after_sequence: 43, after_state_v
 cleanup();
 run(accepted);
 await advance(0);
+assert.equal(scrolls.length, 2);
 window.fire('online');
 await flush();
 assert.match(polls().at(-1).url, /after_sequence=43/);

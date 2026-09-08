@@ -12,15 +12,31 @@ function Fail([string]$Message) { [Console]::Error.WriteLine($Message); exit 1 }
 
 function Get-DotEnvValue([string]$Name, [switch]$Required) {
     if (-not (Test-Path -LiteralPath $EnvFile -PathType Leaf)) { Fail "오류: 저장소 루트의 .env 파일이 없습니다." }
-    $line = Get-Content -LiteralPath $EnvFile | Where-Object { $_ -match "^\s*$Name\s*=" } | Select-Object -First 1
-    if ($null -eq $line) {
-        if ($Required) { Fail "오류: 루트 .env에 $Name 설정이 필요합니다." }
-        return $null
-    }
-    $value = ($line -replace "^\s*[^=]+\s*=\s*", "").Trim()
-    if ($value.Length -ge 2 -and (($value[0] -eq '"' -and $value[$value.Length - 1] -eq '"') -or ($value[0] -eq "'" -and $value[$value.Length - 1] -eq "'"))) {
-        $value = $value.Substring(1, $value.Length - 2)
-    }
+    # 따옴표·주석·export·변수 참조는 sh와 같은 python-dotenv 규칙으로 읽습니다.
+    # JSON으로 값 하나만 회수해 줄 분리나 셸 해석을 피하고 원문은 출력하지 않습니다.
+    $readValue = @'
+import json
+import logging
+import sys
+
+from dotenv import dotenv_values
+
+logging.getLogger("dotenv.main").disabled = True
+try:
+    value = dotenv_values(sys.argv[1]).get(sys.argv[2])
+except (OSError, UnicodeError, ValueError):
+    raise SystemExit(1) from None
+if isinstance(value, str):
+    if "\n" in value or "\r" in value or "\x00" in value:
+        raise SystemExit(1)
+    value = value.strip()
+print(json.dumps(value))
+'@
+    # Windows PowerShell 5.1의 명령행 따옴표 재해석을 피하도록 ASCII Python 코드를
+    # 표준 입력으로 전달합니다. 값의 비 ASCII 문자는 JSON escape로 왕복합니다.
+    $raw = $readValue | & $PythonBin - $EnvFile $Name
+    if ($LASTEXITCODE -ne 0) { Fail "오류: 루트 .env의 $Name 설정을 읽지 못했습니다." }
+    $value = ConvertFrom-Json -InputObject ($raw -join "`n")
     if ($Required -and [string]::IsNullOrWhiteSpace($value)) { Fail "오류: 루트 .env에 $Name 설정이 필요합니다." }
     return $value
 }
@@ -61,14 +77,42 @@ if (-not (Test-PythonInterpreter $McpPythonBin)) {
 }
 
 $StorageMode = Get-DotEnvValue "AI_MAFIA_STORAGE_MODE"
-if ([string]::IsNullOrWhiteSpace($StorageMode)) { $StorageMode = "isolated" }
-if ($StorageMode -notin @("isolated", "team")) { Fail "오류: AI_MAFIA_STORAGE_MODE는 isolated 또는 team이어야 합니다." }
+if ($null -eq $StorageMode) { $StorageMode = "team" }
+if ($StorageMode -cnotin @("isolated", "team")) { Fail "오류: AI_MAFIA_STORAGE_MODE는 isolated 또는 team이어야 합니다." }
 if ($StorageMode -eq "team") {
     $RuntimeDatabaseUrl = Get-DotEnvValue "TEAM_DATABASE_URL" -Required
     $RuntimeRedisUrl = Get-DotEnvValue "REDIS_URL" -Required
 } else {
-    $RuntimeDatabaseUrl = Get-DotEnvValue "DATABASE_URL" -Required
-    $RuntimeRedisUrl = Get-DotEnvValue "REDIS_URL" -Required
+    $RuntimeDatabaseUrl = Get-DotEnvValue "AI_MAFIA_DATABASE_URL" -Required
+    $RuntimeRedisUrl = Get-DotEnvValue "AI_MAFIA_REDIS_URL" -Required
+
+    # 계정이 달라도 host·port·database가 같으면 팀 원장을 공유합니다. sh와 같은
+    # 대상 비교를 파일 안에서 수행해 DB URL이 프로세스 인자나 오류에 남지 않습니다.
+    $checkIsolatedTarget = @'
+import logging
+import sys
+from urllib.parse import unquote, urlsplit
+
+from dotenv import dotenv_values
+
+logging.getLogger("dotenv.main").disabled = True
+
+def target(value):
+    parsed = urlsplit(value.strip())
+    return parsed.scheme.lower(), parsed.hostname, parsed.port or 5432, unquote(parsed.path)
+
+try:
+    values = dotenv_values(sys.argv[1])
+    shared = values.get("TEAM_DATABASE_URL")
+    if isinstance(shared, str) and shared.strip():
+        if target(values["AI_MAFIA_DATABASE_URL"]) == target(shared):
+            raise SystemExit(2)
+except (OSError, UnicodeError, ValueError):
+    raise SystemExit(1) from None
+'@
+    $checkIsolatedTarget | & $PythonBin - $EnvFile
+    if ($LASTEXITCODE -eq 2) { Fail "오류: AI_MAFIA_DATABASE_URL은 TEAM_DATABASE_URL과 다른 격리 DB여야 합니다." }
+    if ($LASTEXITCODE -ne 0) { Fail "오류: 격리 DB 대상 확인에 실패했습니다." }
 }
 
 $BackendUrl = "http://127.0.0.1:$BackendPort"
@@ -78,15 +122,17 @@ if ($args.Count -gt 1 -or ($args.Count -eq 1 -and $args[0] -ne "--check")) { Fai
 
 if ($args.Count -eq 1) {
     # --check는 외부 API 호출 없이 세 런타임의 핵심 import만 확인합니다.
-    & $PythonBin -c "import openai, psycopg, redis, streamlit, uvicorn; from backend.app.core.config import Settings"
+    Push-Location $ProjectRoot
+    try { & $PythonBin -c "import openai, psycopg, redis, streamlit, uvicorn; from backend.app.core.config import Settings" }
+    finally { Pop-Location }
     if ($LASTEXITCODE -ne 0) { Fail "오류: Backend 의존성 import 확인에 실패했습니다." }
     Push-Location $McpRoot
     try { & $McpPythonBin -c "import uvicorn; from mcp.server.fastmcp import FastMCP; import mafia_game.main" }
     finally { Pop-Location }
     if ($LASTEXITCODE -ne 0) { Fail "오류: MCP 의존성 import 확인에 실패했습니다." }
-    Write-Output "OpenAI 실행 설정 확인 완료: provider=openai"
-    Write-Output "선택한 저장소 확인 완료: PostgreSQL, Redis 설정"
-    Write-Output "동시 실행 구성 확인 완료: Backend, MCP, Front"
+    Write-Output "의존성 import 확인 완료: Backend, MCP, Front"
+    Write-Output "저장소 선택: $StorageMode (.env 필수값 읽기 완료)"
+    Write-Output "미검사: Settings.from_env 설정 검증, PostgreSQL·Redis 연결, migration·seed, 포트와 실제 기동, OpenAI API"
     exit 0
 }
 
@@ -95,20 +141,33 @@ $portCheck = "import socket,sys; [((lambda s,p:(s.setsockopt(socket.SOL_SOCKET,s
 & $PythonBin -c $portCheck $BackendPort $McpPort $FrontendPort
 if ($LASTEXITCODE -ne 0) { Fail "오류: Backend, MCP, Front 포트 중 하나가 이미 사용 중입니다." }
 
+# 제거 목록과 덮어쓸 키를 함께 보관해 실패·Ctrl+C 종료 후 호출자의 환경도 복구합니다.
+# 별칭 DSN과 과거 인증 secret도 현재의 최소 MCP·Front runtime에는 전달하지 않습니다.
+$PrivateEnvironment = @(
+    "TEAM_DATABASE_URL", "DATABASE_URL", "DATABASE_MIGRATION_URL", "DATABASE_NAME", "REDIS_URL",
+    "AI_MAFIA_DATABASE_URL", "AI_MAFIA_REDIS_URL", "OPENAI_API_KEY", "GEMINI_API_KEY",
+    "GAME_STATE_KEYRING_FILE", "GAME_STATE_ACTIVE_KEY_ID", "ADMIN_USER_IDS",
+    "MCP_SERVER_AUTH_SECRET", "ENGINE_INTERNAL_API_SECRET",
+    "LLM_PROVIDER", "MCP_SERVER_URL", "CORS_ALLOWED_ORIGINS"
+)
 $old = @{}
-foreach ($name in @("TEAM_DATABASE_URL", "DATABASE_URL", "REDIS_URL", "LLM_PROVIDER", "MCP_SERVER_URL", "CORS_ALLOWED_ORIGINS")) { $old[$name] = [Environment]::GetEnvironmentVariable($name, "Process") }
-$env:TEAM_DATABASE_URL = $RuntimeDatabaseUrl
-$env:DATABASE_URL = $RuntimeDatabaseUrl
-$env:REDIS_URL = $RuntimeRedisUrl
-$env:LLM_PROVIDER = "openai"
-$env:MCP_SERVER_URL = $McpBaseUrl
-$env:CORS_ALLOWED_ORIGINS = "$FrontendUrl,http://localhost:$FrontendPort"
+foreach ($name in ($PrivateEnvironment + @("BACKEND_API_URL", "MCP_LISTEN_HOST", "MCP_LISTEN_PORT"))) {
+    $old[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+}
 $processes = @()
 try {
-    $processes += Start-Process $PythonBin -ArgumentList @("-m", "uvicorn", "backend.app.main:app", "--reload", "--host", "127.0.0.1", "--port", "$BackendPort") -WorkingDirectory $ProjectRoot -PassThru -NoNewWindow
+    $env:TEAM_DATABASE_URL = $RuntimeDatabaseUrl
+    $env:DATABASE_URL = $RuntimeDatabaseUrl
+    $env:REDIS_URL = $RuntimeRedisUrl
+    $env:LLM_PROVIDER = "openai"
+    $env:MCP_SERVER_URL = $McpBaseUrl
+    $env:CORS_ALLOWED_ORIGINS = "$FrontendUrl,http://localhost:$FrontendPort"
+    # Front·테스트 편집은 Backend를 재시작하지 않아 진행 중 API 요청을 끊지 않는다.
+    $ReloadDirectory = '"' + (Join-Path $ProjectRoot "backend\app") + '"'
+    $processes += Start-Process $PythonBin -ArgumentList @("-m", "uvicorn", "backend.app.main:app", "--reload", "--reload-dir", $ReloadDirectory, "--host", "127.0.0.1", "--port", "$BackendPort") -WorkingDirectory $ProjectRoot -PassThru -NoNewWindow
 
     # MCP와 Front에는 Backend 공개 주소만 전달하고 DB·Redis·LLM 관련 값은 제거합니다.
-    foreach ($name in @("TEAM_DATABASE_URL", "DATABASE_URL", "REDIS_URL", "OPENAI_API_KEY", "GEMINI_API_KEY", "LLM_PROVIDER", "MCP_SERVER_URL", "CORS_ALLOWED_ORIGINS")) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
+    foreach ($name in $PrivateEnvironment) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
     $env:BACKEND_API_URL = $BackendUrl
     $env:MCP_LISTEN_HOST = "127.0.0.1"
     $env:MCP_LISTEN_PORT = "$McpPort"

@@ -263,7 +263,8 @@ trap cleanup EXIT
     REDIS_URL="${RUNTIME_REDIS_URL}" LLM_PROVIDER=openai MCP_SERVER_URL="${MCP_BASE_URL}" \
     CORS_ALLOWED_ORIGINS="${FRONTEND_URL},http://localhost:${FRONTEND_PORT}" \
     "${PYTHON_BIN}" -m uvicorn backend.app.main:app \
-    --reload --host 127.0.0.1 --port "${BACKEND_PORT}" &
+    --reload --reload-dir "${PROJECT_ROOT}/backend/app" \
+    --host 127.0.0.1 --port "${BACKEND_PORT}" &
 CHILD_PIDS+=("$!")
 CHILD_NAMES+=("Backend")
 

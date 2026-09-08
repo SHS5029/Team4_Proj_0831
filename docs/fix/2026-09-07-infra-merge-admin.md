@@ -303,8 +303,9 @@ Backend 실행 명령은 저장소 루트에서 `python -m uvicorn backend.app.m
 짙은 퍼플 관리자 스타일로 통일해 운영 화면의 구분과 가독성을 높였습니다. 운영 에이전트
 계획 탭은 RAG/운영 에이전트의 구현 계획과 데이터 보호 경계를 설명하며, 검색 코드 경로는
 외부 LLM 없는 로컬 임베딩과 pgvector 혼합 검색으로 동작하도록 연결했습니다. 자동 조치는 연결하지 않습니다.
-상세 계획은
-[AI 마피아 관리자 운영 에이전트 계획서](../개발상세플랜/AI_MAFIA_ADMIN_AGENT_PLAN.md)에 정리했습니다.
+당시 상세 계획서는 2026-09-08 `chd_test` 병합에서 계획 탭과 함께 제거됐습니다.
+현재 세 탭의 동작은 루트 [README](../../README.md)와
+[화면 흐름](../개발상세플랜/AI_MAFIA_SCREEN_FLOW.md)을 기준으로 확인합니다.
 
 화면용 `ADMIN_DEMO_MODE=true` 합성 데이터와 별도로, 실제 DB 검증이 필요한 담당자는
 `backend/seed_admin_demo_data.sql`을 수동 실행할 수 있습니다. 이 파일은 기존 데이터를

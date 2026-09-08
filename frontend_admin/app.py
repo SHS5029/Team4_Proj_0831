@@ -55,7 +55,10 @@ def _render_live_dashboard(client, *, synthetic: bool = False) -> None:
         insights, records = _dashboard_inputs(client, metrics)
     except AdminApiError as error:
         if error.status_code == 403:
-            st.error("관리자 접근이 거부되었습니다. Backend에 등록된 UUID를 입력해 주세요.")
+            # 주기 갱신 중 권한이 회수되면 최초 진입과 같은 식별자 복구 흐름으로
+            # 돌아간다. fragment 안에만 입력을 만들면 bridge가 새 UUID를 받지 못한다.
+            st.session_state[ADMIN_ACCESS_SESSION_KEY] = False
+            st.rerun(scope="app")
         else:
             st.error("관리자 Backend 연결 또는 응답 오류입니다. BACKEND_API_URL과 서버 상태를 확인해 주세요.")
         return

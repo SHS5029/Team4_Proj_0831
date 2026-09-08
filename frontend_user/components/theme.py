@@ -186,19 +186,20 @@ def render_application_header(
             action_renderer()
 
 
-def render_header_back_button(*, current_page: str) -> None:
-    """공통 헤더에 홈으로 button을 표시하고 항상 홈 화면으로 이동시킨다.
+def render_header_back_button(*, current_page: str, on_back: Callable[[], None] | None = None) -> None:
+    """진행 게임은 저장·삭제 확인을 먼저 열고 일반 화면은 홈으로 이동한다.
 
-    게임 진행 화면에서 브라우저성 방문 이력으로 이동하면 이전 화면이 역할 공개나
-    생성 완료 화면으로 되돌아가 현재 게임 흐름과 혼동될 수 있다. 따라서 사용자가
-    명시적으로 누르는 상단 뒤로가기는 모든 진행 화면에서 홈으로만 연결한다.
-    ``current_page``는 기존 호출부 호환성을 위해 유지하며, 홈에서는 button을 숨긴다.
+    방문 이력으로 역할 공개 화면에 되돌아가는 혼동을 피하면서도 진행 게임의
+    이탈 확인 계약을 보존한다. callback이 있으면 navigation은 해당 화면이 맡는다.
     """
 
     if current_page == "home":
         return
     if st.button("홈으로", key="header.back", width="stretch"):
-        _navigate(page="home", history=[])
+        if on_back is not None:
+            on_back()
+        else:
+            _navigate(page="home", history=[])
 
 
 def _navigation_history(*, current_page: str) -> list[str]:

@@ -197,30 +197,96 @@ def render(*, client: ApiClient, game_id: str, snapshot: dict[str, Any]) -> None
 
     # 브라우저 새로고침 직전에 남은 요청만 여기서 복구한다. 새 버튼 클릭은 fragment
     # 안에서도 즉시 전송하며, 결과가 불명확할 때만 같은 body·idempotency key를 쓴다.
+    st.markdown(ACTION_PANEL_CSS, unsafe_allow_html=True)
+    maintain_speech_queue(user_id=client.user_id, page="game", game_id=game_id, snapshot=snapshot)
     _process_pending(client=client, game_id=game_id, snapshot=snapshot)
 
-    phase = str(snapshot.get("game", {}).get("phase", ""))
-    if phase in DISCUSSION_PHASES:
-        # 발언·PASS는 브라우저가 fragment만 재실행하는 경우에도 확실히 POST되어야
-        # 한다. 토론 입력은 일반 Streamlit 실행 경로에서 렌더링해 클릭 뒤 전체
-        # app rerun과 최신 snapshot 조회가 항상 이어지게 한다.
-        _render_actions(client=client, game_id=game_id, snapshot=snapshot)
-        return
+    # 채팅·대상 선택은 주기 갱신에 포함하지 않는다. 별도 시계와 큐 fragment가
+    # 진행을 표시하는 동안 Enter 입력과 아직 제출하지 않은 선택을 유지한다.
+    _render_actions(client=client, game_id=game_id, snapshot=snapshot)
+    _render_speech_queue(game_id=game_id)
 
-    remaining = _countdown_remaining_ms(game_id=game_id, snapshot=snapshot)
-    # 밤 행동·투표만 행동 panel fragment에서 타이머를 갱신한다. tick 자체는 command
-    # POST를 만들지 않으며, 새 클릭과 명시적 재확인만 전송 경로를 연다.
-    save_dialog_open = st.session_state.get("game.save_dialog_game_id") == game_id
-    interval = (
-        None
-        if save_dialog_open
-        else 1 if _timer_is_running(snapshot) and remaining and remaining > 0 else None
-    )
-    st.fragment(run_every=interval)(_render_actions)(
-        client=client,
-        game_id=game_id,
-        snapshot=snapshot,
-    )
+
+def maintain_speech_queue(*, user_id: Any, page: str, game_id: Any,
+                          snapshot: dict[str, Any] | None = None) -> None:
+    """사용자·게임 이탈과 저장 경계에서 아직 전송하지 않은 예약을 중단한다."""
+
+    queue = st.session_state.get("game.speech_queue")
+    if not isinstance(queue, SpeechQueue):
+        return
+    save = st.session_state.get("game.save_pending", {})
+    if (user_id is None or str(user_id) != queue.user_id or page != "game"
+            or game_id != queue.game_id):
+        queue.cancel("게임을 나가 남은 발언 예약을 취소했습니다.")
+        st.session_state.pop("game.speech_queue", None)
+    elif (isinstance(save, dict) and save.get("game_id") == game_id
+          and save.get("status") in {"PENDING_TO_RENDER", "IN_FLIGHT", "RETRYABLE_UNKNOWN",
+                                     "REFRESH_REQUIRED", "REFRESH_FAILED"}):
+        queue.cancel("게임을 저장하여 남은 발언 예약을 취소했습니다.")
+    elif snapshot is not None:
+        queue.observe(snapshot, user_id)
+
+
+def speech_queue_busy(game_id: Any) -> bool:
+    """현재 사용자의 같은 게임 대기열만 조회 지연을 피하는 기준으로 사용한다."""
+
+    queue = st.session_state.get("game.speech_queue")
+    user_id = getattr(st.session_state.get("game.client"), "user_id", None)
+    return bool(isinstance(queue, SpeechQueue) and queue.game_id == game_id
+                and queue.user_id == str(user_id) and queue.busy)
+
+
+def prefer_current_snapshot(*, snapshot: dict[str, Any], game_id: str,
+                            user_id: Any) -> dict[str, Any]:
+    """네트워크 대기 중 더 최신 상태가 도착했으면 늦은 응답으로 되돌리지 않는다."""
+
+    current_user = getattr(st.session_state.get("game.client"), "user_id", None)
+    if str(current_user) != str(user_id) or snapshot.get("game", {}).get("game_id") != game_id:
+        raise ValueError("INVALID_RESPONSE")
+    current = st.session_state.get("game.latest_snapshot")
+    if isinstance(current, dict) and isinstance(current.get("data"), dict):
+        current = current["data"]
+    if not isinstance(current, dict) or current.get("game", {}).get("game_id") != game_id:
+        return snapshot
+    if snapshot.get("me", {}).get("player_id") != current.get("me", {}).get("player_id"):
+        raise ValueError("INVALID_RESPONSE")
+    for key in ("state_version", "last_sequence"):
+        new_value, old_value = snapshot["game"].get(key), current["game"].get(key)
+        if type(new_value) is not int or type(old_value) is not int or new_value < old_value:
+            return current
+    return snapshot
+
+
+@st.fragment(run_every=0.5)
+def _render_speech_queue(*, game_id: str) -> None:
+    """HTTP 완료만 비차단으로 확인하며 채팅 위젯과 작성 중인 초안은 다시 그리지 않는다."""
+
+    queue = st.session_state.get("game.speech_queue")
+    if not isinstance(queue, SpeechQueue) or queue.game_id != game_id:
+        return
+    client = st.session_state.get("game.client")
+    snapshot = st.session_state.get("game.latest_snapshot")
+    maintain_speech_queue(user_id=getattr(client, "user_id", None),
+                          page=st.session_state.get("navigation.page", "game"),
+                          game_id=game_id, snapshot=snapshot)
+    if st.session_state.get("game.speech_queue") is not queue:
+        return
+    refreshed = queue.advance()
+    if refreshed is not None:
+        try:
+            st.session_state["game.latest_snapshot"] = prefer_current_snapshot(
+                snapshot=refreshed, game_id=game_id, user_id=queue.user_id)
+        except ValueError:
+            queue.cancel("게임 상태가 달라져 남은 발언 예약을 취소했습니다.")
+    view = queue.view()
+    with st.container(key="speech-queue-status"):
+        pending = view["pending"]
+        if pending:
+            st.caption(f"예약 발언 {len(pending)}개 · 입력한 순서대로 전송합니다.")
+            for index, message in enumerate(pending, 1):
+                st.text(f"{index}. {message}")
+        if view.get("notice"):
+            st.caption(view["notice"])
 
 
 def _render_actions(
@@ -242,9 +308,6 @@ def _render_actions(
         _render_night_action(client=client, game_id=game_id, snapshot=snapshot)
     elif phase in VOTE_PHASES:
         _render_vote_action(client=client, game_id=game_id, snapshot=snapshot)
-    # 이 component는 화면을 이동하거나 입력 focus를 바꾸지 않고, 임계 경고를
-    # 접근성 live region에 알리는 역할만 한다.
-    _mount_action_attention(snapshot=snapshot)
 
 
 def render_status_bar(*, game_id: str, snapshot: dict[str, Any]) -> None:
@@ -255,26 +318,42 @@ def render_status_bar(*, game_id: str, snapshot: dict[str, Any]) -> None:
     """
 
     st.markdown(ACTION_PANEL_CSS, unsafe_allow_html=True)
+    interval = _clock_interval(game_id=game_id, snapshot=snapshot)
+    st.fragment(run_every=interval)(_render_status_bar_tick)(
+        game_id=game_id, snapshot=snapshot, running=interval is not None,
+    )
+
+
+def _clock_interval(*, game_id: str, snapshot: dict[str, Any]) -> int | None:
+    """실행 중인 서버 마감만 갱신하고 저장 확인 중에는 시간 표시를 멈춘다."""
+
     remaining = _countdown_remaining_ms(game_id=game_id, snapshot=snapshot)
     # 저장 확인 modal이 열린 동안 하단 countdown fragment가 1초마다 부모 화면을
     # 다시 그리면 dialog가 닫힐 수 있다. 저장 대화상자에서는 시간 표시 갱신보다
     # 사용자의 확인 입력을 우선하고, 닫힌 뒤 다음 rerun에서 자동 갱신을 재개한다.
     save_dialog_open = st.session_state.get("game.save_dialog_game_id") == game_id
-    interval = (
+    return (
         None
         if save_dialog_open
         else 1 if _timer_is_running(snapshot) and remaining and remaining > 0 else None
     )
-    st.fragment(run_every=interval)(_render_status_bar_tick)(game_id=game_id, snapshot=snapshot)
 
 
-def _render_status_bar_tick(*, game_id: str, snapshot: dict[str, Any]) -> None:
-    """주기 갱신에서는 하단 안내의 표시 시간만 다시 계산한다."""
+def _clock_snapshot(*, game_id: str, snapshot: dict[str, Any]) -> dict[str, Any]:
+    """동기화로 검증된 최신 상태를 시계에 반영하고 원본 snapshot은 보존한다."""
 
+    latest = st.session_state.get("game.latest_snapshot")
+    if isinstance(latest, dict) and isinstance(latest.get("data"), dict):
+        latest = latest["data"]
+    if (isinstance(latest, dict) and latest.get("game", {}).get("game_id") == game_id
+            and latest.get("me", {}).get("player_id") == snapshot.get("me", {}).get("player_id")
+            and all(latest["game"].get(key, -1) >= snapshot.get("game", {}).get(key, -1)
+                    for key in ("state_version", "last_sequence"))):
+        snapshot = latest
     remaining = _countdown_remaining_ms(game_id=game_id, snapshot=snapshot)
     game = snapshot.get("game") if isinstance(snapshot.get("game"), dict) else {}
     window = _window(snapshot)
-    display_snapshot = {
+    return {
         **snapshot,
         "action_window": {
             **window,
@@ -282,93 +361,107 @@ def _render_status_bar_tick(*, game_id: str, snapshot: dict[str, Any]) -> None:
             "paused": bool(window.get("paused") or game.get("status") == "SAVED"),
         },
     }
+
+
+def _render_status_bar_tick(*, game_id: str, snapshot: dict[str, Any], running: bool = False) -> None:
+    """시간·임계 경고만 갱신하며 마감에 도달한 창은 입력 잠금을 한 번 요청한다."""
+
+    display_snapshot = _clock_snapshot(game_id=game_id, snapshot=snapshot)
+    window = _window(display_snapshot)
+    expired_scope = (game_id, window.get("window_id"), window.get("deadline_at"))
+    if (running and _timer_is_running(display_snapshot) and window.get("remaining_ms") == 0
+            and st.session_state.get("game.save_dialog_game_id") != game_id
+            and st.session_state.get("game.action_clock_expired") != expired_scope):
+        # 기존 snapshot으로 입력만 잠그므로 마감 tick이 추가 GET·자동 POST를 만들지
+        # 않는다. 같은 callback이 다시 실행되어도 확정 결과를 기다리며 재요청하지 않는다.
+        st.session_state["game.action_clock_expired"] = expired_scope
+        st.session_state["game.sync_render_snapshot"] = True
+        st.rerun(scope="app")
     _render_action_status(snapshot=display_snapshot)
+    _mount_action_attention(snapshot=display_snapshot)
+
+
+def _render_panel_time(*, game_id: str, snapshot: dict[str, Any]) -> None:
+    """밤·투표의 시간 카드만 갱신하여 주변 선택 위젯을 다시 생성하지 않는다."""
+
+    st.fragment(run_every=_clock_interval(game_id=game_id, snapshot=snapshot))(
+        _render_panel_time_tick,
+    )(game_id=game_id, snapshot=snapshot)
+
+
+def _render_panel_time_tick(*, game_id: str, snapshot: dict[str, Any]) -> None:
+    """시간 카드에서도 동기화 이후의 서버 clock을 표시하고 입력·조회는 실행하지 않는다."""
+
+    display_snapshot = _clock_snapshot(game_id=game_id, snapshot=snapshot)
+    st.markdown("**남은 시간**")
+    st.markdown(f"## {_countdown_text(display_snapshot)}")
 
 
 def _render_discussion(
     *, client: ApiClient | None, game_id: str, snapshot: dict[str, Any],
 ) -> None:
-    """자유 발언 입력을 유지하고 발언·PASS 입력을 활성화한다.
-
-    ``legal_actions``는 사용자별 projection이라 SSE 직후 잠시 이전 값이 남거나,
-    현재 Backend projection에서 PASS가 빠질 수 있다. 반면 action window의
-    ``turn_player_id``는 Backend의 차례 projection으로 보존하되, 시간 제한이 있는
-    자유 토론에서는 인간 입력을 차례와 무관하게 허용한다. 최종 허용 여부는 여전히
-    Backend가 판정한다.
-    """
+    """자유 토론의 발언은 연속 예약하고 차례제 입력은 기존 제출 경계를 유지한다."""
 
     window = _window(snapshot)
-    legal = set(snapshot.get("legal_actions", []))
-    pending = _pending_for_window(game_id=game_id, window=window)
     me = snapshot.get("me") if isinstance(snapshot.get("me"), dict) else {}
-    my_player_id = _canonical_player_id(me.get("player_id"))
-    turn_player_id = _canonical_player_id(window.get("turn_player_id"))
-    turn_is_known = turn_player_id is not None
-    my_turn = turn_player_id == my_player_id if turn_is_known else bool({"SPEAK", "PASS"} & legal)
-    game = snapshot.get("game") if isinstance(snapshot.get("game"), dict) else {}
-    timed_discussion = bool(window.get("deadline_at"))
-    can_submit = (
-        game.get("status") == "IN_PROGRESS"
-        and game.get("phase") in DISCUSSION_PHASES
-        and not bool(window.get("paused"))
-        and bool(me.get("alive", True))
-        # Backend는 deadline이 있는 사람 토론에서 인간의 발언을 순서와
-        # 무관하게 허용한다. 따라서 AI turn_player_id가 표시되어도 입력을 막지 않는다.
-        and (my_turn or timed_discussion)
-    )
-    # 현재 Backend projection이 PASS를 생략하더라도 내 차례이면 두 버튼을 함께
-    # 보여준다. 서버는 동일한 window_id와 현재 차례를 다시 검증한다.
-    discussion_legal = legal | {"SPEAK", "PASS"} if can_submit else legal
+    legal = set(snapshot.get("legal_actions", []))
+    my_turn = window.get("deadline_at") is not None or window.get("turn_player_id") == me.get("player_id")
+    pending = _pending_for_window(game_id=game_id, window=window, snapshot=snapshot)
+    reservable = _can_reserve_speech(snapshot)
 
     with st.container(key="discussion-action-panel", border=True):
         _render_pending_feedback(client=client, game_id=game_id, pending=pending)
-        if not can_submit:
-            if window.get("has_submitted") or (pending and pending.get("status") == "SUCCEEDED"):
+        if not my_turn or not reservable and not ({"SPEAK", "PASS"} & legal):
+            if window.get("remaining_ms") == 0:
+                st.info("토론 시간이 끝났습니다. 다음 단계를 기다리고 있습니다.")
+            elif window.get("has_submitted"):
                 st.info("발언이 제출되었습니다. 다음 차례를 기다려 주세요.")
+            else:
+                st.info("다른 플레이어의 발언을 기다리고 있습니다.")
             return
 
-        locked = _is_locked(window=window, pending=pending)
-        # AI 발언으로 action window가 바뀌어도 같은 게임의 입력창을 재사용한다.
-        # 그래야 사용자가 작성 중인 자유 발언이 SSE·polling rerun으로 초기화되지 않는다.
+        # 자유 토론의 has_submitted는 빈도 제한 때도 true다. 예약 입력의 잠금과
+        # 실제 POST 허가를 분리하고 차례제·투표·밤 행동에는 기존 잠금을 유지한다.
+        locked = _is_locked(window={**window, "has_submitted": False} if reservable else window,
+                            pending=pending)
+        # 자유 토론에서는 다른 플레이어의 발언마다 window가 교체된다. 입력 키를
+        # game 범위로 고정해 동기화 rerun이 사용자가 작성 중인 초안을 지우지 않게 한다.
         message_key = f"form.message.{game_id}"
-        message = st.text_area(
-            "발언 내용",
+        draft = pending.get("speech_draft") if pending and pending.get("status") == "REJECTED" else None
+        restore = isinstance(draft, dict) and draft.get("restore") and not locked and (reservable or "SPEAK" in legal)
+        if restore:
+            # 실패 직후 한 번만 복원한다. 이후 전체 rerun에서 원문을 반복 주입하면
+            # 사용자가 고치고 있는 브라우저 초안이 다시 덮이므로 위젯 생성 뒤 소비한다.
+            st.session_state[message_key] = draft["message"]
+        st.markdown("**발언 내용**")
+        callback_args = {
+            "game_id": game_id, "snapshot": snapshot,
+            "user_id": getattr(st.session_state.get("game.client"), "user_id", None),
+        }
+        st.chat_input(
+            "이곳에 발언을 입력하세요. (최대 200자)",
             max_chars=200,
-            height=70,
-            disabled=locked,
+            disabled=locked or not reservable and "SPEAK" not in legal,
             key=message_key,
-            placeholder="이곳에 발언을 입력하세요. (최대 200자)",
+            on_submit=_capture_discussion_command,
+            kwargs={**callback_args, "command_type": "SPEAK"},
         )
-        speak_col, pass_col = st.columns([1.2, 1])
-        if speak_col.button(
-            "💬 발언하기",
-            key="action.SPEAK",
-            # 버튼은 기본 활성화해 사용자가 입력창 아래에서 즉시 행동을 인식하게
-            # 한다. 빈 발언은 클릭 시 build_command의 입력 검증 문구로 안내한다.
-            disabled=locked or "SPEAK" not in discussion_legal,
-            use_container_width=True,
-            type="primary",
-        ):
-            _queue_command(
-                client=client,
-                game_id=game_id,
-                snapshot=snapshot,
-                command_type="SPEAK",
-                message=message,
+        if restore:
+            st.session_state["game.command_pending"] = {
+                **pending, "speech_draft": {**draft, "restore": False},
+            }
+        if snapshot.get("game", {}).get("day_number") == 1 and snapshot["game"].get("phase") == "DAY_DISCUSSION":
+            st.caption("첫날에는 PASS할 수 없습니다. 짧게라도 의견이나 질문을 남겨 주세요.")
+        else:
+            st.button(
+                "PASS",
+                key="action.PASS",
+                disabled=locked or "PASS" not in legal or speech_queue_busy(game_id),
+                use_container_width=True,
+                on_click=_capture_discussion_command,
+                kwargs={**callback_args, "command_type": "PASS"},
             )
-        if pass_col.button(
-            "PASS",
-            key="action.PASS",
-            disabled=locked or "PASS" not in discussion_legal,
-            use_container_width=True,
-        ):
-            _queue_command(
-                client=client,
-                game_id=game_id,
-                snapshot=snapshot,
-                command_type="PASS",
-            )
-        st.caption("🔒 제출 후에는 내용을 변경할 수 없습니다.")
+        st.caption("Enter로 발언 예약 · Shift+Enter로 줄바꿈 · 예약한 순서대로 전송합니다.")
 
 
 def _render_night_action(
@@ -413,8 +506,7 @@ def _render_night_action(
         st.markdown(f"### 🌙 {day_number}일차 밤이 되었습니다")
         st.divider()
         with st.container(key="night-time-card", border=True):
-            st.markdown("**남은 시간**")
-            st.markdown(f"## {_countdown_text(snapshot)}")
+            _render_panel_time(game_id=game_id, snapshot=snapshot)
         with st.container(key="night-role-card", border=True):
             st.markdown(f"**내 역할** · {role_icon} {role_label}")
             st.caption(instruction)
@@ -489,8 +581,7 @@ def _render_vote_action(
         st.markdown(f"### 🗳️ {phase_label}")
         st.divider()
         with st.container(key="vote-time-card", border=True):
-            st.markdown("**남은 시간**")
-            st.markdown(f"## {_countdown_text(snapshot)}")
+            _render_panel_time(game_id=game_id, snapshot=snapshot)
             st.caption("⚠ 제한 시간 내에 투표를 완료하세요.")
         st.divider()
         with st.container(key="vote-role-card", border=True):
@@ -566,9 +657,15 @@ def _action_status(snapshot: dict[str, Any]) -> tuple[str, str, str | None] | No
     if _is_locked(window={**window, "has_submitted": False} if reservable else window, pending=pending):
         return None
     if phase in DISCUSSION_PHASES:
-        if "SPEAK" not in legal:
+        if (window.get("deadline_at") is None and window.get("turn_player_id") != me.get("player_id")) or not reservable and not ({"SPEAK", "PASS"} & legal):
             return None
-        label = "발언을 입력하거나 PASS하세요"
+        if reservable and "SPEAK" not in legal:
+            label = "발언을 예약하세요 · 발언 제한이 풀리면 전송합니다"
+        elif "PASS" in legal and not (phase == "DAY_DISCUSSION" and game.get("day_number") == 1):
+            label = "발언을 입력하거나 PASS하세요"
+        else:
+            # 하단 안내도 입력 버튼과 같은 첫날 PASS 금지·서버 허용 경계를 따른다.
+            label = "발언을 입력하세요"
     elif phase == "NIGHT_ACTION" and "SUBMIT_NIGHT_ACTION" in legal:
         label = {
             "MAFIA": "공격 대상을 선택하세요",
@@ -825,9 +922,17 @@ def _queue_command(
     rerun: bool = True,
     speech_draft: dict[str, Any] | None = None,
 ) -> None:
-    """검증된 command를 즉시 전송하고 재확인 가능한 session 결과를 남긴다."""
+    """직접 클릭은 즉시 전송하고 입력 callback은 다음 렌더에 같은 요청을 맡긴다."""
 
+    pending = st.session_state.get("game.command_pending")
+    if isinstance(pending, dict) and pending.get("status") in {
+        "PENDING_TO_RENDER", "IN_FLIGHT", "RETRYABLE_UNKNOWN",
+    }:
+        # 새 입력은 전송 중·응답 불명 요청의 body와 멱등 키를 덮어쓰지 않는다.
+        return
     try:
+        snapshot = _latest_command_snapshot(game_id=game_id, snapshot=snapshot,
+                                            command_type=command_type, user_id=user_id)
         command = build_command(
             snapshot=snapshot,
             command_type=command_type,
@@ -853,18 +958,18 @@ def _queue_command(
             st.error(str(error))
         return
     st.session_state["game.command_pending"] = {
-        "status": "IN_FLIGHT",
+        "status": "IN_FLIGHT" if client is not None else "PENDING_TO_RENDER",
         "game_id": game_id,
         "command": command,
         "idempotency_key": str(uuid4()),
         **({"speech_draft": speech_draft} if speech_draft is not None else {}),
     }
-    # 발언·PASS 버튼은 fragment 안에 있으므로, 대기열만 만들고 전체 실행을 기다리면
-    # 브라우저 환경에 따라 POST 단계가 누락될 수 있다. 클릭한 실행 주기에서 한 번만
-    # 전송하고, 네트워크 불확실성은 아래 pending 상태와 같은 key로 재확인한다.
+    # 밤·투표 fragment의 클릭은 같은 실행에서 전송한다. 채팅 callback은
+    # rerun을 직접 호출하지 않고 정상 렌더의 _process_pending에 전송을 맡긴다.
     if client is not None:
-        _submit_pending(client=client, game_id=game_id)
-    st.rerun(scope="app")
+        _submit_pending(client=client, game_id=game_id, snapshot=snapshot)
+    if rerun:
+        st.rerun(scope="app")
 
 
 def _process_pending(*, client: ApiClient, game_id: str, snapshot: dict[str, Any]) -> None:
@@ -887,11 +992,12 @@ def _process_pending(*, client: ApiClient, game_id: str, snapshot: dict[str, Any
         st.session_state["game.command_pending"] = pending
     if pending.get("status") != "IN_FLIGHT":
         return
-    _submit_pending(client=client, game_id=game_id)
+    _submit_pending(client=client, game_id=game_id, snapshot=snapshot)
     st.rerun()
 
 
-def _submit_pending(*, client: ApiClient, game_id: str) -> None:
+def _submit_pending(*, client: ApiClient, game_id: str,
+                    snapshot: dict[str, Any] | None = None) -> None:
     """현재 게임의 IN_FLIGHT command를 한 번 전송하고 결과만 session에 기록한다.
 
     버튼에서 직접 호출해도, 새로고침 뒤 남은 pending을 복구해 호출해도 동일한
@@ -904,6 +1010,13 @@ def _submit_pending(*, client: ApiClient, game_id: str) -> None:
         return
     if pending.get("status") != "IN_FLIGHT":
         return
+    # 재확인 버튼은 snapshot 인자를 갖지 않으므로 전송 전 세션 상태를 사용한다.
+    # 성공 후 새 단계의 snapshot으로 입력 정리 여부를 판정하지 않는다.
+    snapshot = snapshot if snapshot is not None else st.session_state.get("game.latest_snapshot", {})
+    if isinstance(snapshot, dict) and isinstance(snapshot.get("data"), dict):
+        snapshot = snapshot["data"]
+    if not isinstance(snapshot, dict):
+        snapshot = {}
     try:
         response = client.submit_command(
             game_id=game_id,

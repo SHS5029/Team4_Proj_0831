@@ -14,6 +14,18 @@ HUMAN = "00000000-0000-4000-8000-000000000203"
 RUN = "00000000-0000-4000-8000-000000000204"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_action_attention_component(monkeypatch):
+    """F3는 화면·저장 흐름을 검증하므로 브라우저 접근성 전송만 격리한다.
+
+    공통 하단 시계는 그대로 실행하며 주의 안내 payload와 fragment 경계는 F4·F5가
+    검증한다. 수집 때 등록된 component가 새 AppTest runtime에 남는다고 가정하지 않는다.
+    """
+
+    monkeypatch.setattr("frontend_user.components.action_panel.ACTION_ATTENTION_COMPONENT",
+                        lambda **kwargs: {})
+
+
 def _snapshot(status="IN_PROGRESS", phase="DAY_DISCUSSION", version=12):
     return {
         "game": {"game_id": GAME, "status": status, "phase": phase,
@@ -413,12 +425,18 @@ def test_vote_resolved_rejects_noncanonical_or_private_payload(changes):
 
 @pytest.mark.parametrize("phase", ["NIGHT_ACTION", "DAY_VOTE", "REVOTE", "FINAL_ACCUSATION"])
 def test_every_active_phase_keeps_public_timeline_visible(phase):
+    """GM 브리핑과 분리된 실제 공개 발언이 밤·각 투표 단계에서도 유지되는지 확인한다."""
+
     snapshot = _snapshot(phase=phase)
+    snapshot["game"].update(
+        day_number=6 if phase == "FINAL_ACCUSATION" else 1 if phase == "NIGHT_ACTION" else 2,
+        round=5 if phase == "FINAL_ACCUSATION" else 1,
+    )
     snapshot["public_events"] = [{
         "event_id": RUN,
-        "event_type": "GAME_BEGAN",
+        "event_type": "PLAYER_SPOKE",
         "created_at": "2026-09-07T01:00:00Z",
-        "data": {"message": "공개 타임라인 유지 확인"},
+        "data": {"player_id": AI, "message": "공개 타임라인 유지 확인"},
     }]
     app = AppTest.from_function(_page_app, args=(_Client(snapshot), snapshot)).run()
     assert not app.exception
@@ -824,7 +842,7 @@ def _navigation_app(initial_page):
 def test_every_non_home_route_has_only_one_header_back_button(page):
     app = AppTest.from_function(_navigation_app, args=(page,)).run()
     assert not app.exception
-    assert app.button(key="header.back").label == "← 뒤로가기"
+    assert app.button(key="header.back").label == "홈으로"
     assert len(app.button) == 1
 
 
@@ -835,7 +853,9 @@ def test_invalid_navigation_page_returns_to_home_without_rendering_duplicate_con
     assert not app.button
 
 
-def test_back_uses_validated_app_history_without_creating_a_navigation_loop():
+def test_home_button_clears_app_history_without_creating_a_navigation_loop():
+    """이전 역할·생성 화면으로 되돌아가지 않고 홈 이동 시 방문 기록을 비우는지 확인한다."""
+
     app = AppTest.from_function(_navigation_app, args=("home",)).run()
     app.session_state["navigation.page"] = "create"
     app.run()
@@ -844,8 +864,9 @@ def test_back_uses_validated_app_history_without_creating_a_navigation_loop():
     assert list(app.session_state[theme.NAVIGATION_HISTORY_KEY]) == ["home", "create"]
 
     app.button(key="header.back").click().run()
-    assert app.session_state["navigation.page"] == "create"
-    assert list(app.session_state[theme.NAVIGATION_HISTORY_KEY]) == ["home"]
+    assert app.session_state["navigation.page"] == "home"
+    assert list(app.session_state[theme.NAVIGATION_HISTORY_KEY]) == []
+    assert not app.button
 
 
 def test_back_to_home_clears_history_and_only_invalidates_home_list_projection():

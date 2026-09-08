@@ -735,6 +735,12 @@ no persistent spool과 fresh credential이다. Resource context no-cache는 이�
 
 ## 2026-09-08 역할별 프롬프트 이관 (WU-M6)
 
+후속 사용자 요청으로 `instructions.py`의 토론 지침은 공격적인 추궁과 역할별
+거짓말·선동·날조를 포함한다. 이는 게임 대사의 전략이며 실제 Resource 기록·Tool
+인자·본인 역할·정보 scope를 바꾸지 않는다. 수치 재매핑 없이 persona 표현에 반영하고
+Prompt 등록명·서명·2400자 한도는 유지한다. 전체 테스트는 보류하고 최소 검증과
+외부 브라우저 한 판으로 반영을 확인한다.
+
 사용자 승인에 따라 `api/prompts/instructions.py`가 네 역할의 승리 전략·단계별 행동·페르소나
 적용 경계를 소유한다. 성향 수치의 구간별 문구 변환과 deception 증폭은 제거하고,
 기존 Backend 응답의 말투·배경·수치를 보존한다. 운영 Resource 등록부에서 동일 renderer를 사용하여 추가 HTTP 호출

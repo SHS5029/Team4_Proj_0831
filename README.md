@@ -40,6 +40,12 @@ Backend 권위 deadline
   기본 LLM 모델과 정보 접근 권한은 모든 AI에 동일합니다
 - 성격(preset)별 `speech_style`·`backstory`·`parameters`는 team DB의
   `agent_personas`에 배정된 값을 모델에 그대로 전달합니다
+- 역할별 토론은 직설·추궁·비꼼을 강화합니다. 시민은 반응 유도와 표 몰이, 탐정은
+  강한 조사 압박과 미끼 주장, 의사는 위장과 거짓 보호 대상, 마피아는 허위 알리바이·
+  가짜 조사·누명·선동을 전략으로 사용합니다. 대사 속 날조를 실제 서버 기록으로
+  취급하지 않으며 역할·행동·정보 접근 권한은 그대로입니다
+- 문구는 `mcp_server/mafia_game/api/prompts/instructions.py`에서 관리합니다.
+  실행 중인 MCP는 재시작해야 바뀐 지침을 다음 AI 판단부터 전달합니다
 - Backend 중앙 AI worker가 열린 AI 차례(발언·밤·투표)를 비동기로 회복하며,
   LLM·MCP 호출 실패 시에만 같은 규칙의 결정적 fallback을 사용합니다
 - AI 판단 단계(정보 확인 → 판단 → 선택 → 적용)와 제한된 공개 판단 근거 요약을
@@ -53,10 +59,14 @@ Backend 권위 deadline
 
 ### 화면
 
-- **사용자 앱**: UUID 생성/복구 설정, 홈(게임 목록·이어하기), 새 게임 생성·역할 공개,
+- **사용자 앱**: UUID 자동 생성, 홈(게임 목록·이어하기), 새 게임 생성·역할 공개,
   게임 진행·관전, 결과·게임 기록, 일반·게임별 피드백
+- 토론 입력은 Enter로 순서대로 예약하며 실시간 대화·상태 갱신 중에도 유지합니다.
+  밤·투표는 선택 입력과 시계 갱신을 분리하고, 홈 이동 시 저장·이탈 확인을 제공합니다.
+  탐정의 조사 결과는 본인 화면에서만 별도로 표시합니다
 - **관리자 앱**(read-only): 게임 KPI·진영별 승률·페르소나별 AI 승률, 사용자 피드백,
-  관리자 감사 로그, 운영 에이전트 계획
+  관리자 감사 로그를 세 탭으로 표시하고 30초마다 갱신합니다. 운영 에이전트 계획
+  탭은 제거됐으며 질문 API는 Backend 독립 계약으로 유지합니다
 - 공개 발언의 실시간 임베딩·주장 분석과 투표 보조 정보 표시(선택 기능,
   기본 비활성)
 
@@ -292,8 +302,15 @@ run_openai.bat
 다른 프로젝트와 포트가 겹치면 `AI_MAFIA_BACKEND_PORT`·`AI_MAFIA_MCP_PORT`·
 `AI_MAFIA_FRONTEND_PORT`로 바꿀 수 있습니다.
 
-Backend는 `--reload`로 코드 변경을 반영하지만 MCP 프롬프트·adapter는 자동 재적재하지 않습니다.
+Backend는 `backend/app` 안의 코드 변경만 `--reload`로 반영합니다. Front·테스트 편집은
+Backend를 재시작하지 않습니다. MCP 프롬프트·adapter는 자동 재적재하지 않습니다.
 MCP 변경 후에는 실행 터미널에서 `Ctrl+C`로 종료하고 `./run_openai.sh`로 전체 재시작합니다.
+
+두 실행 스크립트의 기본 저장소 모드는 `team`입니다. 명시적 `isolated`는
+`AI_MAFIA_DATABASE_URL`·`AI_MAFIA_REDIS_URL`을 사용하며 같은 팀 DB를 격리 DB로
+지정하면 거부합니다. Windows `--check`는 필수 환경값 읽기와 import만 검사하고,
+설정 객체·DB·Redis·migration·seed·API 연결은 검사하지 않습니다. macOS/Linux
+`--check`는 선택한 DB·Redis와 seed 준비 상태까지 읽기 전용으로 검사합니다.
 
 ### 개별 실행
 
@@ -334,8 +351,9 @@ DB·Redis·유료 Provider 없이 실행할 범위:
 TEAM_DATABASE_URL='postgresql://test:synthetic@127.0.0.1:1/mafia_tests' \
 DATABASE_URL='postgresql://test:synthetic@127.0.0.1:1/mafia_tests' \
 GAME_STATE_KEYRING_FILE='' GAME_STATE_ACTIVE_KEY_ID='' \
+SPEECH_ANALYSIS_ENABLED=false \
 LLM_PROVIDER=dummy OPENAI_API_KEY='' GEMINI_API_KEY='' \
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 backend/.venv/bin/python -m pytest \
+PYTHONPATH=mcp_server PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest \
   -p pytest_asyncio.plugin -p anyio.pytest_plugin backend/tests \
   --ignore=backend/tests/test_b5_game_api.py \
   --ignore=backend/tests/test_postgres_game_flow.py -q
@@ -350,6 +368,10 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 frontend_admin/.venv/bin/python -m pytest \
   tests/test_backend_context_client.py tests/test_fastmcp_composition.py \
   tests/test_fastmcp_registration.py tests/test_fastmcp_roundtrip.py -q)
 ```
+
+Backend 전체 회귀는 Streamlit 관리자 연동과 FastMCP context 테스트도 포함하므로
+위 명령은 통합 `.venv`와 `PYTHONPATH=mcp_server`를 사용합니다. 컴포넌트 환경에
+해당 의존성이 없을 때 발생하는 import 실패를 제품 회귀로 판정하지 않습니다.
 
 실제 DB 검증은 **팀 테스트 DB를 우선** 사용합니다. B6 예약 검증은
 `TEAM_DATABASE_URL`을 환경에 주입한 뒤 `B6_LOCAL_QA=1`로 선택합니다. 이름은 기존
@@ -375,7 +397,17 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 frontend_admin/.venv/bin/python -m pytest \
 - seed와 engine snapshot keyring은 저장소 밖에 두고 과거 record가 참조하는 key를
 보존합니다.
 - LLM prompt, raw response, private context, token과 비용을 로그에 넣지 않습니다.
+- 루트 `*_runtime*.log`는 사용자·게임 식별자가 포함될 수 있어 Git 추적에서 제외합니다.
+  2026-09-08 병합으로 들어온 6개 로그도 로컬 파일을 보존하면서 추적 해제했습니다.
+  기존 병합 이력에는 남으므로 외부 공유 범위를 점검해야 합니다. 비밀키가 추가로
+  확인되면 해당 키를 폐기·재발급해야 하며, 이번 작업은 Git 이력을 재작성하지 않습니다.
 - `ADMIN_USER_IDS`는 강한 인증이 아니므로 관리자 앱도 loopback·사설망에서만 사용합니다.
+- 현재 홈에는 UUID 복구 설정 진입점이 없으며, 완료 화면의 새 게임 시작은 홈을
+  거쳐야 합니다. 관련 기존 회귀 실패는 이번 병합 수정 범위에서 유지합니다.
+- 팀 DB를 공유하는 Backend worker는 같은 버전으로 실행해야 합니다. 이번 실게임에서는
+  로컬 적용 로그가 없는 첫날 AI PASS와 마감이 없는 HUMAN 창이 관찰됐고, DB job·receipt와
+  lease 시간 비교는 다른 버전의 worker 개입을 강하게 시사했습니다. 저장된 정보만으로
+  호스트는 특정할 수 없으며 다른 개발자의 프로세스나 게임은 변경하지 않았습니다.
 
 비밀값 노출이 의심되면 값을 다시 출력하지 말고 즉시 폐기·재발급한 뒤 Git 이력과
 외부 로그를 별도로 점검하세요.
@@ -383,6 +415,22 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 frontend_admin/.venv/bin/python -m pytest \
 ## 변경 이력
 
 날짜별 변경·검증 기록은 [docs/fix/](docs/fix/)에 모아 두었습니다.
+
+2026-09-08 `chd_test`·`jyu` 병합 검증에서는 실시간 갱신·발언 예약·저장/이탈·
+조사 결과 표시와 관리자 접근 거부 후 복귀를 복구했습니다. 외부 Chrome의 6인 박물관
+게임은 시민 승리(2라운드), 8인 산장 게임은 저장·재개 후 마피아 승리(3라운드)로
+모두 `COMPLETED`/`ENDED`를 확인했습니다. 마지막 Front·관리자 회귀는 605 통과·
+기존 실패 5건, Backend는 전체 실행과 실패 재검증 합산 978 통과·기존 실패 14건·
+선택 검증 17건 생략, 독립 MCP 대상 검증은 101 통과였습니다. Windows 실기동은
+환경이 없어 생략했으며 PowerShell 스크립트는 합성 dotenv·대상 비교와 정적 검증만
+수행했습니다. 후속 프롬프트 작업부터 전체 회귀는 사용자 요청으로 보류합니다.
+
+역할별 공격적 토론·블러핑 프롬프트 보완 후에는 최소 MCP 검증 48건이 통과했고,
+재시작한 MCP의 실제 Prompt 응답이 최종 소스와 일치함을 확인했습니다. 외부 Chrome의
+추가 6인 야간열차 게임은 직접 발언·투표, 관전 빠른 진행을 거쳐 3일차 2라운드에
+시민 승리로 종료됐습니다(16:19:34 KST). 실제 대화에서 직접 추궁·표 몰이·앞선 말과
+다른 해명을 관찰했습니다. 공유 worker 개입 가능성이 남아 있어 한 판만으로 역할별
+기만 빈도나 의도적 날조의 효과를 확정하지 않습니다.
 
 | 문서 | 기록 범위 |
 | --- | --- |

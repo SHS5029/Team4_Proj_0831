@@ -422,7 +422,7 @@ def test_action_countdown_fragment_does_not_query_insights(monkeypatch):
     monkeypatch.setattr(action_panel, "_mount_action_attention", lambda **kwargs: None)
     with patch.object(vote_insights, "render") as read, patch.object(action_panel, "_render_actions") as inputs:
         current = snapshot("DAY_DISCUSSION")
-        action_panel._render_clock(game_id=GAME, snapshot=current)
+        action_panel.render_status_bar(game_id=GAME, snapshot=current)
         for _ in range(3):
             callbacks[0](game_id=GAME, snapshot=current, running=True)
         read.assert_not_called()
