@@ -5,7 +5,8 @@ from __future__ import annotations
 from collections import Counter
 from uuid import UUID
 
-from backend.app.models.enums import GamePhase
+from backend.app.game_engine.errors import RuleViolation
+from backend.app.models.enums import GamePhase, PlayerKind
 from backend.app.models.game_state import GameState, PlayerState, Vote
 
 
@@ -25,8 +26,31 @@ def valid_targets(state: GameState, actor: PlayerState) -> list[PlayerState]:
 
 
 def leaders(votes: dict[UUID, Vote]) -> list[UUID]:
-    """가장 많은 표를 받은 대상 목록을 반환한다."""
+    """제출한 표의 검증된 가중치를 합산해 가장 많은 표를 받은 대상을 반환한다."""
 
-    counts = Counter(vote.target_id for vote in votes.values())
+    counts = Counter()
+    for vote in votes.values():
+        counts[vote.target_id] += vote.weight
     highest = max(counts.values()) if counts else 0
     return [target_id for target_id, count in counts.items() if count == highest]
+
+
+def vote_weight(state: GameState, actor_id: UUID, ability_id: str | None,
+                *, phase: GamePhase | None = None) -> int:
+    """능력 사용을 저장 snapshot과 대조하고 처형·재투표에만 3표를 허용한다.
+
+    종료 원장도 같은 함수를 사용하므로 현재 생존 여부는 검사하지 않는다.
+    실시간 제출과 복원 경계가 각각 당시 생존·대상·중복을 별도로 검증한다.
+    """
+
+    if ability_id is None:
+        return 1
+    actor = state.player_by_id.get(actor_id)
+    if (ability_id != "vote.triple.v1"
+            or (phase or state.phase) not in {GamePhase.DAY_VOTE, GamePhase.REVOTE}
+            or state.mode != "CUSTOM_ROLE" or actor is None
+            or actor.kind is not PlayerKind.HUMAN
+            or actor.custom_role_catalog_version != "custom-role-v1"
+            or ability_id not in actor.custom_ability_ids):
+        raise RuleViolation("ABILITY_ID_INVALID")
+    return 3

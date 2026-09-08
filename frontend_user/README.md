@@ -6,13 +6,13 @@ Backend 공개 API 요청에는 `X-User-Id`와 `X-Request-Id` header만 전달�
 
 `WU-F2`에서는 홈의 이어하기·최근 완료 목록과 새 게임 설정을 제공합니다. 전체
 인원은 6~9명으로 제한하고 역할 구성은 표시만 하며, 시나리오·역할·persona·닉네임은
-사용자가 선택하지 않습니다. 게임 생성 요청은 `mystery-v1`과 `scenario-v1`을 사용하고
+STANDARD에서는 사용자가 선택하지 않습니다. 게임 생성 요청은 `mystery-v1`과 `scenario-v1`을 사용하고
 성공 후 Backend snapshot을 조회합니다.
 
 홈과 새 게임 설정 화면은 공통 dark header, breadcrumb, 반응형 카드 레이아웃과
-게임 방식 안내를 사용하며, 실제 입력은 기존 UUID·인원 선택·Backend 생성 계약만
-사용합니다. 새 게임 설정의 인원 카드는 6~9명 선택과 기존 `ROLE_COUNTS` preview를
-표현하고 생성 중에는 선택·취소 입력을 잠급니다.
+게임 방식 안내를 사용하며, 입력은 UUID·인원 선택과 Backend의 STANDARD/CUSTOM_ROLE 생성 계약을
+사용합니다. 새 게임 설정의 6~9명 인원 option은 카드와 별도 선택 button을 중복하지
+않고, option 하나를 큰 button으로 표시합니다. 생성 중에는 선택·취소 입력을 잠급니다.
 
 `WU-F3`에서는 역할 공개·게임 shell을, `WU-F4`에서는 snapshot의 `legal_actions`와
 `valid_targets`에 따른 발언·밤 행동·투표 panel을 제공합니다. Front는 승패나 자동
@@ -33,7 +33,7 @@ F4 command는 `legal_actions`, `action_window`, `valid_targets`, `state_version`
 본인 차례에만 최대 200자 발언과 `PASS`를 활성화합니다. 밤 행동에서는 공개 생존자와
 본인 비공개 정보 사이의 중앙 영역을 어두운 대상 선택 panel로 전환합니다. 마피아·탐정·
 의사 안내 문구는 역할에 맞게 달라지지만 command에는 역할이나 세부 행동을 넣지 않고
-Backend가 제공한 `valid_targets`의 `target_player_id`만 전송합니다. 시민·제출 완료자는
+STANDARD에서는 Backend가 제공한 `valid_targets`의 `target_player_id`만 전송합니다. 시민·제출 완료자는
 입력 없이 대기 안내만 보며, 결과를 확인할 수 없는 재시도는 최초 Idempotency-Key를
 그대로 사용합니다.
 
@@ -47,8 +47,9 @@ F3 화면은 `ROLE_REVEAL`과 진행 phase를 Backend snapshot으로 구분합�
 공개 projection만 표시합니다. 새로고침 시에도 Front가 phase나 승패를 계산하지 않고
 `game_id`로 authoritative snapshot을 다시 요청합니다.
 게임 shell은 desktop에서 생존자 목록·중앙 phase 작업 영역·내 정보의 3열 구조로
-표시하고 768px 이하에서는 단일 열로 재배치합니다. 낮에는 중앙에 사건/공개 timeline과
-발언·투표 panel을, 밤에는 역할별 대상 선택 panel을 표시합니다. 첫날에도 정본 snapshot의
+표시하고 768px 이하에서는 단일 열로 재배치합니다. 중앙 공개 timeline의 이벤트 목록은
+고정 높이 scroll 영역이며, 낮 발언·밤 행동·투표 panel은 그 아래에 배치합니다. 따라서
+발언 입력은 대화 흐름의 하단에 유지됩니다. 첫날에도 정본 snapshot의
 scenario와 공개 event만 사용하며, 본인 role·알리바이·관찰·private event는 오른쪽
 panel에만 표시합니다.
 
@@ -171,3 +172,66 @@ CP-6: F8 관리자 guard·read-only API와 Backend B8을 운영 환경에서 검
 - `GET /api/v1/games/{game_id}/sync`와 SSE `/events`는 동일한 Front sequence를
   사용해야 하며, 보존 범위를 벗어난 cursor에는 완전한 snapshot을 반환해야 합니다.
 - UUID는 인증 자격증명이 아니므로 공개 인터넷 배포 전 별도 인증 계약이 필요합니다.
+
+
+## WU-F11 커스텀 직업
+
+새 게임의 기본 모드는 STANDARD입니다. CUSTOM_ROLE에서는 시민/마피아 진영과
+NFC·앞뒤/연속 공백 정규화 후 1~40자인 자유 직업명을 입력합니다. Backend의
+`GET /api/v1/game-config/custom-role-abilities` catalog 카드와 multiselect로 능력을
+1~3개 선택하며, 시민은 조사·보호·투표 조작·특수 직업 열람 중 선택하고, 마피아는
+필수 공격을 포함해 총 1~3개를 사용합니다. 낮/조회 능력만 가진 시민도 가능합니다.
+생성 body에는 `mode`, `custom_role.name/faction/catalog_version/ability_ids`를 포함합니다.
+원시 MCP Tool명은 입력으로 받지 않습니다. catalog 로딩·실패·빈 목록·알 수 없는 버전은
+커스텀 생성만 막고 기본 생성은 유지하며, 실패 화면에서 목록을 다시 조회할 수 있습니다.
+
+생성 결과 불명 상태는 입력을 잠그고 최초 body와 Idempotency-Key로 재시도합니다.
+422 등 교정 가능한 거부 뒤 입력을 고쳐 다시 생성하면 새 body와 key를 사용합니다.
+역할 공개와 내 정보는 본인 `me`의 직업명·진영·저장 능력 설명만 표시하며, 다른 player의
+비공개 필드는 사용하지 않습니다. 밤에는 본인 `ability_options` 중 하나를 고른 뒤 그
+능력의 `valid_targets`만 선택합니다. CUSTOM_ROLE 밤 command에는 선택 능력의 `ability_id`를
+포함하고, 기존 command 멱등 재시도와 저장/재개 경계를 유지합니다. 선택 키는 게임·행동
+창·능력별로 분리하여 rerun 시 선택을 보존하고 능력 전환 시 잘못된 대상을 제출하지 않습니다.
+
+Front 검증은 합성 catalog/snapshot을 사용하는 AppTest 및 API client/command 테스트입니다.
+실제 Backend 통합은 WU-B16 fixture 확정 후 CP-7에서 수행해야 하며 DB나 유료 API를
+Front 테스트에서 호출하지 않습니다. focused 검증 명령:
+
+```bash
+frontend_user/.venv/bin/python -m pytest frontend_user/tests/test_home_f2.py frontend_user/tests/test_commands_f4.py frontend_user/tests/test_api_client.py frontend_user/tests/test_view_models_f3.py -q
+.venv/bin/ruff check frontend_user/app_pages/game_create_page.py frontend_user/app_pages/game_page.py frontend_user/app_pages/role_reveal_page.py frontend_user/components/action_panel.py frontend_user/core/api_client.py frontend_user/core/commands.py frontend_user/core/view_models.py --select F,E9
+```
+
+
+## WU-F12 커스텀 능력 확장
+
+생성 catalog는 success envelope의 `data`에서만 읽고 custom-role-v1의 정확한 다섯
+ID·한국어 label·진영 배열을 검증합니다. 누락·미지/추가 필드·중복 ID/진영·배열 순서나
+타입 오류는 커스텀 생성만 차단하며 목록 재시도와 STANDARD 선택은 유지합니다.
+
+생존 CUSTOM_ROLE HUMAN의 투표 조작 보유자는 DAY_VOTE/REVOTE에서 일반 1표 또는
+능력 3표를 명시적으로 선택합니다. 능력 선택 시에만 `SUBMIT_VOTE`에
+`ability_id=vote.triple.v1`을 보내며 숫자 weight나 raw MCP Tool명은 보내지 않습니다.
+최종 지목·표준 게임·미보유자에게 능력 선택을 제공하지 않습니다. 투표와 생성 모두
+rerun 중 pending body/key를 보존하며 5xx는 동일 요청, 생성 422 교정은 새 key입니다.
+
+특수 직업 열람은 생존 CUSTOM_ROLE HUMAN 보유자에게 IN_PROGRESS·day>=2에만
+본인 패널의 수동 조회로 제공합니다. 공개 `GET /api/v1/games/{game_id}/special-roles`에
+`X-User-Id`를 보내며 identity/game/player/state_version 및 현재 상태를 재확인합니다.
+결과는 별도 본인 세션 값에만 두고 identity·게임·상태 전환, 로그아웃, 사망·종료·권한
+상실과 조회 오류에서 폐기합니다. 늦은 응답도 범위가 다르면 표시하지 않습니다.
+공개 명부·timeline·analytics·공유 cache에는 복제하지 않으며 서버 오류 원문을 숨기고
+snapshot 재조회와 수동 재시도를 제공합니다. 종료 화면은 Backend custom 직업명·진영을
+표준 역할보다 우선해 평문으로 표시합니다.
+
+F12 검증은 위 focused 명령에 `frontend_user/tests/test_result_f6.py`를 추가하고,
+전체 Front 회귀는 `frontend_user/.venv/bin/python -m pytest frontend_user/tests -q`로 실행합니다.
+DB·유료 API 호출은 포함하지 않으며 실제 서비스 CP-7 통합은 별도 검증입니다.
+
+2026-09-08 WU-F12 검증 결과: 능력 투표·private 조회·종료 표시 집중 검증 32건과
+snapshot 재검증 실패 경계 1건이 통과했습니다. 전체 Front 회귀는 **655 passed,
+5 failed**입니다. 실패는 기존 홈 UUID 복구 제어를 기대하는 F1 3건과 완료 화면에서
+`result.new_game` 버튼을 기대하는 F6 2건이며, HEAD의 앱·종료 화면 코드를 임시 실행해
+동일 5건 실패를 재현했습니다. 해당 기존 화면/테스트 불일치는 F12 밖이므로 유지합니다.
+수정 Python 파일의 Ruff `--select F,E9` 및 `git diff --check -- frontend_user`는
+통과했습니다. 실제 DB·MCP·유료 API 통합은 작업 범위 밖으로 실행하지 않았습니다.

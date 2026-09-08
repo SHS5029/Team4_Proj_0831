@@ -234,7 +234,7 @@ def test_round_advances_on_night_entry_and_fifth_night_opens_final_discussion(co
     engine.begin_game(state)
     assert (state.round, state.day_number) == (0, 1)
     for player in state.alive_players:
-        engine.pass_turn(state, player.player_id)
+        engine.speak(state, player.player_id, "공개 주장을 비교해 볼게.")
 
     mafia = [player for player in state.players if player.role is PlayerRole.MAFIA]
     doctor = next(player for player in state.players if player.role is PlayerRole.DOCTOR)

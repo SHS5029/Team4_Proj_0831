@@ -338,7 +338,8 @@ created_at timestamptz NOT NULL
 
 parameters의 고정 key는 sociability, assertiveness, suspicion, deception,
 risk_tolerance, memory_recall, reasoning_skill, emotionality, cooperativeness,
-verbosity다. 모두 0.0~1.0이고 reasoning_skill은 MVP preset 전체에서 같은 값이다.
+verbosity다. 모두 유한한 0.0~1.0이며 reasoning_skill도 preset별 값을 허용한다.
+현재 등록 목표는 마스터플랜의 WU-B6 추론 수치 표에 따른 0.60~0.80이다.
 
 #### games
 
@@ -566,7 +567,9 @@ completed_at timestamptz NULL
 
 AI player job은 (window_id, player_id, job_kind) 조건부 unique, GM job은
 (window_id, job_kind) 조건부 unique를 둔다. GM job만 player_id가 NULL이다. lease는
-예약 시각부터 최대 15초 또는 현재 window deadline 중 이른 시각이다.
+예약 시각부터 최대 40초 또는 현재 window deadline 중 이른 시각이다. MCP 조회와
+모델 최초·교정 호출은 이 마감에서 완료·제출 여유 3초를 뺀 예산을 공유하며,
+모델 호출 상한은 Backend 배포 `LLM_TIMEOUT_SECONDS`(기본 30초)를 따른다.
 
 #### agent_capabilities
 
@@ -943,7 +946,7 @@ AI 발언 실패는 PASS, 행동·투표 실패는 규칙 기반 자동 처리, 
 
 ### WU-B6 — Agent Manager·LLM adapter
 
-- 범위: reservation, 15초 lease, capability, context, proposal normalization, fallback
+- 범위: reservation, 40초 lease, capability, context, proposal normalization, fallback
 - DB: agent_jobs, agent_capabilities와 fencing token 사용
 - Provider: 환경으로 선택된 단일 Provider, 자동 failover 없음
 - 실패: Provider/MCP 오류, schema 오류, lease 만료, stale version
@@ -1017,7 +1020,7 @@ AI 발언 실패는 PASS, 행동·투표 실패는 규칙 기반 자동 처리, 
 
 - Redis 장애에서 새 Agent turn 중단과 DB 원본 복구
 - Provider·MCP 오류 fallback
-- 15초 lease 만료와 fencing token
+- 40초 lease·window deadline 만료와 fencing token
 - Engine HMAC nonce·MCP 세션 개설 토큰의 nonce replay 거부
 - capability 만료·폐기·allowlist 검사
 - secret, prompt, raw response, private context, Chain of Thought 로그·DB 비저장

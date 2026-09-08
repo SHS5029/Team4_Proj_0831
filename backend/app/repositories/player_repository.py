@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from typing import Any
 from uuid import UUID
 
+from psycopg.types.json import Jsonb
+
 
 @dataclass(frozen=True, slots=True)
 class PlayerInsert:
@@ -20,6 +22,9 @@ class PlayerInsert:
     role: str
     faction: str
     persona_id: str | None
+    custom_role_name: str | None = None
+    custom_role_catalog_version: str | None = None
+    custom_ability_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,8 +57,9 @@ class PostgresPlayerRepository:
                 """
                 INSERT INTO public.game_players (
                     id, game_id, user_id, kind, seat, display_name,
-                    role, faction, alive, persona_id
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE, %s)
+                    role, faction, alive, persona_id, custom_role_name,
+                    custom_role_catalog_version, custom_ability_ids
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE, %s, %s, %s, %s)
                 """,
                 (
                     player.player_id,
@@ -65,6 +71,9 @@ class PostgresPlayerRepository:
                     player.role,
                     player.faction,
                     player.persona_id,
+                    player.custom_role_name,
+                    player.custom_role_catalog_version,
+                    Jsonb(list(player.custom_ability_ids)) if player.custom_ability_ids else None,
                 ),
             )
 
@@ -104,6 +113,7 @@ class PostgresPlayerRepository:
             """
             SELECT id, game_id, user_id, kind, seat, display_name, role, faction,
                    alive, persona_id, eliminated_phase, eliminated_round,
+                   custom_role_name, custom_role_catalog_version, custom_ability_ids,
                    created_at, updated_at
             FROM public.game_players
             WHERE game_id = %s

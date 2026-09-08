@@ -15,7 +15,8 @@ from backend.app.game_engine.engine import GameEngine
 from backend.app.game_engine.errors import RuleViolation
 from backend.app.game_engine.fallback import auto_night_target, auto_vote_target
 from backend.app.game_engine.rng import DeterministicRng
-from backend.app.game_engine.rules.night_rules import required_actors, role_action
+from backend.app.game_engine.rules.night_rules import ABILITY_ACTIONS, ability_action, required_actors, role_action
+from backend.app.game_engine.rules.vote_rules import vote_weight
 from backend.app.infrastructure.transaction import lock_idempotency
 from backend.app.models.enums import GamePhase, GameStatus, NightActionType, PlayerKind, PlayerRole
 from backend.app.models.game_state import GameState
@@ -43,10 +44,11 @@ class PostgresActionCommandService(PostgresBeginGameService):
         if actor is not None and actor.owner_user_id != owner_user_id:
             raise ApiError(status_code=403, code="ACTOR_NOT_ALLOWED", message="Agent 소유자가 일치하지 않습니다.")
         return self._submit_actions(owner_user_id, game_id, payload.type,
-                                    [{"player_id": actor.player_id if actor else None, "target_player_id": payload.target_player_id}],
+                                    [{"player_id": actor.player_id if actor else None, "target_player_id": payload.target_player_id,
+                                      "ability_id": payload.ability_id}],
                                     expected_state_version=payload.expected_state_version,
                                     window_id=payload.window_id, idempotency_key=idempotency_key,
-                                    body_hash=request_hash(payload.model_dump(mode="json")),
+                                    body_hash=request_hash(payload.receipt_body()),
                                     agent=actor is not None, now=now)
 
     def submit_agent_night_actions(self, owner_user_id: UUID, game_id: UUID,
@@ -146,8 +148,11 @@ class PostgresActionCommandService(PostgresBeginGameService):
                         player_id = item["player_id"] if agent else human_id
                         if agent and (player_id not in state.player_by_id or state.player_by_id[player_id].kind is not PlayerKind.AI):
                             raise ApiError(status_code=403, code="ACTOR_NOT_ALLOWED", message="Agent actor가 아닙니다.")
-                        action_type = self._submit_one(state, player_id, item["target_player_id"])
-                        submission = {"actor_player_id": player_id, "target_player_id": item["target_player_id"], "action_type": action_type, "source": "AGENT" if agent else "HUMAN"}
+                        action_type = self._submit_one(
+                            state, player_id, item["target_player_id"],
+                            ability_id=item.get("ability_id"),
+                        )
+                        submission = {"actor_player_id": player_id, "target_player_id": item["target_player_id"], "action_type": action_type, "source": "AGENT" if agent else "HUMAN", "ability_id": item.get("ability_id")}
                         self._store_submission(cursor, state, window_id, submission, expected_state_version)
                         submissions.append(submission)
                     required = required_actors(state) if phase == "NIGHT_ACTION" else state.alive_players
@@ -162,7 +167,7 @@ class PostgresActionCommandService(PostgresBeginGameService):
                     else:
                         self._persist_action(cursor, state, window, submissions, resolution,
                                              current_version, current_time, game_row.get("fast_forward_enabled") is True,
-                                             phase, round_number)
+                                             phase, round_number, user_action=not agent)
                     result = self._result(game_id, command, expected_state_version, idempotency_key,
                                           result_version=state.state_version)
                     self._receipts.insert(cursor, principal_type=principal_type, principal_id=principal_id,
@@ -178,18 +183,20 @@ class PostgresActionCommandService(PostgresBeginGameService):
             raise ApiError(status_code=503, code="DEPENDENCY_UNAVAILABLE", message="게임 행동을 저장할 수 없습니다.", retryable=True) from exc
 
     @staticmethod
-    def _submit_one(state: GameState, actor_id: UUID, target_id: UUID) -> str:
+    def _submit_one(state: GameState, actor_id: UUID, target_id: UUID,
+                    *, ability_id: str | None = None) -> str:
         """역할이나 phase를 입력으로 신뢰하지 않고 현재 규칙에서 행동 종류를 정한다."""
 
         engine = GameEngine()
         if state.phase is GamePhase.NIGHT_ACTION:
-            action = role_action(state, actor_id)
+            action = ability_action(state, actor_id, ability_id)
             engine.submit_night_action(state, actor_id, action, target_id)
             return action.value
         if state.phase is GamePhase.FINAL_ACCUSATION:
+            vote_weight(state, actor_id, ability_id)
             engine.submit_final_accusation(state, actor_id, target_id)
         else:
-            engine.submit_vote(state, actor_id, target_id)
+            engine.submit_vote(state, actor_id, target_id, ability_id=ability_id)
         return "VOTE"
 
     def _owned_game(self, cursor: Any, owner_user_id: UUID, game_id: UUID) -> Mapping[str, Any]:
@@ -219,7 +226,7 @@ class PostgresActionCommandService(PostgresBeginGameService):
         self._actions.insert_submission(cursor, ActionSubmissionInsert(
             game_id=state.game_id, window_id=window_id, actor_player_id=UUID(str(row["actor_player_id"])),
             action_type=str(row["action_type"]), target_player_id=UUID(str(row["target_player_id"])),
-            message=None, source=str(row["source"]), observed_state_version=version))
+            message=None, source=str(row["source"]), observed_state_version=version, ability_id=row.get("ability_id")))
 
     def auto_resolve_citizen_night(self, owner_user_id: UUID, game_id: UUID, *, now: datetime | None = None) -> dict[str, Any] | None:
         """기존 runtime 호출을 역할과 무관한 밤 만료 처리로 연결한다."""
@@ -260,7 +267,9 @@ class PostgresActionCommandService(PostgresBeginGameService):
                     restore_action_submissions(state, submissions)
                     resolution = self._resolve(state, phase, round_number, submissions, force=True)
                     self._persist_action(cursor, state, window, submissions, resolution, accepted_version,
-                                         current_time, game.get("fast_forward_enabled") is True, phase, round_number)
+                                         current_time, game.get("fast_forward_enabled") is True,
+                                         phase, round_number,
+                                         user_action=False)
                     return self._result(game_id, "AUTO_RESOLVE_NIGHT" if night else "AUTO_RESOLVE_VOTE", accepted_version)
         except ApiError:
             raise
@@ -285,11 +294,11 @@ class PostgresActionCommandService(PostgresBeginGameService):
             if force:
                 for actor in required_actors(state):
                     action = role_action(state, actor.player_id)
-                    if actor.player_id in existing or action is NightActionType.ATTACK:
+                    if actor.player_id in existing or (action is NightActionType.ATTACK and not actor.custom_ability_ids):
                         continue
                     target = auto_night_target(state, actor, action)
                     engine.submit_night_action(state, actor.player_id, action, target.player_id)
-                    auto_rows.append({"actor_player_id": actor.player_id, "target_player_id": target.player_id, "action_type": action.value, "source": "AUTO"})
+                    auto_rows.append({"actor_player_id": actor.player_id, "target_player_id": target.player_id, "action_type": action.value, "source": "AUTO", "ability_id": next((item for item in actor.custom_ability_ids if item in ABILITY_ACTIONS), None)})
             choices = [*submissions, *auto_rows]
             attacks = [row for row in choices if row["action_type"] == "ATTACK"]
             targets = sorted({UUID(str(row["target_player_id"])) for row in attacks})
@@ -298,18 +307,24 @@ class PostgresActionCommandService(PostgresBeginGameService):
                 if len(targets) > 1:
                     source = "TIE_RNG"
             else:
-                mafia = next((player for player in alive if player.role is PlayerRole.MAFIA), None)
+                mafia = next((player for player in alive if player.role is PlayerRole.MAFIA and not player.custom_ability_ids
+                              and player.player_id not in state.night_actions), None)
                 target = auto_night_target(state, mafia, NightActionType.ATTACK).player_id if mafia else None
-                source = "FACTION_AUTO"
-            protection = next((UUID(str(row["target_player_id"])) for row in choices if row["action_type"] == "PROTECT"), None)
+                source = "FACTION_AUTO" if mafia else "SUBMISSIONS"
+            protected = sorted({
+                UUID(str(row["target_player_id"]))
+                for row in choices if row["action_type"] == "PROTECT"
+            })
+            protection = protected[0] if len(protected) == 1 else None
             payload.update({"attack_choices": [self._choice(row) for row in attacks],
                             "resolved_attack_target_player_id": str(target) if target else None,
                             "protect_player_id": str(protection) if protection else None,
-                            "investigations": [dict(self._choice(row), is_mafia=state.player_by_id[UUID(str(row["target_player_id"]))].role is PlayerRole.MAFIA) for row in choices if row["action_type"] == "INVESTIGATE"],
-                            "killed_player_id": str(target) if target and target != protection else None})
+                            "protect_player_ids": [str(item) for item in protected],
+                            "investigations": [dict(self._choice(row), is_mafia=state.player_by_id[UUID(str(row["target_player_id"]))].faction.value == "MAFIA") for row in choices if row["action_type"] == "INVESTIGATE"],
+                            "killed_player_id": str(target) if target and target not in protected else None})
             engine.resolve_night(state, force=force)
             killed = [player.player_id for player in alive if not player.alive]
-            if killed != ([target] if target and target != protection else []):
+            if killed != ([target] if target and target not in protected else []):
                 raise RuntimeError("밤 엔진 결과와 확정 원장이 다릅니다.")
         else:
             candidates = [player for player in alive if phase != "REVOTE" or player.player_id in state.revote_candidates]
@@ -320,8 +335,12 @@ class PostgresActionCommandService(PostgresBeginGameService):
                     target = auto_vote_target(state, actor)
                     self._submit_one(state, actor.player_id, target.player_id)
                     auto_rows.append({"actor_player_id": actor.player_id, "target_player_id": target.player_id, "action_type": "VOTE", "source": "AUTO"})
-            ballots = [self._choice(row) for row in [*submissions, *auto_rows]]
-            counts = Counter(ballot["target_player_id"] for ballot in ballots)
+            ballots = [self._vote_choice(state, row, phase=GamePhase(phase)) for row in [*submissions, *auto_rows]]
+            counts = Counter()
+            for ballot in ballots:
+                counts[ballot["target_player_id"]] += vote_weight(
+                    state, UUID(ballot["actor_player_id"]), ballot.get("ability_id"), phase=GamePhase(phase),
+                )
             highest = max(counts.values())
             leaders = [player.player_id for player in candidates if counts[str(player.player_id)] == highest]
             tied = len(leaders) > 1
@@ -351,10 +370,23 @@ class PostgresActionCommandService(PostgresBeginGameService):
 
         return {"actor_player_id": str(row["actor_player_id"]), "target_player_id": str(row["target_player_id"]), "is_auto": row["source"] == "AUTO"}
 
+    @staticmethod
+    def _vote_choice(state: GameState, row: Mapping[str, Any], *, phase: GamePhase) -> dict[str, Any]:
+        """능력 사용은 인간의 검증된 표에만 기록하고 기존 ballot 형식은 유지한다."""
+
+        ability_id = row.get("ability_id")
+        vote_weight(state, UUID(str(row["actor_player_id"])), ability_id, phase=phase)
+        if ability_id is not None and row["source"] != "HUMAN":
+            raise RuleViolation("ABILITY_ID_INVALID")
+        ballot = PostgresActionCommandService._choice(row)
+        if ability_id is not None:
+            ballot["ability_id"] = ability_id
+        return ballot
+
     def _persist_action(self, cursor: Any, state: GameState, window: Mapping[str, Any],
                         submissions: list[dict[str, Any]], resolution: dict[str, Any] | None,
                         version: int, now: datetime, fast_forward_enabled: bool,
-                        phase: str, round_number: int) -> None:
+                        phase: str, round_number: int, *, user_action: bool) -> None:
         """원장·탈락 원인·상태·다음 window·공개 결과를 같은 transaction에 저장한다."""
 
         state.state_version = version + 1
@@ -371,7 +403,9 @@ class PostgresActionCommandService(PostgresBeginGameService):
             following = next_window(state, now)
             if following is not None:
                 self._actions.open_window(cursor, following)
-        self._games.update_game_state(cursor, state=state, expected_state_version=version)
+        self._games.update_game_state(
+            cursor, state=state, expected_state_version=version, user_action=user_action,
+        )
         front_sequence = self._games.next_front_sequence(cursor, state.game_id)
         self._append_events(cursor, state=state, next_window=following, front_sequence=front_sequence,
                             now=now, fast_forward_enabled=fast_forward_enabled,
@@ -383,7 +417,7 @@ class PostgresActionCommandService(PostgresBeginGameService):
 
         if payload.type != "FAST_FORWARD":
             raise ValueError("빠른 진행 command가 아닙니다.")
-        body_hash = request_hash(payload.model_dump(mode="json"))
+        body_hash = request_hash(payload.receipt_body())
         route_scope = f"POST /api/v1/games/{game_id}/commands"
         try:
             with self._transactions.transaction() as connection:
@@ -403,7 +437,9 @@ class PostgresActionCommandService(PostgresBeginGameService):
                     state.state_version = version + 1
                     state.updated_at = now
                     state.fast_forward_enabled = True
-                    self._games.update_game_state(cursor, state=state, expected_state_version=version)
+                    self._games.update_game_state(
+                        cursor, state=state, expected_state_version=version, user_action=True,
+                    )
                     front_sequence = self._games.next_front_sequence(cursor, game_id)
                     window = self._actions.current_window(cursor, game_id=game_id)
                     self._append_events(cursor, state=state, next_window=window, front_sequence=front_sequence,

@@ -60,13 +60,16 @@ def _target(
 
 
 def _pass_discussion(engine: GameEngine, state: GameState) -> None:
-    """현재 토론 cycle에서 아직 말하지 않은 생존자를 모두 PASS 처리한다."""
+    """미참여 생존자를 첫날에는 발언시키고 이후 토론에는 PASS 처리한다."""
 
     pending = [
         player for player in state.alive_players if player.player_id not in state.speech_actors
     ]
     for player in pending:
-        engine.pass_turn(state, player.player_id)
+        if state.phase is GamePhase.DAY_DISCUSSION and state.day_number == 1:
+            engine.speak(state, player.player_id, "공개 주장을 비교해 볼게.")
+        else:
+            engine.pass_turn(state, player.player_id)
 
 
 def _resolve_heuristic_night(engine: GameEngine, state: GameState) -> None:

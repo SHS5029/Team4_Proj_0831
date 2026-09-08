@@ -27,6 +27,14 @@ class LocalProvider(LLMProvider):
         """로컬 응답의 첫 message를 JSON object로 파싱한다."""
 
         started = time.perf_counter()
+        # developer 역할을 지원하지 않는 로컬 모델도 MCP 지침을 system 우선순위로
+        # 읽도록 합친다. 게임 원문 user 메시지는 이 영역에 섞지 않는다.
+        instructions = [message["content"] for message in request.messages
+                        if message.get("role") in {"system", "developer"}]
+        messages = ([{"role": "system", "content": "\n\n".join(instructions)}]
+                    if instructions else [])
+        messages.extend(message for message in request.messages
+                        if message.get("role") not in {"system", "developer"})
         try:
             async with httpx.AsyncClient(timeout=request.timeout_seconds) as client:
                 response = await client.post(
@@ -35,7 +43,7 @@ class LocalProvider(LLMProvider):
                         "model": self.model,
                         "keep_alive": self.keep_alive,
                         "stream": False,
-                        "messages": list(request.messages),
+                        "messages": messages,
                         "max_tokens": request.max_output_tokens,
                         # 게임 행동 proposal에는 사고 trace가 필요하지 않다. Ollama
                         # 호환 endpoint가 이를 지원하면 생성량과 응답 지연을 줄이고,

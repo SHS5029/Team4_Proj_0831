@@ -105,7 +105,13 @@ class ApiClient:
             query.append(f"cursor={quote(normalized_cursor, safe='')}")
         return self._request("GET", "/api/v1/games?" + "&".join(query))
 
-    def create_game(self, *, player_count: int, idempotency_key: UUID | str) -> dict[str, Any]:
+    def get_custom_role_abilities(self) -> dict[str, Any]:
+        """Backend의 공개 능력 catalog만 조회하며 MCP 실행 정보를 요청하지 않는다."""
+
+        return self._request("GET", "/api/v1/game-config/custom-role-abilities")
+
+    def create_game(self, *, player_count: int, idempotency_key: UUID | str,
+                    mode: str = "STANDARD", custom_role: dict[str, Any] | None = None) -> dict[str, Any]:
         """고정된 idempotency key로 새 게임 생성을 한 번 요청한다."""
 
         # 팀 전달 사항: 이 body의 version 값은 mystery-v1/scenario-v1로 고정한다.
@@ -114,6 +120,8 @@ class ApiClient:
 
         if player_count not in {6, 7, 8, 9}:
             raise ValueError("게임 인원은 6명부터 9명까지 선택할 수 있습니다.")
+        if mode not in {"STANDARD", "CUSTOM_ROLE"} or (mode == "STANDARD" and custom_role is not None) or (mode == "CUSTOM_ROLE" and custom_role is None):
+            raise ValueError("직업 설정을 확인해 주세요.")
         key = UUID(str(idempotency_key))
         return self._request(
             "POST",
@@ -122,6 +130,7 @@ class ApiClient:
                 "player_count": player_count,
                 "ruleset_version": "mystery-v1",
                 "scenario_version": "scenario-v1",
+                **({"mode": mode, "custom_role": custom_role} if mode == "CUSTOM_ROLE" else {}),
             },
             extra_headers={"Idempotency-Key": str(key)},
         )
@@ -130,6 +139,33 @@ class ApiClient:
         """생성 성공 뒤 snapshot URL을 통해 authoritative 상태를 조회한다."""
 
         return self._request("GET", f"/api/v1/games/{UUID(str(game_id))}")
+
+    def get_special_roles(self, game_id: UUID | str) -> dict[str, Any]:
+        """본인 전용 조회를 사용자 헤더와 함께 보내며 공유 캐시를 사용하지 않는다."""
+
+        return self._request("GET", f"/api/v1/games/{UUID(str(game_id))}/special-roles")
+
+    def delete_game(self, *, game_id: UUID | str, expected_state_version: int) -> dict[str, Any]:
+        """삭제 재확인도 최초 대상·버전을 유지하고 사용자 UUID는 header로만 전달한다."""
+
+        if type(expected_state_version) is not int or expected_state_version < 1:
+            raise ValueError("게임 상태 버전이 올바르지 않습니다.")
+        return self._request(
+            "DELETE", f"/api/v1/games/{UUID(str(game_id))}"
+            f"?expected_state_version={expected_state_version}",
+        )
+
+    def get_vote_insights(self, *, game_id: UUID | str, window_id: UUID | str,
+                          scope: str = "current_discussion") -> dict[str, Any]:
+        """보조 조회 지연이 투표 입력을 오래 막지 않도록 짧은 timeout을 적용한다."""
+
+        if scope not in {"current_discussion", "game"}:
+            raise ValueError("발언 분석 범위가 올바르지 않습니다.")
+        return self._request(
+            "GET", f"/api/v1/games/{UUID(str(game_id))}/vote-insights"
+            f"?window_id={UUID(str(window_id))}&scope={scope}",
+            timeout_seconds=min(self.config.timeout_seconds, 0.75),
+        )
 
     def submit_command(self, *, game_id: UUID | str, command: dict[str, Any],
                        idempotency_key: UUID | str) -> dict[str, Any]:
@@ -169,7 +205,8 @@ class ApiClient:
         return self._request("POST", "/api/v1/feedback", body, extra_headers={"Idempotency-Key": str(key)})
 
     def _request(self, method: str, path: str, body: dict[str, Any] | None = None,
-                 *, extra_headers: dict[str, str] | None = None) -> dict[str, Any]:
+                 *, extra_headers: dict[str, str] | None = None,
+                 timeout_seconds: float | None = None) -> dict[str, Any]:
         """UUID를 header에만 넣고 JSON object 응답을 검증한다."""
 
         request_id = str(self._request_id_factory())
@@ -181,7 +218,9 @@ class ApiClient:
             headers.update(extra_headers)
         request = Request(f"{self.config.api_url}{path}", data=raw, method=method, headers=headers)
         try:
-            status_code, response_body = self._transport(request, self.config.timeout_seconds)
+            status_code, response_body = self._transport(
+                request, self.config.timeout_seconds if timeout_seconds is None else timeout_seconds
+            )
         except (OSError, URLError, TimeoutError) as exc:
             raise ApiUnavailableError(status_code=503, code="DEPENDENCY_UNAVAILABLE", request_id=request_id) from exc
         try:

@@ -40,6 +40,14 @@ backend/logs/
 !backend/tests/
 backend/tests/*
 !backend/tests/test_agent_activity.py
+!backend/tests/test_speech_analysis_repository.py
+!backend/tests/test_speech_analysis_provider.py
+!backend/tests/test_speech_analysis_worker.py
+!backend/tests/test_vote_insights.py
+!backend/tests/test_vote_insight_integration.py
 !frontend_user/tests/
 frontend_user/tests/*
 !frontend_user/tests/test_identity_f1.py
+!frontend_user/tests/test_vote_insights_f9.py
+# 루트 실행 로그에는 사용자·게임 식별자가 포함될 수 있으므로 추적하지 않는다.
+/*_runtime*.log

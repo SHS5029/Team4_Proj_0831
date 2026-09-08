@@ -37,6 +37,7 @@ class ActionSubmissionInsert:
     message: str | None
     source: str
     observed_state_version: int
+    ability_id: str | None = None
 
 
 class PostgresActionRepository:
@@ -75,6 +76,26 @@ class PostgresActionRepository:
         )
         return cursor.fetchone()
 
+    def recent_discussion_actions(self, cursor: Any, *, game_id: UUID, since: Any) -> list[dict[str, Any]]:
+        """게임 행 잠금의 호출자가 최근 발언 횟수와 AI 배분을 같은 원장으로 확인한다."""
+        cursor.execute("SELECT actor_player_id, action_type, submitted_at FROM public.action_submissions WHERE game_id=%s AND submitted_at>%s AND action_type IN ('SPEAK','PASS') ORDER BY submitted_at", (game_id, since))
+        return [dict(row) for row in cursor.fetchall()]
+
+    def expired_discussions(self, cursor: Any, *, now: Any) -> list[dict[str, Any]]:
+        """분석 대기 후에도 같은 토론인지 재검증할 window와 날짜를 함께 반환한다."""
+
+        cursor.execute(
+            """
+            SELECT g.id, g.owner_user_id, w.id AS window_id, g.phase, g.day_number
+            FROM public.games g
+            JOIN public.action_windows w ON w.game_id = g.id
+            WHERE g.status = 'IN_PROGRESS' AND w.status = 'OPEN'
+              AND w.window_kind = 'SPEECH' AND w.deadline_at <= %s
+            """,
+            (now,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
     def list_ai_speech_turns(self, cursor: Any) -> list[dict[str, Any]]:
         """서버 재시작 후에도 처리할 수 있는 열린 AI 발언 차례를 조회한다."""
 
@@ -94,6 +115,10 @@ class PostgresActionRepository:
              AND player.id = action_window.turn_player_id
              AND player.kind = 'AI'
             WHERE games.status = 'IN_PROGRESS'
+              AND (action_window.deadline_at IS NULL OR action_window.deadline_at > clock_timestamp())
+              AND (SELECT count(*) FROM public.action_submissions s WHERE s.game_id=games.id
+                   AND s.actor_player_id=player.id AND s.action_type='SPEAK'
+                   AND s.submitted_at>clock_timestamp()-interval '60 seconds') < 7
             ORDER BY action_window.opened_at, games.id
             """
         )
@@ -267,7 +292,7 @@ class PostgresActionRepository:
 
         cursor.execute(
             """
-            SELECT actor_player_id, action_type, target_player_id, source
+            SELECT actor_player_id, action_type, target_player_id, source, ability_id
             FROM public.action_submissions
             WHERE window_id = %s
             ORDER BY submitted_at, id
@@ -298,24 +323,50 @@ class PostgresActionRepository:
 
         게임 행에는 누가 이미 발언했는지 직접 저장하지 않는다. 따라서 서버가
         재시작해도 action_submissions 원장을 다시 읽어 다음 차례를 복원해야 한다.
-        과거 날짜·다른 질문 순환의 발언을 섞으면 정상 발언을 중복으로 거부할 수 있어
-        phase, round, cycle을 모두 조건으로 사용한다.
+        구형 게임은 서로 다른 날짜에 round·cycle을 재사용하므로 이 값만으로
+        날짜를 추정하지 않는다. 공개 SET_GAME_STATE에서 현재 날짜·phase로
+        연속 진입한 최초 버전을 찾아 그 이후의 여러 window를 함께 복원한다.
+        진입 근거가 없으면 과거 원장을 임의로 복원하지 않으며 DB는 변경하지 않는다.
         """
 
         cursor.execute(
             """
+            WITH current_game AS (
+                SELECT id, phase, round, day_number, state_version
+                FROM public.games
+                WHERE id = %s AND phase = %s AND round = %s
+            ), state_events AS (
+                SELECT event.state_version,
+                       (event.payload ->> 'phase' = game.phase
+                        AND event.payload ->> 'day_number' = CAST(game.day_number AS TEXT)) AS is_current
+                FROM public.game_events AS event
+                JOIN current_game AS game ON game.id = event.game_id
+                WHERE event.audience = 'PUBLIC'
+                  AND event.operation_type = 'SET_GAME_STATE'
+                  AND event.state_version <= game.state_version
+            ), discussion_entry AS (
+                SELECT MIN(state_version) AS state_version
+                FROM state_events
+                WHERE is_current
+                  AND state_version > COALESCE(
+                      (SELECT MAX(state_version) FROM state_events WHERE is_current IS NOT TRUE), 0
+                  )
+            )
             SELECT submission.actor_player_id, submission.action_type, submission.message
             FROM public.action_submissions AS submission
+            JOIN current_game AS game ON game.id = submission.game_id
             JOIN public.action_windows AS action_window
               ON action_window.id = submission.window_id
              AND action_window.game_id = submission.game_id
             JOIN public.game_players AS player
               ON player.id = submission.actor_player_id
              AND player.game_id = submission.game_id
-            WHERE submission.game_id = %s
-              AND action_window.phase = %s
-              AND action_window.round = %s
+            WHERE action_window.phase = game.phase
+              AND action_window.round = game.round
               AND action_window.cycle = %s
+              AND action_window.opened_state_version >= (SELECT state_version FROM discussion_entry)
+              AND action_window.opened_state_version <= game.state_version
+              AND submission.observed_state_version <= game.state_version
               AND submission.action_type IN ('SPEAK', 'PASS')
             ORDER BY player.seat, submission.submitted_at, submission.id
             """,
@@ -473,10 +524,10 @@ class PostgresActionRepository:
             """
             INSERT INTO public.action_submissions (
                 game_id, window_id, actor_player_id, action_type, target_player_id,
-                message, source, observed_state_version
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                message, source, observed_state_version, ability_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id, game_id, window_id, actor_player_id, action_type,
-                      target_player_id, message, source, observed_state_version,
+                      target_player_id, message, source, observed_state_version, ability_id,
                       submitted_at
             """,
             (
@@ -488,6 +539,7 @@ class PostgresActionRepository:
                 submission.message,
                 submission.source,
                 submission.observed_state_version,
+                submission.ability_id,
             ),
         )
         row = cursor.fetchone()
@@ -503,7 +555,7 @@ def _validate_window(window: ActionWindowInsert) -> None:
     if window.window_kind not in {"SPEECH", *timed_kinds}:
         raise ValueError("Action window kind is invalid")
     if window.window_kind == "SPEECH":
-        if window.turn_player_id is None or window.deadline_at is not None:
+        if window.turn_player_id is None or (window.deadline_at is not None and window.deadline_at.utcoffset() is None):
             raise ValueError("Speech window fields are invalid")
     elif window.turn_player_id is not None or window.deadline_at is None:
         raise ValueError("Timed action window fields are invalid")
@@ -514,6 +566,17 @@ def _validate_window(window: ActionWindowInsert) -> None:
 def _validate_submission(submission: ActionSubmissionInsert) -> None:
     """행동 종류별 target·message 조합을 DB INSERT 전에 명확히 검사한다."""
 
+    if submission.ability_id is not None:
+        from backend.app.game_engine.rules.night_rules import ABILITY_ACTIONS
+
+        if submission.ability_id == "vote.triple.v1":
+            # 투표 능력은 인간의 명시적 VOTE만 허용하며 자동·Agent 제출로 확장하지 않는다.
+            if submission.action_type != "VOTE" or submission.source != "HUMAN":
+                raise ValueError("저장할 투표 능력의 행동 종류 또는 제출 출처가 다릅니다.")
+        else:
+            action = ABILITY_ACTIONS.get(submission.ability_id)
+            if action is None or action.value != submission.action_type:
+                raise ValueError("저장할 능력 ID와 행동 종류가 다릅니다.")
     if submission.source not in {"HUMAN", "AGENT", "AUTO"}:
         raise ValueError("Action submission source is invalid")
     if submission.observed_state_version < 1:

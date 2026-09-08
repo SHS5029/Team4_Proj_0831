@@ -17,17 +17,20 @@ from frontend_user.app_pages.creation_complete_page import (  # noqa: E402
 from frontend_user.app_pages.feedback_page import render as render_feedback  # noqa: E402
 from frontend_user.app_pages.game_create_page import render as render_create  # noqa: E402
 from frontend_user.app_pages.game_page import render as render_game  # noqa: E402
+from frontend_user.app_pages.game_page import finish_deleted_game  # noqa: E402
 from frontend_user.app_pages.home_page import load_games, should_load_games  # noqa: E402
 from frontend_user.app_pages.home_page import render as render_home  # noqa: E402
 from frontend_user.app_pages.result_page import render as render_result  # noqa: E402
 from frontend_user.app_pages.role_reveal_page import render as render_role_reveal  # noqa: E402
-from frontend_user.app_pages.settings_page import render as render_settings  # noqa: E402
 from frontend_user.components.identity_bridge import (  # noqa: E402
     IDENTITY_COMPONENT_CHANGED_SESSION_KEY,
     load_identity,
 )
 from frontend_user.components.theme import render_app_theme, sync_page_navigation  # noqa: E402
-from frontend_user.core.api_client import ApiClient  # noqa: E402
+from frontend_user.components.action_panel import (  # noqa: E402
+    maintain_speech_queue, prefer_current_snapshot, speech_queue_busy,
+)
+from frontend_user.core.api_client import ApiClient, ApiResponseError  # noqa: E402
 from frontend_user.core.identity import parse_uuid_v4  # noqa: E402
 from frontend_user.core.session import (  # noqa: E402
     IDENTITY_PERSISTENCE_SESSION_KEY,
@@ -35,6 +38,7 @@ from frontend_user.core.session import (  # noqa: E402
     IDENTITY_WARNING_SESSION_KEY,
     IDENTITY_WRITE_SESSION_KEY,
     get_identity,
+    maintain_special_roles,
     request_identity_write,
     set_identity,
 )
@@ -57,6 +61,8 @@ def main() -> None:
     )
     st.session_state.pop(IDENTITY_COMPONENT_CHANGED_SESSION_KEY, None)
     if user_id is None:
+        maintain_special_roles(st.session_state)
+        maintain_speech_queue(user_id=None, page="home", game_id=None)
         if error_code == "INVALID_STORED_UUID":
             st.error("저장된 게임 식별자가 손상됐어요. 새 UUID를 생성해 주세요.")
             if st.button("새 UUID 생성", key="identity.reset_stored"):
@@ -79,6 +85,9 @@ def main() -> None:
         st.warning("브라우저 저장소를 사용할 수 없어 이번 세션에서만 게임을 복구할 수 있어요.")
     page = st.session_state.get("navigation.page", "home")
     page = sync_page_navigation(page)
+    maintain_speech_queue(user_id=user_id, page=page, game_id=st.session_state.get("game.game_id"))
+    if page != "game":
+        maintain_special_roles(st.session_state)
     load_home_games = False
     if page == "feedback":
         render_feedback(client=client, feedback_type="GENERAL")
@@ -104,14 +113,38 @@ def main() -> None:
             st.session_state["navigation.page"] = "home"
             st.rerun()
         try:
-            response = client.get_game(game_id)
+            # 제출 callback이 보존한 최초 body를 처리하기 전에 GET으로 대기하거나
+            # 다른 rerun을 일으키지 않는다. 재진입·일반 조회는 기존 경로를 유지한다.
+            # 재사용 표식이 있어도 아래에서 현재 게임 ID가 일치하는 캐시만 선택한다.
+            cached = st.session_state.get("game.latest_snapshot")
+            reuse = st.session_state.pop("game.sync_render_snapshot", False)
+            pending = st.session_state.get("game.command_pending")
+            reuse = reuse or (isinstance(pending, dict) and pending.get("game_id") == game_id
+                              and pending.get("status") in {"PENDING_TO_RENDER", "IN_FLIGHT"})
+            reuse = reuse or speech_queue_busy(game_id)
+            if (reuse and isinstance(cached, dict)
+                    and cached.get("game", {}).get("game_id") == game_id):
+                response = cached
+            else:
+                response = client.get_game(game_id)
             snapshot = response.get("data") if isinstance(response.get("data"), dict) else response
             if not isinstance(snapshot, dict) or not isinstance(snapshot.get("game"), dict):
                 raise ValueError("INVALID_RESPONSE")
+            snapshot = prefer_current_snapshot(snapshot=snapshot, game_id=game_id, user_id=user_id)
             st.session_state["game.latest_snapshot"] = snapshot
-        except Exception:
+            maintain_special_roles(st.session_state, snapshot)
+            maintain_speech_queue(user_id=user_id, page=page, game_id=game_id, snapshot=snapshot)
+        except Exception as error:
+            maintain_special_roles(st.session_state)
+            # DELETE 응답 유실 뒤 첫 재조회가 404라면 팝업을 다시 그릴 snapshot이 없다.
+            # 이 게임에 사용자가 제출한 삭제 요청이 있을 때만 이탈 완료로 처리한다.
+            pending_delete = st.session_state.get("game.delete_pending")
+            if (isinstance(error, ApiResponseError) and error.status_code == 404
+                    and error.code == "GAME_NOT_FOUND" and isinstance(pending_delete, dict)
+                    and pending_delete.get("game_id") == game_id):
+                finish_deleted_game()
             st.error("게임 상태를 불러오지 못했어요.")
-            if st.button("홈으로 이동", key="game.load_home"):
+            if st.button("홈으로", key="game.load_home"):
                 st.session_state["navigation.page"] = "home"
                 st.session_state.pop("game.game_id", None)
                 st.rerun()
@@ -131,7 +164,6 @@ def main() -> None:
         if load_home_games and "home.games" not in st.session_state:
             st.session_state["home.games_loading"] = True
         render_home(client)
-    render_settings()
     # TTL 만료 때 먼저 rerun하면 이번 요청의 버튼 trigger가 초기화된다.
     # 카드·홈 이동·UUID 최종 확인을 먼저 처리하고, 남아 있는 목록 조회만 수행한다.
     if load_home_games:

@@ -9,8 +9,8 @@ from backend.app.models.game_state import GameState
 def standard_winner(state: GameState) -> tuple[Faction, WinReason] | None:
     """현재 생존자 수로 표준 승패를 계산한다."""
 
-    mafia_count = sum(player.alive and player.role is PlayerRole.MAFIA for player in state.players)
-    citizen_count = sum(player.alive and player.role is not PlayerRole.MAFIA for player in state.players)
+    mafia_count = sum(player.alive and player.faction is Faction.MAFIA for player in state.players)
+    citizen_count = sum(player.alive and player.faction is Faction.CITIZEN for player in state.players)
     if mafia_count == 0:
         return Faction.CITIZEN, WinReason.ALL_MAFIA_ELIMINATED
     if mafia_count >= citizen_count:
@@ -25,4 +25,3 @@ def finish(state: GameState, winner: Faction, reason: WinReason) -> None:
     state.win_reason = reason
     state.status = GameStatus.COMPLETED
     state.phase = GamePhase.ENDED
-

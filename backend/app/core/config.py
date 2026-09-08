@@ -9,6 +9,7 @@ database path를 그대로 사용하고, 로컬 fallback일 때만 ``database_na
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from dataclasses import dataclass, field, replace
@@ -69,6 +70,17 @@ class Settings:
     local_llm_model: str = "local-model"
     openai_api_key: str = field(default="", repr=False)
     openai_model: str = "gpt-4.1-mini"
+    # 분석 전용 자원 한도는 게임 Agent의 선택·진행 속도와 독립적으로 관리한다.
+    speech_analysis_enabled: bool = False
+    speech_analysis_embedding_model: str = "text-embedding-3-small"
+    speech_analysis_dimensions: int = 1536
+    speech_analysis_claims_model: str = "gpt-4.1-mini"
+    speech_analysis_version: str = "v1"
+    speech_analysis_poll_seconds: float = 1.0
+    speech_analysis_batch_size: int = 16
+    speech_analysis_concurrency: int = 2
+    speech_analysis_timeout_seconds: float = 30.0
+    speech_analysis_max_attempts: int = 3
     gemini_api_key: str = field(default="", repr=False)
     gemini_model: str = "gemini-2.5-flash"
     llm_timeout_seconds: int = 30
@@ -87,6 +99,37 @@ class Settings:
         원인을 확인할 수 있다. 검증 오류에는 URL 원문을 포함하지 않으므로
         사용자명이나 비밀번호가 로그로 유출되지 않는다.
         """
+
+        if type(self.speech_analysis_enabled) is not bool:
+            raise ValueError("SPEECH_ANALYSIS_ENABLED must be a boolean")
+        if self.speech_analysis_embedding_model != "text-embedding-3-small":
+            raise ValueError("SPEECH_ANALYSIS_EMBEDDING_MODEL is not supported")
+        if type(self.speech_analysis_dimensions) is not int or self.speech_analysis_dimensions != 1536:
+            raise ValueError("SPEECH_ANALYSIS_DIMENSIONS must be 1536")
+        for value, name in (
+            (self.speech_analysis_claims_model, "SPEECH_ANALYSIS_CLAIMS_MODEL"),
+            (self.speech_analysis_version, "SPEECH_ANALYSIS_VERSION"),
+        ):
+            if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", value):
+                raise ValueError(f"{name} must be a nonempty model or revision identifier")
+        for value, name, upper in (
+            (self.speech_analysis_batch_size, "SPEECH_ANALYSIS_BATCH_SIZE", 100),
+            (self.speech_analysis_concurrency, "SPEECH_ANALYSIS_CONCURRENCY", 16),
+            (self.speech_analysis_max_attempts, "SPEECH_ANALYSIS_MAX_ATTEMPTS", 10),
+        ):
+            if type(value) is not int or not 1 <= value <= upper:
+                raise ValueError(f"{name} is outside its supported range")
+        for value, name, lower, upper in (
+            (self.speech_analysis_poll_seconds, "SPEECH_ANALYSIS_POLL_SECONDS", 0.05, 60),
+            (self.speech_analysis_timeout_seconds, "SPEECH_ANALYSIS_TIMEOUT_SECONDS", 0.1, 300),
+        ):
+            if type(value) not in (int, float) or not math.isfinite(value) or not lower <= value <= upper:
+                raise ValueError(f"{name} is outside its supported range")
+        if self.speech_analysis_enabled and not self.openai_api_key.strip():
+            raise ValueError("OPENAI_API_KEY is required for speech analysis")
+
+        if len(self.effective_speech_analysis_version) > 128:
+            raise ValueError("SPEECH_ANALYSIS_VERSION combined identity must be at most 128 characters")
 
         raw_url = self.database_url.strip()
         if not raw_url:
@@ -169,6 +212,17 @@ class Settings:
         object.__setattr__(self, "openai_model", self.openai_model.strip())
         object.__setattr__(self, "gemini_api_key", self.gemini_api_key.strip())
         object.__setattr__(self, "gemini_model", self.gemini_model.strip())
+
+    @property
+    def effective_speech_analysis_version(self) -> str:
+        """모델·차원·프롬프트 변경 시 파생 결과가 같은 색인으로 섞이지 않게 한다."""
+
+        from backend.app.llm_provider.speech_analysis_provider import PROMPT_VERSION
+
+        return ":".join((
+            self.speech_analysis_version, self.speech_analysis_embedding_model,
+            str(self.speech_analysis_dimensions), self.speech_analysis_claims_model, PROMPT_VERSION,
+        ))
 
     @property
     def effective_database_url(self) -> str:
@@ -264,6 +318,36 @@ class Settings:
             local_llm_model=os.getenv("LOCAL_LLM_MODEL", "local-model"),
             openai_api_key=os.getenv("OPENAI_API_KEY", ""),
             openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+            speech_analysis_enabled=_read_bool(os.getenv("SPEECH_ANALYSIS_ENABLED", "false")),
+            speech_analysis_embedding_model=os.getenv(
+                "SPEECH_ANALYSIS_EMBEDDING_MODEL", "text-embedding-3-small"
+            ),
+            speech_analysis_dimensions=_read_positive_int(
+                os.getenv("SPEECH_ANALYSIS_DIMENSIONS", "1536"),
+                name="SPEECH_ANALYSIS_DIMENSIONS",
+            ),
+            speech_analysis_claims_model=os.getenv("SPEECH_ANALYSIS_CLAIMS_MODEL", "gpt-4.1-mini"),
+            speech_analysis_version=os.getenv("SPEECH_ANALYSIS_VERSION", "v1"),
+            speech_analysis_poll_seconds=_read_nonnegative_float(
+                os.getenv("SPEECH_ANALYSIS_POLL_SECONDS", "1"),
+                name="SPEECH_ANALYSIS_POLL_SECONDS",
+            ),
+            speech_analysis_batch_size=_read_positive_int(
+                os.getenv("SPEECH_ANALYSIS_BATCH_SIZE", "16"),
+                name="SPEECH_ANALYSIS_BATCH_SIZE",
+            ),
+            speech_analysis_concurrency=_read_positive_int(
+                os.getenv("SPEECH_ANALYSIS_CONCURRENCY", "2"),
+                name="SPEECH_ANALYSIS_CONCURRENCY",
+            ),
+            speech_analysis_timeout_seconds=_read_nonnegative_float(
+                os.getenv("SPEECH_ANALYSIS_TIMEOUT_SECONDS", "30"),
+                name="SPEECH_ANALYSIS_TIMEOUT_SECONDS",
+            ),
+            speech_analysis_max_attempts=_read_positive_int(
+                os.getenv("SPEECH_ANALYSIS_MAX_ATTEMPTS", "3"),
+                name="SPEECH_ANALYSIS_MAX_ATTEMPTS",
+            ),
             gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
             gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
             llm_timeout_seconds=_read_positive_int(
@@ -336,6 +420,14 @@ def _migration_database_path(url: str, *, name: str) -> str:
     if any(key.lower() in MIGRATION_TARGET_QUERY_KEYS for key, _ in query):
         raise ValueError(f"{name} query must not override connection targets or credentials")
     return database_path[1:]
+
+
+def _read_bool(value: str) -> bool:
+    """운영 오타가 기능을 조용히 켜거나 끄지 않도록 true/false만 허용한다."""
+
+    if value.strip().lower() not in {"true", "false"}:
+        raise ValueError("SPEECH_ANALYSIS_ENABLED must be true or false")
+    return value.strip().lower() == "true"
 
 
 def _read_positive_int(value: str, *, name: str) -> int:

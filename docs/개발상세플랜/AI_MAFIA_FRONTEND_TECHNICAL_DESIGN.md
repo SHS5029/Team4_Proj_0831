@@ -4,7 +4,7 @@
 **담당:** Frontend  
 **기술:** Python 3.12 + Streamlit 1.55  
 **위치:** `frontend_user/`, `frontend_admin/`  
-**범위:** `WU-F1` ~ `WU-F8`  
+**범위:** `WU-F1` ~ `WU-F10`
 **기준일:** 2026-09-03
 
 **정본:** [마스터플랜](AI_MAFIA_MASTER_PLAN.md) · [화면 흐름](AI_MAFIA_SCREEN_FLOW.md) · [API 계약](AI_MAFIA_API_SPEC.md) · [독립 개발 계약](AI_MAFIA_INDEPENDENT_CONTRACT.md)
@@ -16,7 +16,7 @@
 
 - 사용자 앱(`:8501`)과 관리자 앱(`:8502`)을 독립 Streamlit 프로세스로 유지한다.
 - Front는 Backend snapshot과 operation을 표현하는 Presenter로만 동작한다.
-- 구현 순서는 `F1 → F2 → F3 → F4 → F5 → F6 → F7 → F8`이다.
+- 구현 순서는 `F1 → F2 → F3 → F4 → F5 → F6 → F7 → F8 → F10`이다.
 - 한 개발 세션과 branch·PR은 WU 하나 이하로 제한한다.
 - Backend 준비 전에는 정본 기반 synthetic fixture로 독립 개발한다.
 - 동기화는 SSE 우선, 동일 envelope의 polling fallback을 사용한다.
@@ -28,7 +28,7 @@
 | Presenter 원칙 | 적합 | 승패·phase·자동 행동 계산 금지 |
 | UUID-only 식별 | 적합 | Web Crypto, local storage, `X-User-Id` |
 | OIDC·로그인·Front HMAC 제거 | 적합 | F1 범위 |
-| WU-F1~F8 | 적합 | 마스터플랜 순서·범위 유지 |
+| WU-F1~F10 | 적합 | 마스터플랜 순서·범위 유지 |
 | 닉네임 입력 | 제외 | 이름·프로필 수집 금지 |
 | SSE·polling | 적합 | 동일 operation envelope·cursor |
 | 관리자 | 적합 | 별도 origin·allowlist·read-only·fail-closed |
@@ -313,6 +313,7 @@ email, timestamp 서명과 Front HMAC을 보내지 않는다. GET만 제한적�
 | F8 | 관리자 목록 | `GET /api/v1/admin/games` | status·phase·cursor·limit |
 | F8 | 관리자 상세 | `GET /api/v1/admin/games/{game_id}` | opaque game ID |
 | F8 | 관리자 지표 | `GET /api/v1/admin/metrics` | from·to, 최대 31일 |
+| F10 | AI 발언 분석 | `GET /api/v1/admin/speech-analytics` | from·to·game·persona·round·analysis_version·limit |
 
 성공 응답은 `data`·`meta`, 오류는 `error` envelope를 먼저 검증한다. 허용 operation은
 `SET_GAME_STATE`, `REPLACE_PLAYERS`, `SET_PRIVATE_STATE`, `SET_ACTION_WINDOW`,
@@ -517,6 +518,14 @@ header·CORS preflight·stream 취소·polling 전환은 Playwright E2E를 필�
 테스트: 200·403·network, cache 제거, partial DOM 부재, private schema reject. 403 화면의 DOM과
 browser network 결과는 Playwright E2E로 검사한다.
 
+### WU-F10 — 공개 AI 발언 분석
+
+- `speech_analysis`의 같은 분석 버전 임베딩을 Backend가 최대 500건 표본으로 묶어
+  `speech-analytics` 집계를 반환한다. Front는 벡터를 받지 않고 주제 히트맵·원문
+  키워드·claims stance·대표 공개 근거만 표시한다.
+- 사람 발언과 분석 미완료 행은 각각 AI 필터와 coverage로 구분한다. 표본 제한·부분
+  완료·동의어 확정이 아닌 표현 후보라는 안내를 화면에 유지한다.
+
 ## 8. 공통 오류·네트워크
 
 | code·상황 | 처리 |
@@ -592,7 +601,7 @@ uv run ruff check frontend_user frontend_admin
 | CP-0 | 정본·Streamlit 구조·fixture 승인 | 세 섹터 합의 |
 | CP-1 | F1 UUID-only 요청 완료 | B1, M1A |
 | CP-5 | F2~F7 사용자 흐름 완료 | B5 공개 API |
-| CP-6 | F8 관리자 완료 | B8 관리자 API |
+| CP-6 | F8·F10 관리자 완료 | B8 관리자 API |
 
 Backend 미완료는 Front 단위 개발 blocker가 아니다. 통합 시 `/openapi.json`과 다르면
 Front alias를 만들지 않고 정본과 계약 테스트를 먼저 갱신한다.
@@ -666,6 +675,6 @@ Front alias를 만들지 않고 정본과 계약 테스트를 먼저 갱신한�
 3. 승인된 F1 범위만 구현·검증하고 README를 갱신한다.
 4. CP-1 이후 F2부터 WU 단위로 진행한다.
 5. F2~F7 뒤 CP-5 사용자 흐름 E2E를 수행한다.
-6. 마지막으로 독립 관리자 앱 F8과 CP-6을 검증한다.
+6. 마지막으로 독립 관리자 앱 F8·F10과 CP-6을 검증한다.
 
 계획 승인만으로 파일 삭제·commit·push가 승인되는 것은 아니다.

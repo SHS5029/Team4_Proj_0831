@@ -6,7 +6,7 @@ export default function ({ data, parentElement, setStateValue }) {
   let state = instances.get(parentElement);
   if (state && state.scope !== scope) state.stop();
   if (!state || state.stopped) {
-    state = createConnection(data, scope, setStateValue);
+    state = createConnection(data, scope, setStateValue, parentElement);
     instances.set(parentElement, state);
     state.start();
   } else {
@@ -14,6 +14,11 @@ export default function ({ data, parentElement, setStateValue }) {
     // cursor를 전진시키면 Python의 schema 검증 실패 뒤 batch를 잃을 수 있다.
     state.data = data;
     state.publish = setStateValue;
+    const sequence = Number.isSafeInteger(data.last_sequence) ? data.last_sequence : null;
+    if (sequence !== null && sequence > state.renderedSequence) {
+      state.renderedSequence = sequence;
+      state.scrollTimelineToLatest();
+    }
   }
   clearTimeout(state.cleanupTimer);
   return () => {
@@ -23,10 +28,32 @@ export default function ({ data, parentElement, setStateValue }) {
   };
 }
 
-function createConnection(data, scope, publish) {
+function createConnection(data, scope, publish, parentElement) {
   const policy = data.policy;
   const state = {data, scope, publish, stopped: false, live: false, status: "CONNECTING",
-    sseFailures: 0, pollFailures: 0, lastEnvelope: null, lastTick: 0};
+    sseFailures: 0, pollFailures: 0, lastEnvelope: null, lastTick: 0,
+    renderedSequence: Number.isSafeInteger(data.last_sequence) ? data.last_sequence : 0};
+  // 공개 event가 추가된 뒤 Streamlit rerun으로 생성된 timeline container를 찾는다.
+  // 입력 focus는 이동하지 않아 키보드 사용자의 발언 작성 흐름을 방해하지 않는다.
+  state.scrollTimelineToLatest = () => {
+    const documentRoot = parentElement.ownerDocument;
+    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    let attemptsRemaining = 6;
+    const scrollWhenReady = () => {
+      if (state.stopped) return;
+      const timeline = documentRoot.querySelector(
+        '[class*="st-key-game-timeline-scroll"], [class*="st-key-spectator-timeline-scroll"]'
+      );
+      if (!timeline && attemptsRemaining-- > 0) {
+        state.scrollTimer = setTimeout(scrollWhenReady, 50);
+        return;
+      }
+      if (timeline) {
+        timeline.scrollTo({top: timeline.scrollHeight, behavior: reducedMotion ? "auto" : "smooth"});
+      }
+    };
+    requestAnimationFrame(scrollWhenReady);
+  };
   const hidden = () => document.visibilityState === "hidden";
   const interval = () => hidden() ? policy.background_poll_ms : policy.foreground_poll_ms;
   const backoff = (base, failures) => Math.round(Math.min(policy.max_backoff_ms,
@@ -205,10 +232,12 @@ function createConnection(data, scope, publish) {
     window.addEventListener("offline", wentOffline);
     scheduleTick();
     connect();
+    // 게임에 다시 들어온 경우에도 최신 공개 대화부터 읽을 수 있게 한 번 이동한다.
+    state.scrollTimelineToLatest();
   };
   state.stop = () => {
     state.stopped = true;
-    for (const timer of [state.cleanupTimer, state.tickTimer, state.pollTimer, state.sseTimer]) clearTimeout(timer);
+    for (const timer of [state.cleanupTimer, state.tickTimer, state.pollTimer, state.sseTimer, state.scrollTimer]) clearTimeout(timer);
     state.sseController?.abort();
     state.pollController?.abort();
     document.removeEventListener("visibilitychange", visibilityChanged);

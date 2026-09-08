@@ -313,6 +313,154 @@ def test_postgres_save_and_resume_round_trip() -> None:
         _cleanup_redis_test_namespace(settings, test_run_id=test_run_id)
 
 
+def test_postgres_user_activity_changes_only_on_successful_user_commands() -> None:
+    """실제 DB에서 조회·재전송·AI 처리와 성공한 인간 command의 보존 시각을 구분한다."""
+
+    settings = get_settings()
+    user_id = uuid4()
+    test_run_id = uuid4().hex
+
+    def activity_time(game_id):
+        """합성 게임 한 건의 DB 시각만 읽으며 저장된 사용자 내용은 출력하지 않는다."""
+
+        with psycopg.connect(settings.effective_database_url) as connection:
+            return connection.execute(
+                "SELECT last_user_action_at FROM public.games WHERE id = %s",
+                (game_id,),
+            ).fetchone()[0]
+
+    try:
+        application = create_app(settings=settings, enable_background_worker=False)
+        with TestClient(application) as client:
+            headers = {"X-User-Id": str(user_id), "X-Test-Run-Id": test_run_id}
+            created = client.post(
+                "/api/v1/games", headers={**headers, "Idempotency-Key": str(uuid4())},
+                json={"player_count": 6, "ruleset_version": "mystery-v1",
+                      "scenario_version": "scenario-v1"},
+            )
+            assert created.status_code == 201
+            game_id = created.json()["data"]["game_id"]
+            initial = activity_time(game_id)
+            path = f"/api/v1/games/{game_id}"
+            assert client.get(path, headers=headers).status_code == 200
+            assert client.get("/api/v1/games", headers=headers).status_code == 200
+            assert activity_time(game_id) == initial
+
+            begin_headers = {**headers, "Idempotency-Key": str(uuid4())}
+            begin_body = {"type": "BEGIN_GAME", "expected_state_version": 1}
+            begun = client.post(path + "/commands", headers=begin_headers, json=begin_body)
+            assert begun.status_code == 200
+            begun_at = activity_time(game_id)
+            assert begun_at > initial
+            replay = client.post(path + "/commands", headers=begin_headers, json=begin_body)
+            assert replay.status_code == 200 and replay.json()["meta"]["replayed"]
+            assert activity_time(game_id) == begun_at
+
+            snapshot = client.get(path, headers=headers).json()["data"]
+            window = snapshot["action_window"]
+            # Provider를 부르지 않고 검증된 AI PASS 저장 경로만 실행한다.
+            application.state.game_runtime.agent_pass(
+                user_id, UUID(game_id), UUID(window["turn_player_id"]),
+                expected_state_version=snapshot["game"]["state_version"],
+                window_id=UUID(window["window_id"]),
+            )
+            assert activity_time(game_id) == begun_at
+            rejected = client.post(
+                path + "/commands", headers={**headers, "Idempotency-Key": str(uuid4())},
+                json={"type": "BEGIN_GAME", "expected_state_version": 1},
+            )
+            assert rejected.status_code == 409
+            assert activity_time(game_id) == begun_at
+
+            previous = begun_at
+            for command, status in (("SAVE_AND_EXIT", "SAVED"), ("RESUME", "IN_PROGRESS")):
+                snapshot = client.get(path, headers=headers).json()["data"]
+                response = client.post(
+                    path + "/commands", headers={**headers, "Idempotency-Key": str(uuid4())},
+                    json={"type": command,
+                          "expected_state_version": 1 if command == "SAVE_AND_EXIT" else snapshot["game"]["state_version"]},
+                )
+                assert response.status_code == 200
+                current = activity_time(game_id)
+                assert current > previous
+                assert client.get(path, headers=headers).json()["data"]["game"]["status"] == status
+                previous = current
+    finally:
+        _cleanup_postgres_test_data(settings, user_id=user_id)
+        _cleanup_redis_test_namespace(settings, test_run_id=test_run_id)
+
+
+def test_persona_reasoning_migration_preserves_other_fields_and_is_idempotent() -> None:
+    """격리 QA의 임시 테이블에서 추론값·해시만 갱신하고 재실행·version 경계를 검증한다."""
+
+    from pathlib import Path
+    from urllib.parse import urlsplit
+    import pytest
+    from psycopg.rows import dict_row
+    from psycopg.types.json import Jsonb
+
+    url = get_settings().effective_database_url
+    assert urlsplit(url).hostname in {"127.0.0.1", "localhost", "::1"}
+    targets = {
+        "CAUTIOUS_ANALYST": 0.8, "OBSERVANT_NOTEKEEPER": 0.8,
+        "ACTIVE_DEBATER": 0.75, "COOPERATIVE_MEDIATOR": 0.7,
+        "BALANCED_OBSERVER": 0.7, "EMOTIONAL_REACTOR": 0.6,
+    }
+    sql = (Path(__file__).parents[1] / "migrations/009_update_persona_reasoning_skill.sql").read_text()
+    sql = sql.replace("public.agent_personas", "pg_temp.agent_personas")
+    with psycopg.connect(url, autocommit=True, row_factory=dict_row) as connection:
+        connection.execute("CREATE TEMP TABLE agent_personas (LIKE public.agent_personas INCLUDING ALL)")
+        for name in [*targets, "SYNTHETIC_UNRELATED"]:
+            connection.execute(
+                "INSERT INTO pg_temp.agent_personas (id, version, display_name, speech_style, "
+                "backstory, parameters, active, content_hash) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                (name, "mystery-v1" if name == "BALANCED_OBSERVER" else "agent-config-v1",
+                 "합성 인물", "합성 말투", "합성 배경", Jsonb({"reasoning_skill": 0.5, "suspicion": 0.23}),
+                 name != "BALANCED_OBSERVER", "0" * 64),
+            )
+
+        def rows():
+            """행 원문과 물리 버전을 함께 읽어 불필요한 반복 UPDATE까지 확인한다."""
+
+            return {row["id"]: row for row in connection.execute(
+                "SELECT *, xmin::text AS row_version FROM pg_temp.agent_personas ORDER BY id"
+            ).fetchall()}
+
+        before = rows()
+        connection.execute(
+            "ALTER TABLE pg_temp.agent_personas ADD CONSTRAINT synthetic_reject_high "
+            "CHECK ((parameters->>'reasoning_skill')::numeric <= 0.7)"
+        )
+        with pytest.raises(psycopg.errors.CheckViolation):
+            connection.execute(sql)
+        connection.execute("ROLLBACK")
+        assert rows() == before
+        connection.execute("ALTER TABLE pg_temp.agent_personas DROP CONSTRAINT synthetic_reject_high")
+        connection.execute(sql)
+        after = rows()
+        for name, expected in targets.items():
+            assert after[name]["parameters"] == {"reasoning_skill": expected, "suspicion": 0.23}
+            assert after[name]["content_hash"] != before[name]["content_hash"]
+            for field in before[name].keys() - {"parameters", "content_hash", "row_version"}:
+                assert after[name][field] == before[name][field]
+        assert after["SYNTHETIC_UNRELATED"] == before["SYNTHETIC_UNRELATED"]
+        assert connection.execute(
+            "SELECT bool_and(content_hash = encode(digest(concat_ws('|', id, version, "
+            "display_name, speech_style, backstory, parameters::text), 'sha256'), 'hex')) AS valid "
+            "FROM pg_temp.agent_personas WHERE id <> 'SYNTHETIC_UNRELATED'"
+        ).fetchone()["valid"]
+        connection.execute(sql)
+        assert rows() == after
+
+        connection.execute(
+            "UPDATE pg_temp.agent_personas SET version = 'future-version', "
+            "parameters = '{\"reasoning_skill\":0.5}'::jsonb WHERE id = 'CAUTIOUS_ANALYST'"
+        )
+        future = rows()["CAUTIOUS_ANALYST"]
+        connection.execute(sql)
+        assert rows()["CAUTIOUS_ANALYST"] == future
+
+
 def _cleanup_postgres_test_data(settings: Settings, *, user_id) -> None:
     """테스트가 만든 사용자와 게임만 명시적인 UUID로 정리한다."""
 

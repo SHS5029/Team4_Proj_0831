@@ -173,7 +173,7 @@ GAME_COLUMNS = """
     next_event_sequence, next_front_sequence, player_count, mafia_count,
     ruleset_version, scenario_version, scenario_id, scenario_content_hash,
     seed_ciphertext, seed_nonce, seed_key_id, agent_config_version,
-    fast_forward_enabled, winner, win_reason, saved_at, finished_at,
+    fast_forward_enabled, mode, winner, win_reason, saved_at, finished_at,
     created_at, updated_at
 """
 # scenario_catalog과 join할 때 id 같은 공통 컬럼이 모호해지지 않도록 games alias를
@@ -220,7 +220,7 @@ class PostgresGameRepository:
         ):
             raise ValueError("Scenario content hash is invalid")
 
-        mafia_count = sum(player.role.value == "MAFIA" for player in state.players)
+        mafia_count = sum(player.faction.value == "MAFIA" for player in state.players)
         cursor.execute(
             """
             INSERT INTO public.games (
@@ -229,14 +229,14 @@ class PostgresGameRepository:
                 player_count, mafia_count, ruleset_version, scenario_version,
                 scenario_id, scenario_content_hash, seed_ciphertext, seed_nonce,
                 seed_key_id, agent_config_version, fast_forward_enabled,
-                winner, win_reason, saved_at, finished_at
+                mode, winner, win_reason, saved_at, finished_at
             ) VALUES (
                 %s, %s, %s, %s, %s, %s,
                 %s, 1, 1,
                 %s, %s, 'mystery-v1', %s,
                 %s, %s, %s, %s,
                 %s, %s, FALSE,
-                NULL, NULL, NULL, NULL
+                %s, NULL, NULL, NULL, NULL
             )
             RETURNING id, owner_user_id, status, phase, round, day_number,
                       state_version, player_count, mafia_count, scenario_id
@@ -258,6 +258,7 @@ class PostgresGameRepository:
                 encrypted_seed.nonce,
                 encrypted_seed.key_id,
                 agent_config_version,
+                state.mode,
             ),
         )
         row = cursor.fetchone()
@@ -344,11 +345,19 @@ class PostgresGameRepository:
         *,
         state: GameState,
         expected_state_version: int,
+        user_action: bool = False,
     ) -> Mapping[str, Any]:
-        """검증된 client-visible state 변경을 정확히 한 version 증가로 저장한다."""
+        """상태 version과 검증된 사용자 동작 시각을 같은 transaction에 저장한다.
+
+        AI·AUTO 처리도 같은 상태 저장 메서드를 사용하므로 호출자가 명시한 인간
+        command만 보존 시각을 갱신한다. 기본값은 false로 두어 새 내부 경로가 사용자
+        활동을 잘못 연장하지 않게 한다.
+        """
 
         if state.state_version != expected_state_version + 1:
             raise ValueError("Game state version must increase by exactly one")
+        if type(user_action) is not bool:
+            raise TypeError("user_action은 bool이어야 합니다.")
         if type(state.fast_forward_enabled) is not bool or (state.fast_forward_enabled and state.human_alive):
             raise ValueError("빠른 진행 선택은 사망한 인간에게만 허용됩니다.")
         cursor.execute(
@@ -357,7 +366,11 @@ class PostgresGameRepository:
             SET status = %s, phase = %s, round = %s, day_number = %s,
                 state_version = %s, fast_forward_enabled = %s, winner = %s,
                 win_reason = %s, saved_at = %s, finished_at = %s,
-                updated_at = CURRENT_TIMESTAMP
+                updated_at = CURRENT_TIMESTAMP,
+                last_user_action_at = CASE
+                    WHEN %s THEN CURRENT_TIMESTAMP
+                    ELSE last_user_action_at
+                END
             WHERE id = %s AND state_version = %s
             RETURNING id, status, phase, round, day_number, state_version,
                       fast_forward_enabled, winner, win_reason, updated_at
@@ -373,6 +386,7 @@ class PostgresGameRepository:
                 state.win_reason.value if state.win_reason else None,
                 state.updated_at if state.status.value == "SAVED" else None,
                 state.updated_at if state.status.value == "COMPLETED" else None,
+                user_action,
                 state.game_id,
                 expected_state_version,
             ),
@@ -381,6 +395,64 @@ class PostgresGameRepository:
         if row is None:
             raise LookupError("게임 상태가 이미 변경되었습니다.")
         return row
+
+    def delete_owned_game(
+        self, cursor: Any, *, game_id: UUID, owner_user_id: UUID, expected_state_version: int,
+    ) -> None:
+        """소유권·버전을 확인하고 잠근 게임만 삭제하며 다른 상태의 기록은 보존한다."""
+
+        cursor.execute(
+            """
+            DELETE FROM public.games
+            WHERE id = %s AND owner_user_id = %s AND state_version = %s
+              AND status IN ('IN_PROGRESS', 'SAVED')
+            RETURNING id
+            """,
+            (game_id, owner_user_id, expected_state_version),
+        )
+        if cursor.fetchone() is None:
+            raise LookupError("삭제 대상 게임 상태가 변경되었습니다.")
+
+    def delete_stale_in_progress(
+        self,
+        cursor: Any,
+        *,
+        limit: int = 100,
+    ) -> list[UUID]:
+        """15분간 사용자 command가 없던 진행 게임을 잠긴 소량만 삭제한다.
+
+        후보를 먼저 잠그고 현재 행을 다시 확인하므로 다른 Backend instance와 중복
+        처리하지 않는다. 사용자 command가 행 잠금을 먼저 얻으면 이번 sweep은 그
+        게임을 건너뛰고 다음 주기에 갱신된 시각을 다시 판정한다.
+        """
+
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("정리 batch 크기는 1~100이어야 합니다.")
+        cursor.execute(
+            """
+            WITH stale_games AS (
+                SELECT id
+                FROM public.games
+                WHERE status = 'IN_PROGRESS'
+                  AND last_user_action_at <= CURRENT_TIMESTAMP - INTERVAL '15 minutes'
+                ORDER BY last_user_action_at, id
+                LIMIT %s
+                FOR UPDATE SKIP LOCKED
+            ), deleted_games AS (
+                DELETE FROM public.games AS game
+                USING stale_games AS stale
+                WHERE game.id = stale.id
+                  AND game.status = 'IN_PROGRESS'
+                  AND game.last_user_action_at <= CURRENT_TIMESTAMP - INTERVAL '15 minutes'
+                RETURNING game.id
+            )
+            SELECT id
+            FROM deleted_games
+            ORDER BY id
+            """,
+            (limit,),
+        )
+        return [UUID(str(row["id"])) for row in cursor.fetchall()]
 
     def next_event_sequence(self, cursor: Any, game_id: UUID) -> int:
         """게임의 다음 내부 event sequence를 원자적으로 예약한다."""

@@ -3,16 +3,36 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Protocol
 from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
 
-from mafia_game.schemas.common import RESOURCE_SCOPE_ORDER, WireContractError, canonical_uuid
+from mafia_game.schemas.common import (
+    RESOURCE_SCOPE_ORDER,
+    WireContractError,
+    canonical_uuid,
+    integer,
+    require_keys,
+    string,
+)
 
 
 class BackendContextError(RuntimeError):
-    """Backend HTTP 실패를 MCP 내부의 단일 오류로 표현한다."""
+    """Backend 실패를 외부 문구 없는 고정 코드로만 전달한다."""
+
+    def __init__(self, code: str = "MCP_BACKEND_ERROR") -> None:
+        """응답·URL·예외 원문이 실수로 들어와도 허용된 진단 코드만 남긴다."""
+
+        allowed = {
+            "MCP_BACKEND_ERROR", "MCP_BACKEND_TIMEOUT", "MCP_BACKEND_CONNECTION_ERROR",
+            "MCP_BACKEND_INVALID_JSON", "MCP_BACKEND_INVALID_RESPONSE",
+        }
+        self.code = code if isinstance(code, str) and (
+            code in allowed or re.fullmatch(r"MCP_BACKEND_HTTP_[1-5][0-9]{2}", code)
+        ) else "MCP_BACKEND_ERROR"
+        super().__init__(self.code)
 
 
 class BackendContextClient(Protocol):
@@ -26,6 +46,9 @@ class BackendContextClient(Protocol):
 
     async def submit_action(self, **payload: str | None) -> dict[str, Any]:
         """행동 payload를 Backend에 전달한다."""
+
+    async def inspect_special_roles(self, *, user_id: str, game_id: str) -> dict[str, Any]:
+        """Backend가 소유자에게 허용한 특수 직업만 요청별로 조회한다."""
 
 
 class MinimalBackendContextClient:
@@ -60,13 +83,22 @@ class MinimalBackendContextClient:
                 content=body,
                 headers={"Content-Type": "application/json"},
             )
-            payload = response.json()
-        except (httpx.HTTPError, ValueError) as error:
-            raise BackendContextError from error
+        except httpx.TimeoutException:
+            raise BackendContextError("MCP_BACKEND_TIMEOUT") from None
+        except httpx.TransportError:
+            raise BackendContextError("MCP_BACKEND_CONNECTION_ERROR") from None
+        except (httpx.HTTPError, ValueError):
+            raise BackendContextError from None
+        # 상태를 먼저 확인해야 HTML 오류 페이지를 JSON 오류로 잘못 분류하지 않는다.
+        # 외부 예외 체인은 숨겨 FastMCP traceback에도 요청 URL과 본문이 남지 않게 한다.
         if response.status_code < 200 or response.status_code >= 300:
-            raise BackendContextError
+            raise BackendContextError(f"MCP_BACKEND_HTTP_{response.status_code}") from None
+        try:
+            payload = response.json()
+        except ValueError:
+            raise BackendContextError("MCP_BACKEND_INVALID_JSON") from None
         if not isinstance(payload, dict):
-            raise BackendContextError
+            raise BackendContextError("MCP_BACKEND_INVALID_RESPONSE") from None
         return payload
 
     async def read_resource(self, uri: str) -> dict[str, Any]:
@@ -87,8 +119,8 @@ class MinimalBackendContextClient:
                 if parts[7] not in RESOURCE_SCOPE_ORDER:
                     raise WireContractError
             parameters["scope"] = parts[7] if scoped else "public"
-        except WireContractError as error:
-            raise BackendContextError from error
+        except WireContractError:
+            raise BackendContextError from None
         return await self._request(
             "GET", f"/internal/mcp/context?{urlencode(parameters)}"
         )
@@ -125,6 +157,47 @@ class MinimalBackendContextClient:
         result = await self._request("POST", "/internal/mcp/actions", body=body)
         if result.get("accepted") is not True or result.get("error") is not None:
             raise BackendContextError
+        return result
+
+    async def inspect_special_roles(self, *, user_id: str, game_id: str) -> dict[str, Any]:
+        """소유자 조회를 위임하고 추가 비공개 필드·다른 게임 응답을 폐쇄형 검증으로 막는다."""
+
+        try:
+            parameters = {
+                "user_id": canonical_uuid(user_id),
+                "game_id": canonical_uuid(game_id),
+            }
+        except WireContractError:
+            raise BackendContextError from None
+        result = await self._request(
+            "GET", f"/internal/mcp/special-roles?{urlencode(parameters)}"
+        )
+        try:
+            require_keys(result, {"game_id", "player_id", "ability_id", "state_version", "roles"})
+            if canonical_uuid(result["game_id"]) != game_id:
+                raise WireContractError
+            actor_id = canonical_uuid(result["player_id"])
+            if result["ability_id"] != "intel.special_roles.v1":
+                raise WireContractError
+            integer(result["state_version"], minimum=1)
+            if not isinstance(result["roles"], list):
+                raise WireContractError
+            # actor는 Backend가 소유 HUMAN으로 확정한다. MCP는 응답의 본인 제외와
+            # 중복만 확인하고 직업 소유권·생존·첫 밤 해금 판정을 새로 만들지 않는다.
+            seen = {actor_id}
+            for item in result["roles"]:
+                require_keys(item, {"player_id", "display_name", "role", "alive"})
+                player_id = canonical_uuid(item["player_id"])
+                if player_id in seen:
+                    raise WireContractError
+                seen.add(player_id)
+                string(item["display_name"])
+                if string(item["role"]) not in {"DETECTIVE", "DOCTOR"}:
+                    raise WireContractError
+                if not isinstance(item["alive"], bool):
+                    raise WireContractError
+        except WireContractError:
+            raise BackendContextError("MCP_BACKEND_INVALID_RESPONSE") from None
         return result
 
     async def aclose(self) -> None:

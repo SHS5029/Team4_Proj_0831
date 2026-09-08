@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import re
-from datetime import datetime
 from html import escape
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-from frontend_user.components.theme import render_page_navigation
+from frontend_user.components.theme import render_application_header, render_header_back_button
+from frontend_user.core.scenario_images import result_image_path, scenario_image_path
+from frontend_user.core.time_display import display_timestamp
 
 RESULT_PAGE_CSS = """
 <style>
@@ -46,21 +45,16 @@ RESULT_PAGE_CSS = """
   color: #d8e2f3; font-size: .82rem;
 }
 [class*="st-key-result-hero"] {
-  min-height: 15.5rem; display: grid; position: relative; overflow: hidden;
-  padding: 2rem !important; align-content: center; border: 1px solid #315886 !important;
-  border-radius: .85rem !important; color: #fff !important;
-  background: radial-gradient(circle at 52% 72%, #ffe5a0 0 7%, transparent 8%),
-              linear-gradient(165deg, #17406f, #5c88bf 62%, #efad75) !important;
-}
-[class*="st-key-result-hero"]::after {
-  content: "🤖  🕵️  🤖  🤖  🤖  🤖"; position: absolute; right: 1.5rem; bottom: 1rem;
-  color: #fff; font-size: clamp(1.1rem, 2.5vw, 2rem); letter-spacing: .35rem;
+  width: 100%; height: 100%; min-height: 100%; display: block; position: relative; overflow: hidden;
+  padding: 0 !important; align-content: center; border: 0 !important;
+  border-radius: .85rem !important; color: #fff !important; background: #071426 !important;
+  box-shadow: 0 1rem 2rem rgba(20,42,81,.14);
 }
 [class*="st-key-result-hero"] h1,
 [class*="st-key-result-hero"] h2,
 [class*="st-key-result-hero"] p { position: relative; z-index: 1; color: #fff !important; }
 [class*="st-key-result-summary"] {
-  min-height: 15.5rem; padding: 1.1rem !important;
+  height: 100%; min-height: 100%; box-sizing: border-box; padding: 1.1rem !important;
   border: 1px solid var(--result-border) !important;
   border-radius: .85rem !important; background: #fff !important;
   box-shadow: 0 .5rem 1.5rem rgba(20, 42, 81, .05);
@@ -72,6 +66,16 @@ RESULT_PAGE_CSS = """
 [class*="st-key-result-records"] {
   margin-top: 1rem; padding: .9rem !important; border: 1px solid var(--result-border) !important;
   border-radius: .75rem !important; background: #fff !important;
+}
+[class*="st-key-result-hero"] img {
+  display: block; width: 100%; height: 100%; max-height: none; object-fit: contain;
+  position: relative; z-index: 1; border-radius: .85rem; opacity: .96;
+}
+[class*="st-key-result-hero"] > div,
+[class*="st-key-result-hero"] [data-testid="stImage"] { width: 100% !important; height: 100% !important; }
+.result-last-vote {
+  margin-top: .55rem; color: var(--result-ink); font-size: .92rem; font-weight: 750;
+  line-height: 1.35; overflow-wrap: anywhere;
 }
 [class*="st-key-result-night-"],
 [class*="st-key-result-vote-"] {
@@ -109,8 +113,7 @@ RESULT_PAGE_CSS = """
 @media (max-width: 768px) {
   [data-testid="stMainBlockContainer"] { padding: 0 .8rem 2rem; }
   .result-header { margin: 0 -.8rem 1rem; padding: 0 .9rem; }
-  [class*="st-key-result-hero"], [class*="st-key-result-summary"] { min-height: auto; }
-  [class*="st-key-result-hero"]::after { opacity: .45; }
+  [class*="st-key-result-hero"], [class*="st-key-result-summary"] { height: auto; min-height: auto; }
 }
 </style>
 """
@@ -124,7 +127,7 @@ ROLE_PRESENTATION = {
 
 WINNER_PRESENTATION = {
     "CITIZEN": ("시민 진영 승리", "모든 마피아를 찾아냈습니다!"),
-    "MAFIA": ("마피아 진영 승리", "마피아가 마을을 장악했습니다."),
+    "MAFIA": ("마피아 진영 승리", "마피아가 끝까지 정체를 숨겼습니다."),
 }
 
 WIN_REASON_LABELS = {
@@ -152,18 +155,16 @@ PUBLIC_EVENT_FIELDS = {
 def render(snapshot: dict[str, Any]) -> None:
     """COMPLETED는 Backend result만 상세 표시하고 FAILED는 공개 안내로 제한한다."""
 
+    st.session_state.pop("game.special_roles", None)
     # Backend가 확정한 result만 역할·행동·투표 공개의 근거로 사용한다. Front는
     # public event나 생존자 수를 조합해 승패 또는 숨은 역할을 다시 판정하지 않는다.
     game = snapshot.get("game") if isinstance(snapshot.get("game"), dict) else {}
     scenario = snapshot.get("scenario") if isinstance(snapshot.get("scenario"), dict) else {}
     st.markdown(RESULT_PAGE_CSS, unsafe_allow_html=True)
-    st.markdown(
-        '<header class="result-header"><div><span class="result-brand">게임 종료</span>'
-        '<span class="result-status">연결됨</span></div>'
-        '<span class="result-settings">⚙&nbsp; 설정</span></header>',
-        unsafe_allow_html=True,
+    render_application_header(
+        title="게임 종료",
+        action_renderer=lambda: render_header_back_button(current_page="game"),
     )
-    render_page_navigation(current_page="game")
 
     if game.get("status") != "COMPLETED":
         _render_failed(scenario=scenario)
@@ -178,14 +179,20 @@ def render(snapshot: dict[str, Any]) -> None:
     winner_title, winner_caption = _winner_presentation(result.get("winner"))
     hero_col, summary_col = st.columns([1.4, 1])
     with hero_col:
-        with st.container(key="result-hero", border=True):
-            st.markdown(f"# {winner_title}")
-            st.markdown(f"### {winner_caption}")
-            st.text(str(scenario.get("title", "AI 마피아 게임")))
+        with st.container(key="result-hero"):
+            image_path = result_image_path(result.get("winner")) or scenario_image_path(scenario)
+            if image_path is not None:
+                # 승리 배너 자체에 결과 문구가 포함되어 있으므로 원본 비율을 유지해
+                # 별도 카드 안에 넣지 않고 결과 카드 전체를 채우도록 표시한다.
+                st.image(str(image_path), width="stretch")
+            else:
+                st.markdown(f"# {winner_title}")
+                st.markdown(f"### {winner_caption}")
+                st.text(str(scenario.get("title", "AI 마피아 게임")))
     with summary_col:
         _render_summary(game=game, result=result)
 
-    _render_players(result=result)
+    _render_players(result=result, me=snapshot.get("me"))
     _render_records(result=result, public_events=snapshot.get("public_events"))
     _render_actions(show_feedback=True)
 
@@ -201,7 +208,11 @@ def _render_summary(*, game: dict[str, Any], result: dict[str, Any]) -> None:
         round_col, survivor_col, vote_col = st.columns(3)
         round_col.metric("🚩 진행 라운드", round_count)
         survivor_col.metric("👥 생존자", survivor_count)
-        vote_col.metric("🗳️ 마지막 투표", _last_vote_label(result=result))
+        vote_col.markdown("🗳️ 마지막 투표")
+        vote_col.markdown(
+            f'<div class="result-last-vote">{escape(_last_vote_label(result=result))}</div>',
+            unsafe_allow_html=True,
+        )
         st.divider()
         st.success("이 결과는 서버에서 확인되었습니다.")
         st.caption(f"완료 시간: {_display_timestamp(result.get('finished_at'))}")
@@ -209,11 +220,23 @@ def _render_summary(*, game: dict[str, Any], result: dict[str, Any]) -> None:
         st.caption(f"종료 이유: {reason}")
 
 
-def _render_players(*, result: dict[str, Any]) -> None:
+def _render_players(*, result: dict[str, Any], me: Any = None) -> None:
     """종료 result에 공개된 전체 player 역할과 탈락 상태를 카드로 표시한다."""
 
     players = _objects(result.get("players"))
     st.markdown("## 전체 역할")
+    if isinstance(me, dict):
+        my_role = ROLE_PRESENTATION.get(str(me.get("role")))
+        if isinstance(me.get("role_name"), str) and me.get("faction") in {"CITIZEN", "MAFIA"}:
+            with st.container(key="result-my-role", border=True):
+                st.text(f"내 역할 · {me['role_name']} · {'시민 진영' if me['faction'] == 'CITIZEN' else '마피아 진영'}")
+        elif my_role:
+            role_name, role_icon, _ = my_role
+            with st.container(key="result-my-role", border=True):
+                st.markdown(
+                    f"**내 역할** · {escape(role_icon)} {escape(role_name)}",
+                    unsafe_allow_html=True,
+                )
     if not players:
         st.info("표시할 최종 플레이어 정보가 없습니다.")
         return
@@ -233,7 +256,10 @@ def _render_players(*, result: dict[str, Any]) -> None:
                         f"<strong>{escape(str(player.get('display_name', '플레이어')))}</strong>",
                         unsafe_allow_html=True,
                     )
-                    st.write(f"{role_marker} {role_name}")
+                    if isinstance(player.get("role_name"), str) and player.get("faction") in {"CITIZEN", "MAFIA"}:
+                        st.text(f"{player['role_name']} · {'시민 진영' if player['faction'] == 'CITIZEN' else '마피아 진영'}")
+                    else:
+                        st.write(f"{role_marker} {role_name}")
                     status, detail = _player_status(player)
                     if status == "생존":
                         st.success(status)
@@ -254,7 +280,7 @@ def _render_records(*, result: dict[str, Any], public_events: Any = None) -> Non
         and isinstance(player.get("display_name"), str) and player["display_name"].strip()
     }
     with st.container(key="result-records", border=True):
-        with st.expander("▣ 게임 기록 보기", expanded=True):
+        with st.expander("▣ 게임 기록 보기", expanded=False):
             night_col, vote_col = st.columns(2)
             with night_col:
                 st.markdown("#### 밤별 주요 기록")
@@ -368,11 +394,20 @@ def _render_night_record(*, night: dict[str, Any], player_names: dict[str, str])
 
     st.markdown(f"**🌙 밤 {_record_round(night.get('round'))}**")
     for field, label in (
-        ("resolved_attack_target_player_id", "공격 대상"),
+        ("resolved_attack_target_player_id", "최종 공격 대상"),
         ("protect_player_id", "보호 대상"), ("killed_player_id", "사망자"),
     ):
         st.text(f"{label}: {_record_target(night, field, player_names)}")
-    _render_choices(night.get("attack_choices"), label="공격", player_names=player_names)
+    choices = [choice for choice in _objects(night.get("attack_choices"))
+               if _player_name(choice.get("actor_player_id"), player_names)
+               and _player_name(choice.get("target_player_id"), player_names)
+               and type(choice.get("is_auto")) is bool]
+    targets = {choice["target_player_id"] for choice in choices}
+    actors = {choice["actor_player_id"] for choice in choices}
+    # 종료 공개 원장의 두 유효 선택과 확정 대상이 일치할 때만 규칙의 사유를 설명한다.
+    if len(choices) == len(actors) == len(targets) == 2 and night.get("resolved_attack_target_player_id") in targets:
+        st.info("마피아 투표가 갈려서 두 후보 중 RNG(무작위 선택)로 최종 공격 대상이 결정되었습니다.")
+    _render_choices(night.get("attack_choices"), label="마피아 선택", player_names=player_names)
     _render_choices(night.get("investigations"), label="조사", player_names=player_names)
 
 
@@ -441,44 +476,55 @@ def _record_target(record: dict[str, Any], field: str, player_names: dict[str, s
 
 
 def _render_actions(*, show_feedback: bool) -> None:
-    """결과를 변경하지 않는 피드백·새 게임·홈 이동 CTA를 제공한다."""
+    """완료 게임에는 피드백, 그 외에는 종료 후 이동 CTA만 제공한다."""
 
     with st.container(key="result-actions"):
-        columns = st.columns(3 if show_feedback else 2)
-        next_index = 0
         if show_feedback:
-            if columns[0].button(
-                "▣ 게임별 피드백",
+            feedback_column, home_column = st.columns(2)
+            if feedback_column.button(
+                "▣ 피드백 남기기",
                 key="result.feedback",
                 type="primary",
                 use_container_width=True,
             ):
+                # 게임이 완료되기 전 조회한 홈 목록을 그대로 사용하면 새 완료 게임이
+                # 보이지 않는다. 피드백 화면을 거쳐 홈으로 가는 경로도 동일하게 갱신한다.
+                _invalidate_home_games()
                 st.session_state["navigation.page"] = "game_feedback"
                 st.rerun()
-            next_index = 1
-        if columns[next_index].button(
-            "새 게임",
-            key="result.new_game",
-            use_container_width=True,
-        ):
-            st.session_state["navigation.page"] = "create"
-            st.session_state.pop("game.game_id", None)
-            st.session_state.pop("game.latest_snapshot", None)
-            # 이전 생성 성공 receipt가 새 설정을 건너뛰지 않게 제거한다. 결과 불명
-            # 요청의 key와 body는 중복 생성 방지를 위해 F2 재시도 흐름에 그대로 넘긴다.
-            previous = st.session_state.get("game.create_pending")
-            if isinstance(previous, dict) and previous.get("status") == "SUCCEEDED":
-                st.session_state.pop("game.create_pending", None)
-            st.rerun()
-        if columns[next_index + 1].button(
-            "⌂ 홈으로",
+        else:
+            new_game_column, home_column = st.columns(2)
+            if new_game_column.button(
+                "새 게임",
+                key="result.new_game",
+                use_container_width=True,
+            ):
+                st.session_state["navigation.page"] = "create"
+                st.session_state.pop("game.game_id", None)
+                st.session_state.pop("game.latest_snapshot", None)
+                # 이전 생성 성공 receipt가 새 설정을 건너뛰지 않게 제거한다. 결과 불명
+                # 요청의 key와 body는 중복 생성 방지를 위해 F2 재시도 흐름에 그대로 넘긴다.
+                previous = st.session_state.get("game.create_pending")
+                if isinstance(previous, dict) and previous.get("status") == "SUCCEEDED":
+                    st.session_state.pop("game.create_pending", None)
+                st.rerun()
+        if home_column.button(
+            "홈으로",
             key="result.home",
             use_container_width=True,
         ):
+            _invalidate_home_games()
             st.session_state["navigation.page"] = "home"
             st.session_state.pop("game.game_id", None)
             st.rerun()
-        st.caption("게임 기록과 결과는 설정에서 다시 확인할 수 있습니다.")
+        st.caption("게임 기록과 결과는 홈의 완료 게임 목록에서 다시 확인할 수 있습니다.")
+
+
+def _invalidate_home_games() -> None:
+    """게임 완료 직후 홈에 오래된 목록이 남지 않도록 목록 캐시만 비운다."""
+
+    for key in ("home.games", "home.games_error", "home.games_loaded_at", "home.games_loading"):
+        st.session_state.pop(key, None)
 
 
 def _render_failed(*, scenario: dict[str, Any]) -> None:
@@ -523,8 +569,7 @@ def _last_vote_label(*, result: dict[str, Any]) -> str:
     votes = _objects(result.get("votes"))
     if votes:
         vote = votes[-1]
-        phase = _phase_label(str(vote.get("phase", "")))
-        return f"라운드 {_record_round(vote.get('round'))} · {phase}"
+        return f"라운드 {_record_round(vote.get('round'))}"
     return "기록 없음"
 
 
@@ -554,17 +599,6 @@ def _objects(value: Any) -> list[dict[str, Any]]:
 
 
 def _display_timestamp(value: Any) -> str:
-    """시간대가 명시된 RFC 3339만 서울 시각으로 표시하고 무효값은 되출력하지 않는다."""
+    """결과 화면에서 사용하는 공통 시각 표시 함수의 호환용 진입점이다."""
 
-    # datetime의 관대한 ISO 파서에 맡기기 전에 시간대·초·offset 범위를 확인한다.
-    # 화면 시각은 표시 전용이며 종료 판정이나 서버 deadline을 변경하지 않는다.
-    if not isinstance(value, str) or not re.fullmatch(
-        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)",
-        value,
-    ):
-        return "확인할 수 없음"
-    try:
-        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return moment.astimezone(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S KST")
-    except (ValueError, OverflowError):
-        return "확인할 수 없음"
+    return display_timestamp(value)

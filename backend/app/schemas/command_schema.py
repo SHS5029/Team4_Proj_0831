@@ -3,7 +3,7 @@
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 CommandType = Literal[
     "BEGIN_GAME",
@@ -32,6 +32,27 @@ class GameCommandRequest(BaseModel):
     window_id: UUID | None = None
     target_player_id: UUID | None = None
     message: str | None = None
+    ability_id: Literal[
+        "night.attack.v1", "night.investigate.v1", "night.protect.v1", "vote.triple.v1",
+    ] | None = None
+
+    @model_validator(mode="after")
+    def validate_ability_command(self) -> "GameCommandRequest":
+        """사용 의사를 보낸 능력이 무관한 command에서 조용히 무시되지 않게 한다."""
+
+        if self.ability_id is not None:
+            expected = "SUBMIT_VOTE" if self.ability_id == "vote.triple.v1" else "SUBMIT_NIGHT_ACTION"
+            if self.type != expected:
+                raise ValueError("능력 ID와 command 종류가 일치하지 않습니다.")
+        return self
+
+    def receipt_body(self) -> dict[str, object]:
+        """기존 command의 멱등 hash에는 새 nullable 필드를 추가하지 않는다."""
+
+        body = self.model_dump(mode="json")
+        if self.ability_id is None:
+            body.pop("ability_id")
+        return body
 
 
 class CommandAcceptedData(BaseModel):

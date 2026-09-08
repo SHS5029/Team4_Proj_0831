@@ -7,9 +7,11 @@ from uuid import uuid4
 
 import streamlit as st
 
-from frontend_user.components.theme import render_page_navigation
+from frontend_user.components.theme import render_application_header, render_header_back_button
 from frontend_user.core.api_client import ApiClient, ApiResponseError, ApiUnavailableError
 from frontend_user.core.feedback import ALLOWED_TAGS, build_feedback
+from frontend_user.core.scenario_images import scenario_image_path
+from frontend_user.core.time_display import display_timestamp
 
 FEEDBACK_PAGE_CSS = """
 <style>
@@ -108,15 +110,12 @@ def render(
     # GAME feedback의 소유권·완료 여부·중복은 Backend가 최종 확인한다. 화면에 쓰는
     # snapshot은 직전 결과의 읽기 전용 설명일 뿐 feedback body나 Agent 입력에 섞지 않는다.
     st.markdown(FEEDBACK_PAGE_CSS, unsafe_allow_html=True)
-    st.markdown(
-        '<header class="feedback-header"><div><span class="feedback-brand">AI 마피아</span>'
-        '<span class="feedback-status">연결됨</span></div><nav class="feedback-nav">'
-        "<span>▣&nbsp; 피드백</span><span>⚙&nbsp; 설정</span></nav></header>",
-        unsafe_allow_html=True,
-    )
     is_game_feedback = feedback_type == "GAME"
-    render_page_navigation(
-        current_page="game_feedback" if is_game_feedback else "feedback"
+    render_application_header(
+        title="AI 마피아",
+        action_renderer=lambda: render_header_back_button(
+            current_page="game_feedback" if is_game_feedback else "feedback"
+        ),
     )
     st.markdown(
         '<div class="feedback-title">게임 피드백</div>'
@@ -191,13 +190,19 @@ def _render_game_summary(
     finished_at = result.get("finished_at")
 
     with st.container(key="feedback-game-summary", border=True):
-        st.markdown('<div class="feedback-scene" aria-hidden="true"></div>', unsafe_allow_html=True)
+        image_source = {**scenario, "title": title}
+        image_source.pop("scenario_title", None)
+        image_path = scenario_image_path(image_source)
+        if image_path is not None:
+            st.image(str(image_path), width="stretch")
+        else:
+            st.markdown('<div class="feedback-scene" aria-hidden="true"></div>', unsafe_allow_html=True)
         st.markdown(f"## {title}")
         st.success(winner)
         st.write(f"🚩 진행 라운드: {game.get('round', '-')}회")
         st.write(f"👥 플레이어 수: {len(players) if players else game.get('player_count', '-')}명")
         if isinstance(finished_at, str):
-            st.write(f"▣ 완료 시간: {finished_at.replace('T', ' ').removesuffix('Z')}")
+            st.write(f"▣ 완료 시간: {display_timestamp(finished_at)}")
         st.caption("게임 정보는 읽기 전용이며 피드백 본문에 포함되지 않습니다.")
 
 

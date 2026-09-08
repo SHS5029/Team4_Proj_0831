@@ -511,6 +511,8 @@ def _validate_turn(data: Any, envelope: dict[str, Any]) -> None:
         "REVOTE": ["propose_vote"],
         "FINAL_VOTE": ["propose_vote"],
     }[kind]
+    if envelope["phase"] == "DAY_DISCUSSION" and value["allowed_tools"] == ["propose_speech"]:
+        expected_tools = ["propose_speech"]
     if value["allowed_tools"] != expected_tools:
         raise WireContractError
     targets = value["valid_targets"]

@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from typing import Any
 from uuid import UUID
 
+from backend.app.game_engine.errors import RuleViolation
+from backend.app.game_engine.rules.vote_rules import vote_weight
 from backend.app.models.enums import GamePhase, GameStatus
 from backend.app.models.game_state import GameState
 
@@ -39,7 +41,7 @@ def resolution_payload(state: GameState, row: Mapping[str, Any]) -> dict[str, An
             raise ValueError("해소 원장 참가자가 올바르지 않습니다.")
         return str(parsed)
 
-    def choices(value: Any, *, investigation: bool = False) -> list[dict[str, Any]]:
+    def choices(value: Any, *, investigation: bool = False, ballots: bool = False) -> list[dict[str, Any]]:
         """개별 기록의 actor 중복과 boolean 암묵 변환을 차단한다."""
 
         if not isinstance(value, list):
@@ -52,6 +54,20 @@ def resolution_payload(state: GameState, row: Mapping[str, Any]) -> dict[str, An
                 raise ValueError("해소 행동 중복 또는 자동 선택 형식이 올바르지 않습니다.")
             seen.add(actor)
             entry = {"actor_player_id": actor, "target_player_id": identifier(item["target_player_id"]), "is_auto": item["is_auto"]}
+            if ballots:
+                # 저장된 숫자를 신뢰하지 않고 당시 phase와 불변 actor 능력으로
+                # 가중치를 재계산한다. 구형 ballot에는 ability_id가 없어도 된다.
+                if set(item) - {"actor_player_id", "target_player_id", "is_auto", "ability_id"}:
+                    raise ValueError("개별 표에 허용되지 않은 필드가 있습니다.")
+                ability_id = item.get("ability_id")
+                try:
+                    vote_weight(state, UUID(actor), ability_id, phase=phase)
+                except RuleViolation as exc:
+                    raise ValueError("확정 표의 능력이 actor 또는 단계와 다릅니다.") from exc
+                if ability_id is not None:
+                    if item["is_auto"]:
+                        raise ValueError("자동 표에는 능력을 적용할 수 없습니다.")
+                    entry["ability_id"] = ability_id
             if investigation:
                 if type(item["is_mafia"]) is not bool:
                     raise ValueError("조사 결과 형식이 올바르지 않습니다.")
@@ -61,10 +77,19 @@ def resolution_payload(state: GameState, row: Mapping[str, Any]) -> dict[str, An
 
     result = {"schema_version": 1, "round": round_number, "phase": phase.value}
     if phase is GamePhase.NIGHT_ACTION:
+        raw_protected = payload.get("protect_player_ids")
+        protected = (
+            [identifier(value) for value in raw_protected]
+            if isinstance(raw_protected, list)
+            else ([identifier(payload["protect_player_id"])] if payload["protect_player_id"] else [])
+        )
+        if len(set(protected)) != len(protected):
+            raise ValueError("보호 대상 집합에 중복이 있습니다.")
         result.update({
             "attack_choices": choices(payload["attack_choices"]),
             "resolved_attack_target_player_id": identifier(payload["resolved_attack_target_player_id"], nullable=True),
             "protect_player_id": identifier(payload["protect_player_id"], nullable=True),
+            "protect_player_ids": protected,
             "investigations": choices(payload["investigations"], investigation=True),
             "killed_player_id": identifier(payload["killed_player_id"], nullable=True),
         })
@@ -76,12 +101,15 @@ def resolution_payload(state: GameState, row: Mapping[str, Any]) -> dict[str, An
         human_id = next(player.player_id for player in state.players if player.kind.value == "HUMAN")
         record = CanonicalGameRecord(state, {}, human_id, UUID(int=0), "", "")
         public = _public_event_data("VOTE_RESOLVED", payload, record)
-        ballots = choices(payload["ballots"])
+        ballots = choices(payload["ballots"], ballots=True)
         counts = public["counts"]
+        weighted = [(ballot, vote_weight(state, UUID(ballot["actor_player_id"]),
+                                        ballot.get("ability_id"), phase=phase)) for ballot in ballots]
         for item in counts:
-            if item["vote_count"] != sum(ballot["target_player_id"] == item["target_player_id"] for ballot in ballots):
+            if item["vote_count"] != sum(weight for ballot, weight in weighted
+                                          if ballot["target_player_id"] == item["target_player_id"]):
                 raise ValueError("개별 표와 확정 득표수가 다릅니다.")
-        if len(ballots) != sum(item["vote_count"] for item in counts):
+        if sum(weight for _, weight in weighted) != sum(item["vote_count"] for item in counts):
             raise ValueError("확정 표 합계가 다릅니다.")
         tied_candidates = payload["tied_candidates"]
         maximum = max(item["vote_count"] for item in counts)
@@ -116,6 +144,8 @@ def build_result(state: GameState, *, resolutions: list[Mapping[str, Any]] | Non
         "players": [
             {"player_id": str(player.player_id), "display_name": player.display_name,
              "role": player.role.value, "alive": player.alive,
+             "role_name": player.custom_role_name,
+             "faction": player.faction.value,
              "eliminated_phase": eliminated[player.player_id][0] if player.player_id in eliminated else None,
              "eliminated_round": eliminated[player.player_id][1] if player.player_id in eliminated else None}
             for player in sorted(state.players, key=lambda item: item.seat)

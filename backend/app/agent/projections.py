@@ -212,7 +212,7 @@ def _turn_data(
     if subject_id in identifiers and not (kind == "NIGHT" and player.role is PlayerRole.DOCTOR):
         raise PermissionError("CAPABILITY_DENIED")
     if kind == "SPEECH":
-        if targets or str(window.get("turn_player_id")) != str(subject_id) or subject_id in state.speech_actors:
+        if targets or str(window.get("turn_player_id")) != str(subject_id) or (window.get("deadline_at") is None and subject_id in state.speech_actors):
             raise PermissionError("CAPABILITY_DENIED")
     elif kind == "NIGHT":
         if player.role not in {PlayerRole.MAFIA, PlayerRole.DETECTIVE, PlayerRole.DOCTOR} or subject_id in state.night_actions:
@@ -221,6 +221,8 @@ def _turn_data(
         if subject_id in state.votes:
             raise PermissionError("CAPABILITY_DENIED")
     deadline = window.get("deadline_at")
+    if kind == "SPEECH" and deadline is not None and (not isinstance(deadline, datetime) or deadline.utcoffset() is None or deadline <= now):
+        raise PermissionError("CAPABILITY_DENIED")
     if kind != "SPEECH" and (
         not isinstance(deadline, datetime) or deadline.utcoffset() is None
         or deadline <= now or not targets
@@ -232,9 +234,10 @@ def _turn_data(
         "cycle": window["cycle"],
         "opened_state_version": window["opened_state_version"],
         "server_time": now.astimezone(timezone.utc).isoformat(),
-        "deadline_at": deadline.astimezone(timezone.utc).isoformat() if kind != "SPEECH" else None,
+        "deadline_at": deadline.astimezone(timezone.utc).isoformat() if deadline is not None else None,
         "turn_player_id": str(subject_id) if kind == "SPEECH" else None,
-        "allowed_tools": list(TOOL_BY_WINDOW[kind]),
+        "allowed_tools": (["propose_speech"] if state.phase is GamePhase.DAY_DISCUSSION
+                          and state.day_number == 1 else list(TOOL_BY_WINDOW[kind])),
         "valid_targets": [
             {"player_id": str(candidate.player_id), "display_name": _text(candidate.display_name, 40)}
             for candidate in targets
@@ -255,7 +258,7 @@ def _persona_data(persona: Mapping[str, Any] | None) -> dict[str, Any]:
     if not isinstance(parameters, Mapping) or set(parameters) != keys or any(
         type(value) not in {int, float} or not isfinite(value) or not 0 <= value <= 1
         for value in parameters.values()
-    ) or parameters["reasoning_skill"] != 0.5:
+    ):
         raise PermissionError("CAPABILITY_DENIED")
     result["parameters"] = dict(parameters)
     return result

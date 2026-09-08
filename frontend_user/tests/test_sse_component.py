@@ -25,8 +25,9 @@ def test_sse_component_uses_browser_fetch_and_abortable_lifecycle() -> None:
     script = r"""
 import assert from 'node:assert/strict';
 const {default: render} = await import('data:text/javascript;base64,' + Buffer.from(SOURCE_TEXT).toString('base64'));
-globalThis.document = Object.assign(new EventTarget(), {visibilityState: 'visible'});
+globalThis.document = Object.assign(new EventTarget(), {visibilityState: 'visible', querySelector: () => null});
 globalThis.window = new EventTarget();
+globalThis.requestAnimationFrame = fn => setTimeout(fn, 0);
 Object.defineProperty(globalThis, 'navigator', {value: {onLine: true}, configurable: true});
 const requests = [], outputs = [];
 globalThis.fetch = (url, options) => {
@@ -39,7 +40,7 @@ const cleanup = render({
   data: {backend_url: 'http://127.0.0.1:8000', game_id: 'game-one', user_id: 'user-one',
     component_instance_id: 'component-one', scope_version: 'scope-one', schema_version: 1,
     last_sequence: 42, after_sequence: 42, after_state_version: 12, policy: POLICY_VALUE},
-  parentElement: {}, setStateValue: (key, value) => outputs.push({key, value}),
+  parentElement: {ownerDocument: document}, setStateValue: (key, value) => outputs.push({key, value}),
 });
 assert.equal(typeof cleanup, 'function');
 assert.equal(requests.length, 1);

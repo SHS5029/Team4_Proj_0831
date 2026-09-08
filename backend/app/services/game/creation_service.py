@@ -12,8 +12,8 @@ from psycopg.rows import dict_row
 from backend.app.game_engine.rng import DeterministicRng
 from backend.app.core.errors import ApiError
 from backend.app.infrastructure.transaction import lock_idempotency
-from backend.app.game_engine.engine import GameEngine
-from backend.app.models.enums import PlayerKind
+from backend.app.game_engine.engine import ROLE_COUNTS, GameEngine
+from backend.app.models.enums import Faction, PlayerKind, PlayerRole
 from backend.app.models.game_state import GameState
 from backend.app.repositories.player_repository import PlayerInsert, ScenarioFactInsert
 from backend.app.schemas.game_schema import CreateGameRequest
@@ -29,7 +29,12 @@ def create_game(
 ) -> tuple[dict[str, Any], bool]:
     """게임 생성에 필요한 모든 row와 공개 원장을 하나의 transaction으로 확정한다."""
 
-    request_hash_value = request_hash(payload.model_dump(mode="json"))
+    hash_body = payload.model_dump(mode="json")
+    if payload.mode == "STANDARD":
+        # migration 전 생성 요청·receipt와 동일한 hash를 유지한다.
+        hash_body.pop("mode", None)
+        hash_body.pop("custom_role", None)
+    request_hash_value = request_hash(hash_body)
     try:
         with service._transactions.transaction() as connection:
             with connection.cursor(row_factory=dict_row) as cursor:
@@ -118,6 +123,27 @@ def build_initial_game(
     )
     for player in state.players:
         player.display_name = f"플레이어 {player.seat}"
+    state.mode = payload.mode
+    if payload.custom_role is not None:
+        human = state.player_by_id[human_player_id]
+        desired_mafia = payload.custom_role.faction == "MAFIA"
+        human.role = PlayerRole.MAFIA if desired_mafia else PlayerRole.CITIZEN
+        mafia_count = ROLE_COUNTS[payload.player_count][0] - int(desired_mafia)
+        ai_roles = (
+            [PlayerRole.MAFIA] * mafia_count
+            + [PlayerRole.DETECTIVE, PlayerRole.DOCTOR]
+            + [PlayerRole.CITIZEN] * (payload.player_count - 3 - mafia_count)
+        )
+        ai_players = DeterministicRng(state.seed).shuffle(
+            [player for player in state.players if player.kind is PlayerKind.AI],
+            "custom-role-assignment",
+        )
+        for player, role in zip(ai_players, ai_roles, strict=True):
+            player.role = role
+        human.custom_role_name = payload.custom_role.name
+        human.custom_role_catalog_version = payload.custom_role.catalog_version
+        human.custom_ability_ids = tuple(payload.custom_role.ability_ids)
+        human.custom_faction = Faction(payload.custom_role.faction)
 
     candidates = service._scenarios.list_active(cursor, scenario_version=payload.scenario_version)
     last_scenario_id = service._scenarios.last_created_scenario_id(
@@ -157,6 +183,9 @@ def build_initial_game(
                 role=player.role.value,
                 faction=player.faction.value,
                 persona_id=persona_id,
+                custom_role_name=player.custom_role_name,
+                custom_role_catalog_version=player.custom_role_catalog_version,
+                custom_ability_ids=player.custom_ability_ids,
             )
         )
         fact_rows.append(

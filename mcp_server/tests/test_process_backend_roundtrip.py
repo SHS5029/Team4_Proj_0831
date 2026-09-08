@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import os
 import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import psycopg
 from backend.app.core.config import get_settings
+from backend.app.agent.orchestrator import AgentOrchestrator
+from backend.app.mcp.client import FastMcpGameContextClient
+from mafia_game.api.prompts.instructions import role_instruction
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MCP_ROOT = PROJECT_ROOT / "mcp_server"
@@ -67,13 +71,9 @@ def test_real_backend_and_fastmcp_process_roundtrip() -> None:
     backend = subprocess.Popen(  # noqa: S603 - 테스트가 직접 구성한 로컬 프로세스만 실행한다.
         [
             sys.executable,
-            "-m",
-            "uvicorn",
-            "backend.app.main:app",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(backend_port),
+            "-c",
+            "import uvicorn; from backend.app.main import create_app; "
+            f"uvicorn.run(create_app(enable_background_worker=False), host='127.0.0.1', port={backend_port})",
         ],
         cwd=PROJECT_ROOT,
         env={
@@ -126,13 +126,38 @@ def test_real_backend_and_fastmcp_process_roundtrip() -> None:
             snapshot = backend_client.get(f"/api/v1/games/{game_id}", headers=common_headers)
             assert snapshot.status_code == 200, snapshot.text
             game_data = snapshot.json()["data"]
-            # 첫 인간 차례는 중앙 AI worker가 소비할 수 없으므로 PASS 승인 증거가
-            # 다른 process의 AI 진행 속도에 따라 stale 거부로 바뀌지 않아야 한다.
+            # 이 테스트는 전송 계약만 검증하므로 worker를 끄고 동일 버전의 응답을 비교한다.
+            # 자유 토론에서는 AI 예약 중에도 인간 발언이 허용된다.
             human_id = game_data["me"]["player_id"]
-            assert game_data["action_window"]["turn_player_id"] == human_id
+            assert "SPEAK" in game_data["legal_actions"]
+            assert game_data["action_window"]["deadline_at"] is not None
             state_version = game_data["game"]["state_version"]
             window_id = game_data["action_window"]["window_id"]
             action_key = str(uuid4())
+            ai_id = next(player["player_id"] for player in game_data["players"] if player["kind"] == "AI")
+
+        async def read_agent_instructions():
+            """실제 두 서버를 거친 역할 지침이 Backend 소비 계약까지 통과하는지 확인한다."""
+
+            adapter = FastMcpGameContextClient(
+                f"http://127.0.0.1:{mcp_port}", user_id=user_id, game_id=UUID(game_id),
+                player_id=UUID(ai_id), phase="DAY_DISCUSSION", state_version=state_version,
+                window_id=UUID(window_id),
+            )
+            try:
+                return {scope: await adapter.get_context(capability="", scope=scope)
+                        for scope in ("me", "persona")}
+            finally:
+                await adapter.close()
+
+        context = asyncio.run(read_agent_instructions())
+        role = context["me"]["data"]["role"]
+        expected_instruction = role_instruction(role, "DAY_DISCUSSION")
+        assert context["me"]["data"]["agent_instruction"] == expected_instruction
+        request = AgentOrchestrator._request(context)
+        assert request.messages[1]["content"].count(expected_instruction) == 1
+        assert context["persona"]["data"]["agent_instruction"] in request.messages[1]["content"]
+        assert "agent_instruction" not in request.messages[2]["content"]
         initialize_body = {
             "jsonrpc": "2.0",
             "id": "initialize",
@@ -205,7 +230,7 @@ def test_real_backend_and_fastmcp_process_roundtrip() -> None:
         assert resource_payload["window_id"] == window_id
         assert "me" not in resource_payload["data"]
         assert prompt.status_code == 200
-        assert "게임 context" in prompt.json()["result"]["messages"][0]["content"]["text"]
+        assert "역할: CITIZEN" in prompt.json()["result"]["messages"][0]["content"]["text"]
         assert action.status_code == 200
         action_result = action.json()["result"]
         assert action_result.get("isError") is False

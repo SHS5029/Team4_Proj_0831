@@ -7,7 +7,7 @@ from html import escape
 
 import streamlit as st
 
-from frontend_user.components.theme import render_page_navigation
+from frontend_user.components.theme import render_application_header, render_header_back_button
 
 
 def render(pending: dict[str, object]) -> None:
@@ -28,7 +28,10 @@ def render(pending: dict[str, object]) -> None:
         """,
         unsafe_allow_html=True,
     )
-    render_page_navigation(current_page="creation_complete")
+    render_application_header(
+        title="AI 마피아",
+        action_renderer=lambda: render_header_back_button(current_page="creation_complete"),
+    )
     game_id = escape(str(pending.get("game_id", "확인 중")))
     snapshot = pending.get("snapshot")
     data = snapshot.get("data", snapshot) if isinstance(snapshot, Mapping) else {}
@@ -63,7 +66,7 @@ def render(pending: dict[str, object]) -> None:
             st.session_state["navigation.page"] = "game"
             st.rerun()
     with right:
-        if st.button("홈으로 돌아가기", key="creation.complete.home", width="stretch"):
+        if st.button("홈으로", key="creation.complete.home", width="stretch"):
             st.session_state["navigation.page"] = "home"
             st.session_state.pop("game.game_id", None)
             st.rerun()

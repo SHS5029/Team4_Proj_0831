@@ -2,299 +2,177 @@
 
 **AI 마피아**는 함께할 사람을 기다리지 않아도 1명의 인간 플레이어와 개성 있는
 여러 AI 플레이어가 바로 한 판을 완주할 수 있도록 만드는 소셜 디덕션 게임입니다.
-계획된 `mystery-v1`은 6~9명 규모의 마피아 게임에 다섯 개의 경량 사건 배경을
-결합합니다. AI별 말투·공격성·기만 표현은 달리하되 MVP 밸런스 검증 중 추론
-능력과 정보 접근 권한은 동일하게 유지합니다. 규칙과 승패는 Backend 게임 엔진이
-결정하고 LLM은 허용된 정보 안에서 대화와 선택만 담당합니다.
+`mystery-v1`은 6~9명 규모의 마피아 게임에 다섯 개의 경량 사건 배경을 결합합니다.
+AI별 말투·공격성·기만 표현은 달리하되 MVP 밸런스 검증 중 추론 모델과 정보 접근
+권한은 동일하게 유지합니다. 규칙과 승패는 Backend 게임 엔진이 결정하고 LLM은
+허용된 정보 안에서 대화와 선택만 담당합니다.
+
 제품 목표와 MVP 범위는
 [AI 마피아 MVP 공통 마스터플랜](docs/개발상세플랜/AI_MAFIA_MASTER_PLAN.md)을
-기준으로 합니다.
+기준으로 합니다. 개발하거나 기여하기 전에 반드시 [AGENTS.MD](AGENTS.MD)의
+브랜치, 커밋, 파일·디렉터리 구조, 테스트, 주석 및 문서화 규칙을 확인하세요.
 
-현재 저장소는 로그인 없이 브라우저가 생성·보관한 UUID `user_id`와
-`X-User-Id`로 사용자를 구분합니다. UUID는 인증 수단이 아니므로 신뢰된 로컬·사설망
-환경을 전제로 합니다. `mystery-v1` 규칙 엔진, PostgreSQL runtime과 AI 진행 worker는
-연결되어 있습니다. actor별 정보 격리, 마피아 전원 행동·재투표·최종 집계, 저장 후 재개와
-두 번째 새 게임 생성 흐름을 보완했습니다. 화면에는 AI별 처리 단계와 행동 요약을
-작게 표시하며 Backend 터미널과 순환 파일에서 같은 순서의 진행 기록을 확인합니다.
-버튼·입력 영역의 배경과 글자색도 함께 지정했습니다. 수정 내역과 검증 범위는
-[게임 테스트 보고서 8절](docs/AI_MAFIA_GAME_TEST_GAP_REPORT.md#8-수정권고-반영과-ai-진행-표시)을 참고하세요.
+날짜별 변경·검증 기록은 [docs/fix/](docs/fix/)에 모아 두었습니다.
 
-개발하거나 기여하기 전에 반드시 [AGENTS.MD](AGENTS.MD)의 브랜치, 커밋,
-파일·디렉터리 구조, 테스트, 주석 및 문서화 규칙을 확인하세요.
+## 주요 기능
 
-## 현재 구현 범위
-
-- UUID-only 사용자 Frontend의 홈·게임 진행·관전·서버 확정 결과·게임별 피드백 화면과 Backend 공개 API client
-- `POST /api/v1/feedback`의 PostgreSQL 영속 저장, 멱등 재생, 일반·게임별 피드백 검증
-- 브라우저 UUID v4 생성·보관과 `X-User-Id` 기반 사용자 구분
-- FastAPI 공개 게임 API와 UUID별 게임 소유권 확인
-- Frontend API client의 `/health`·`/ready` 상태 확인과 공개 API header·오류 계약 테스트
-- Backend 소유 PostgreSQL migration 실행 코드(MCP 섹터가 실제 실행)
-- 독립 관리자 Streamlit 앱과 후속 MCP 서버 예약 구조(`mcp_server/mcp_2`)
-- FastMCP 기반 `/mcp`와 최소 Resource·Prompt·Tool 등록부
-- FastMCP 등록부에서 Backend 게임 context·prompt·action endpoint로 전달하는 HTTP adapter
-
-개발 섹터 역할은 코드 소유권과 실행 환경 책임을 분리합니다. Backend 섹터는
-DB schema·migration SQL·repository와 Redis client·lock 코드를 작성하고, MCP
-섹터는 PostgreSQL·Redis 인스턴스 구축·기동·중지, DDL migrator와 DML runtime
-계정·권한 준비,
-migration 실행과 health 확인을 담당합니다. 실제 Backend 프로세스는 DB·Redis에
-직접 연결하며 MCP 서버를 데이터 프록시로 사용하지 않습니다.
-기존 `event_outbox`와 agent 관련 테이블·암호화 컬럼은 DB/migration 호환을 위해
-보존합니다. 신규 MVP 실행 경로의 게임 추적은 `game_events`와 `receipts`를
-사용하고, MCP는 FastMCP 표준 protocol session만 사용합니다.
-
-AI 진행 worker는 actor별 Resource → Provider → 검증된 Tool 제출 경로를 사용하고,
-read-only 관리자 API와 연결됩니다. 공개/본인/차례/persona 경계를 따로 검증하며
-GM 안내는 기본 이벤트 수준입니다. canonical game의 Redis publisher 자동 기동,
-LLM 비용·예산 집계와 별도 GM LLM 연출은 현재 범위에 포함하지 않습니다.
-
-게임 흐름용 `DeterministicGameAgent`는 DB reservation이나 lease 없이 Backend가
-제공한 context를 deterministic Fake Provider에 전달하고, 검증된 action만 Backend
-경계로 반환합니다.
-
-PostgreSQL에서는 검증된 AI SPEAK/PASS를 인간과 동일한 GameEngine 검증·transaction으로
-기록합니다. AI 원장의 source 값은 기존
-스키마 계약에 맞춘 `AGENT`입니다.
-
-Frontend sync는 Backend `game_events`의 operation `type`을 적용하며, DB·Redis를
-직접 호출하지 않습니다.
-
-인간 SPEAK/PASS와 행동 command는 자신의 제출만 PostgreSQL에 기록하고 즉시
-반환합니다. 중앙 `AiProgressWorker`가 열린 AI window를 비동기로 회복하며,
-LLM·MCP 실패 시에만 같은 command 경계의 deterministic fallback을 사용합니다.
-
-PostgreSQL snapshot은 생성 직후뿐 아니라 `DAY_DISCUSSION` 진행 상태도 복원합니다.
-새로고침 시 현재 `action_windows`와 토론 제출 원장을 다시 읽어 실제 window ID와
-인간 legal action을 반환하므로, 같은 게임을 이어서 테스트할 수 있습니다.
-밤 행동과 투표 command도 PostgreSQL action service를 통해 GameEngine과
-`action_submissions`·`game_events`에 연결되어 있습니다. 투표는 인간 표를 먼저
-원장에 기록하고 생존 AI 표를 이어서 수집한 뒤, 모든 생존자 표가 모였을 때만
-해소합니다. 현재 열린 투표 원장은 snapshot·worker 재시작 시에도 복원합니다.
-인간 시민의 밤은 별도 입력 없이 Backend가 자동 해소해 다음 낮으로 전환합니다.
-실제 PostgreSQL smoke에서 밤 행동과 다음날 투표 command 왕복을 확인했으며,
-재투표·승패 규칙과 종료 snapshot의 PostgreSQL smoke도 확인했습니다.
-2026-09-07에는 격리 DB와 dummy Provider의 실제 8인 게임을 최종 지목까지 완주했습니다.
-사망한 인간의 `FAST_FORWARD` command도 PostgreSQL action service에 연결했습니다.
-`SAVE_AND_EXIT`와 `RESUME`의 실제 PostgreSQL 왕복도 smoke로 확인했습니다.
-Backend는 서버 시작 시 중앙 `AiProgressWorker`를 실행해 열린 AI speech·night·vote
-window를 비동기로 회복합니다. phase 전환은 마지막 필수 actor 제출을 처리하는
-동기 PostgreSQL transaction에서만 수행합니다. 테스트 앱에서는 수동 command와의
-경쟁을 막기 위해 `enable_background_worker=False`를 사용할 수 있습니다. worker 장애는
-외부 예외 원문 없이 고정된 실패 단계로 기록합니다. 게임 진행과 AI 정보 확인·판단·
-행동 선택·적용은 Backend 터미널과 `backend/logs/game-progress.log`에 JSON 한 줄씩
-기록합니다. `run_id`는 서버 실행을, `sequence`는 그 실행 안의 발생 순서를 나타냅니다.
-로그 시각은 UTC이며 파일은 5 MiB마다 회전하고 이전 파일 3개를 보관합니다.
-실제 적용 성공은 DB transaction 성공 반환 뒤 기록하며 비공개 역할·밤 actor·대상,
-프롬프트·모델 내부 추론 원문을 기록하지 않습니다.
-게임 화면의 **AI 판단과 실행**에서 정보 확인 → 판단 → 선택 → 적용 순서와 공개
-판단 근거(공개 단서·진술 비교·확인 질문·근거 부족·추가 의견 없음)를 확인할 수 있습니다.
-근거는 모델이 선택한 제한된 유형의 요약이며 실제 사고 원문이나 사실 검증 결과가 아닙니다.
-모델의 자발적 PASS, 더미 고정 행동, 장애로 인한 규칙 대체를 구분하고, 적용 완료 후에도
-미완성 응답·인증·요청 제한·모델 접근·MCP 조회/제출 오류를 그대로 표시합니다.
-밤과 투표에는 기존처럼 개별 actor·역할·대상·응답 여부를 공개하지 않습니다.
-
-AI 프롬프트는 매 행동 전에 본인 역할을 확인하고, 역할 공개·은폐와 밤 능력을
-상황에 맞게 활용하도록 안내합니다. 탐정은 실제 조사 결과가 있으면 탐정임을 밝히고
-대상·조사 라운드·마피아 여부를 공개할 수 있습니다. 조사 결과가 `false`인 경우에는
-‘마피아가 아님’만 알 수 있으므로 시민·의사 등 특정 직업으로 단정하지 않습니다.
-의사는 보호 선택과 공개 위험을 고려하고, 시민은 진술 비교로 협력하며, 마피아는
-정체 은폐와 역할 위장을 활용합니다. 이는 모델의 발언 지침이며 역할 판정 규칙을 바꾸지 않습니다.
-페르소나의 말투·배경과 성향 수치를 질문 방식, 주장 강도, 감정, 협력, 발언 길이의
-구체적인 지침으로 연결해 캐릭터별 표현 차이를 강화합니다. 200자 제한은 유지합니다.
-종료 후 **▣ 게임 기록 보기**의 밤·투표 기록에는 밝은 회청색 카드와 짙은 글자색을
-함께 지정했습니다. 결과 요약 숫자와 보조 설명도 다크 테마에 영향을 받지 않도록
-색상을 지정해 밝은 카드에서 읽을 수 있게 했습니다.
-처형 투표·재투표·최종 지목의 행동 패널도 제목, 안내, 잔여 시간, 공개 요약과
-후보 이름·생존 표기를 검은색으로 지정해 흰 배경에서 읽을 수 있게 했습니다.
-이 색상 수정은 자동 테스트 없이 합성 투표 화면을 Chromium 다크 테마로 열어
-제목·안내·후보의 검은 글자와 선택 후 제출 버튼의 대비를 확인했습니다.
-
-2026-09-07 12:08~~12:19 산장 9인 게임 복기 후, `agent_personas.parameters`의
-기억 활용을 0.90~~0.98, 주장 강도를 0.65~0.90으로 높이고 캐릭터별 위험 감수·협력·
-참여도를 조정했습니다. 정확한 preset별 값은 마스터플랜 5.3절과 기존
-`004_seed_scenarios_and_personas.sql`에 있습니다. 의심·기만·감정·발언 길이와
-검증 계약의 `reasoning_skill=0.5`는 유지합니다. 이는 모델 추론 effort 설정이 아닙니다.
-프롬프트에는 발언자·원문 대조, 이미 답한 질문 반복 방지, 처형으로 뒷받침된 탐정
-보고의 신뢰도 갱신, 비공개 투표 이력 추측 금지, 마지막 판정에서의 결론 제시를
-반영했습니다. 의사는 다섯 번째 밤에도 신뢰할 탐정의 조사 전달 가치를 고려합니다.
-해당 게임이 저장된 로컬 Backend `18000`의 preset 5건과 content_hash를 한 transaction으로
-갱신하고 읽어 확인했습니다. 공유 DB에는 적용하지 않았습니다. persona는 매 context 조회에서
-읽으므로 다음 AI 판단부터 적용되며, 이전 완료 게임의 대사·투표·역할은 변경하지 않습니다.
-
-Agent의 구조화 응답 한도는 `LLM_MAX_OUTPUT_TOKENS=8192`이며 발언·밤 행동·투표와
-교정 요청에 같은 설정을 적용합니다. 추론 모델은 내부 추론도 이 예산을 사용합니다.
-대사 200자와 호출·job의 기존 시간 제한은 유지하므로 토큰 상향이 투표 마감 문제를
-해결하지는 않습니다. 설정 변경 뒤에는 Backend를 재시작해야 합니다.
-
-전체 공개 사건·발언은 `.env`의 `REDIS_URL`로 연결한 Redis에 게임별로 저장하며,
-Frontend snapshot과 AI public context가 같은 전체 이력을 읽습니다. 최근 일부 발언으로
-잘라 저장하지 않습니다. key는 `mafia:v1:conversation:{db_scope}:{game_id}`이며 DB 접속
-대상을 구분하는 namespace, 상태 버전·cursor·checksum과 7일 TTL을 사용합니다.
-소유권·현재 DB 버전을 확인한 후 공개 필드를 재검증하고, 캐시 누락·손상·장애 시
-PostgreSQL 전체 원장에서 복구합니다. PostgreSQL은 영구 원본이며 개인 정보 scope와
-비공개 역할 원장·모델 내부 추론은 이 캐시에 넣지 않습니다.
-
-같은 게임의 승패·투표 원장 검토 결과는 다음과 같습니다. 투표 실행 문제는 아래 후속
-병렬 투표 수정에 반영했고, 승패·최종 처형 상태 문제는 검토만 했습니다.
-
-- 마피아는 3·5번이었고, 다섯 번째 밤 이후 최종 지목에서 시민 7번이 선택되어
-`MAFIA / FINAL_NON_MAFIA_SELECTED`로 종료됐습니다. 현재 최대 5밤 규칙과 일치합니다.
-- **AI 투표 45표 중 28표가 AUTO**였습니다. 1라운드 일반·재투표는 AI 생성 작업 없이
-자동 선택됐고, 3라운드 일반·재투표는 일부 모델 응답이 마감 전에 완성돼도 batch에
-반영되지 않았습니다. 인간 표가 있어야 AI를 시작하는 조회 조건과 순차 생성 후 전체
-batch 저장 구조가 원인이었습니다. 파라미터 상향과 별도로 실행 구조를 수정했습니다.
-- 최종 지목은 7번의 `PLAYER_EXECUTED` 이벤트를 발행하지만 엔진이 생존 상태를 바꾸지
-않아 DB의 `alive=true`와 처형 표시가 불일치합니다. 승리 진영 계산에는 영향이 없으나
-결과 화면의 상태·생존자 수 정합성을 정리해야 하는 미수정 사항입니다.
-- 9번의 ‘2라운드에 6번 투표’ 발언은 실제 3번 투표와 달랐습니다. 자기 과거 투표가
-context에 없는데 발언으로 만들어 낸 사례여서, 공개 득표만으로 개인 표를 추정하지
-않도록 지침을 보완했습니다. 5번은 실제 마피아이므로 의도적인 혼란 유도와 시민의
-기억 오류를 같은 성향 수치로 평가하지 않습니다.
-
-이번 조정은 자동 테스트·추가 유료 게임 없이 소스·완료 게임 원장·설정 저장값을
-확인했습니다. 새 값의 실제 대사·승률 개선은 아직 측정하지 않았습니다.
-
-일반 투표·재투표·최종 지목은 window 시작부터 모든 미제출 AI가 병렬로 판단하고,
-완료된 표부터 개별 저장합니다. 사용자 투표를 기다리지 않으며 다른 AI의 실패로
-이미 저장된 표를 취소하지 않습니다. 투표 scheduler는 발언·밤 호출과 분리했고,
-command commit이 새 투표 조회를 깨웁니다. 미해소 AI 표는 공개 버전·event를 올리지
-않으며 인간이 같은 window에 첫 표를 제출한 경우의 한 버전 증가만 원장으로 검증해
-허용합니다. 마지막 제출·마감에서만 결과를 해소하고, deadline에는 미제출자만 자동
-선택합니다. 적용에는 Backend 재시작이 필요하며 새 환경 변수·migration은 없습니다.
-재현 조건·원인·해결 과정·실행 확인은
-[AI 병렬 투표 버그 리포트](docs/AI_MAFIA_PARALLEL_VOTE_BUG_REPORT.md)에 기록합니다.
-실제 로컬 9인 게임의 두 일반 투표에서 AI 7명·6명이 각각 0.141초·0.105초 간격 안에
-판단을 시작했습니다. 인간이 AI 전원 제출 뒤 투표한 경우와 AI 판단 도중 제출한 경우 모두
-AI 합계 13표가 AGENT로 저장됐고 AUTO는 0표였습니다. Frontend 화면도 확인한 뒤
-게임을 저장했습니다. 자동 테스트·lint·전체 회귀와 별도 장애 주입은 생략했습니다.
-
-최종 토론 snapshot도 현재 speech 제출 원장과 함께 복원됩니다.
-PostgreSQL sync의 공개 event와 action window payload도 Frontend 정본 구조로 변환됩니다.
-worker는 한 게임의 진행 오류가 다른 게임의 AI 진행을 막지 않도록 격리합니다.
-순수 규칙 엔진은 기존 `GameEngine` facade를 유지하면서 플레이어 검증·사망 처리·
-표준 승패·토론 입력·밤 역할 판정·투표 집계·replay 분기를
-`backend/app/game_engine/` 모듈로 이동했습니다. 실제 `GameEngine`, deterministic
-fallback, phase 전이 구현은 해당 package가 소유합니다. 기존 `agent/game_engine.py`, `fallback.py`, `state_machine.py`, `agent/rules/`는
-모든 호출부를 새 정본으로 전환한 뒤 제거했습니다.
-게임 API runtime은 router 전역 변수가 아니라 앱별 `app.state.game_runtime`에
-주입되며, 테스트 앱과 운영 앱의 상태가 서로 공유되지 않습니다. PostgreSQL 실행
-계층의 phase별 다음 행동 순서는
-`backend/app/services/game/turn_order_service.py`가, 행동 제한 시간과 deadline은
-`backend/app/services/game/action_timer_service.py`가 각각 담당하도록 분리하는
-구조를 사용합니다. `window_service.py`는 두 결과를 기존 `ActionWindowInsert`로
-조합하는 얇은 adapter로만 유지합니다. DB/API의 기존 `action_windows` 명칭은 저장
-계약 호환을 위해 유지합니다. 현재 실제 구현 상태와 실행 경로는
-[AI_MAFIA_CURRENT_CODE_STATUS.md](docs/AI_MAFIA_CURRENT_CODE_STATUS.md)에 기록합니다.
-AI worker의 시작·종료는 FastAPI lifespan에서 앱별 runtime과 함께 관리합니다.
-중앙 worker는 runtime facade의 AI 차례 조회·실행 메서드만 호출하며 PostgreSQL
-transaction이나 Repository를 직접 소유하지 않습니다.
-게임 실행 command의 공개 조합 경계는 `command_service.py`와
-`lifecycle_service.py`, 실제 transaction은
-`action_command.py`, `discussion_command.py`, `agent_discussion.py`, runtime 조합은
-`postgres_runtime.py`가 담당합니다. 생성 transaction은
-`services/game/creation_service.py`, 게임 목록·snapshot 조회와 순수 공개 projection은
-`services/game/game_read_service.py`, DB row 변환은
-`services/game/game_read_service.py`가 함께 담당합니다. event 조회·sync envelope와
-event row의 Front operation 변환은 `services/game/event_sync_service.py`에 둡니다.
-기존 `snapshot_service.py`와 `sync_service.py`는 전환 기간에만 호환 re-export로
-유지할 수 있습니다. 별도 projection 파일은 만들지 않습니다.
-`event_outbox`는 PostgreSQL event의 전달 원본으로 transaction에서 enqueue하며,
-`services/outbox_service.py`의 publisher가 Redis fan-out을 담당합니다. 현재
-publisher worker 자동 기동은 연결하지 않고, Redis 장애 시 DB 원본과 재처리 경계를
-유지합니다.
-MCP registry와 관리자 API 계약 테스트는 게임 실행 runtime과 분리된 synthetic
-adapter를 사용하며, 실제 게임 흐름은 PostgreSQL 정본 경로를 사용합니다.
-완료 게임 결과 projection은 `services/game/result_service.py`가 담당합니다. sync 조회와
-snapshot 변환은 새 모듈로 이동했으며, 생성 seed·시나리오·persona·단서 조합은
-`creation_service.py`, BEGIN_GAME·SAVE_AND_EXIT·RESUME transaction orchestration은
-`lifecycle_service.py`가 담당합니다. 기존 API 호환을 위한 facade 클래스는
-`game_service.py`에 유지합니다.
-`FINAL_DISCUSSION` snapshot에서 발언용 `legal_actions`와 `SPEECH` window가 누락되어
-마지막 토론이 멈추던 문제도 수정했으며, 서버를 종료한 상태의 PostgreSQL 전체 흐름
-smoke 4개가 통과했습니다.
-또한 밤 공격 후 메모리 상태만 변경되고 `game_players.alive`에 저장되지 않던 문제를
-수정해, 마피아 공격 결과가 다음 snapshot에도 유지되도록 했습니다.
-Frontend SSE bridge는 실제 변경이 있는 `envelope`와 제한된 진행 확인 tick을
-Streamlit component state로 전달합니다. 현재 cursor를 그대로 돌려주는 no-op 응답은 폐기하며,
-응답 stream이 종료되어도 마지막 `last_sequence`부터 자동 재연결해 phase 전환을
-반영합니다. Backend `/events`는 연결을 유지하면서 변경 batch만 push하고 15초
-간격 heartbeat만 보내므로, 변경 없는 stream 데이터가 페이지를 반복 rerun하지 않습니다.
-Backend 중앙 AI worker는 만료된 밤·일반/재/최종 투표 window도 조회합니다.
-이미 제출된 선택은 보존하고 무응답만 결정적 자동 선택으로 채워 해소합니다.
-게임 command Front guard는 입력 형식만 정규화하고, 현재 phase·turn·window·대상
-허용 여부는 Backend가 최신 transaction에서 최종 확인합니다.
-
-## 개발상세플랜 정본 (2026-09-03)
-
-중복·충돌하던 AI 마피아 계획과 계약을 `docs/개발상세플랜/`의 정본 문서로 통합했습니다.
-섹터별 담당자는 작업 전에 [AGENTS.MD](AGENTS.MD)와 해당 정본을 읽고, coding AI
-agent 한 세션을 마스터플랜의 WU 한 개 이하로 제한합니다.
-
-
-| 문서                                                                                           | 기록된 내용                                                        |
-| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| [AI_MAFIA_MASTER_PLAN.md](docs/개발상세플랜/AI_MAFIA_MASTER_PLAN.md)                               | 제품 규칙, 시나리오, 아키텍처, 보안 경계, 섹터 소유권, WU와 CP                      |
-| [AI_MAFIA_DB_DESIGN.md](docs/개발상세플랜/AI_MAFIA_DB_DESIGN.md)                                   | PostgreSQL·Redis schema, transaction, lock, migration과 보존 계약  |
-| [AI_MAFIA_API_SPEC.md](docs/개발상세플랜/AI_MAFIA_API_SPEC.md)                                     | 일반·관리자·내부 Engine HTTP API와 MCP Resource·Tool 계약               |
-| [AI_MAFIA_MCP_SERVER_DESIGN.md](docs/개발상세플랜/AI_MAFIA_MCP_SERVER_DESIGN.md)                   | MCP runtime 구조, 보안 경계와 WU-M1A~WU-M8 실행·검증 계획                  |
-| [AI_MAFIA_SCREEN_FLOW.md](docs/개발상세플랜/AI_MAFIA_SCREEN_FLOW.md)                               | UUID 초기화, 사용자 게임·관전·피드백과 관리자 화면 흐름                            |
-| [AI_MAFIA_FRONTEND_TECHNICAL_DESIGN.md](docs/개발상세플랜/AI_MAFIA_FRONTEND_TECHNICAL_DESIGN.md)   | Streamlit Front 전용 WU-F1~F8 기술 설계, 상태·동기화·협업 계약·보안·테스트·완료 기준  |
-| [AI_MAFIA_FRONTEND_BACKEND_HANDOFF.md](docs/개발상세플랜/AI_MAFIA_FRONTEND_BACKEND_HANDOFF.md)     | Frontend–Backend 공개 API, SSE·CORS, 오류·private 경계와 공동 완료 조건 요약 |
-| [AI_MAFIA_INDEPENDENT_CONTRACT.md](docs/개발상세플랜/AI_MAFIA_INDEPENDENT_CONTRACT.md)             | 세 섹터가 독립 구현할 때 공통으로 고정할 최소 연결 형식과 경계                          |
-| [AI_MAFIA_GAME_ENGINE_STRATEGY_DRAFT.md](docs/개발상세플랜/AI_MAFIA_GAME_ENGINE_STRATEGY_DRAFT.md) | 게임 엔진·Agent Manager 모듈화 전략 임시 초안                              |
-| [AI_MAFIA_CURRENT_CODE_STATUS.md](docs/AI_MAFIA_CURRENT_CODE_STATUS.md)                      | 현재 실제 코드 구조, 게임 흐름, 공개 API, 설정, 검증 결과와 제약                     |
-
-
-다섯 MCP Resource의 상세 `data` schema는 API 명세 8.2절과 그 절이 명시적으로
-참조하는 API 공통 모델만 정본이며 MCP 서버 설계서에는 URI·Engine scope 매핑과
-비규범 예시만 둡니다.
-
-문서 통합은 구현 완료 범위를 바꾸지 않습니다. 계약 변경은 영향받는 정본을 먼저
-갱신하고 세 섹터가 합의한 뒤 구현합니다.
-
-### 섹터별 독립 개발 기준
-
-Front, Backend, MCP·Data 담당자는 정본 문서의 예시와 필드·enum·오류코드를 기준으로
-각자 필요한 목데이터와 테스트 픽스처를 작성해 다른 섹터의 실행 프로세스 없이
-단위·계약 관련 테스트를 수행할 수 있습니다. 공통 fixture 파일이나 mock server를
-먼저 공동 작성하는 것은 필수 조건이 아닙니다.
-
-- Front는 snapshot·sync operation·오류·SSE fixture로 화면과 상태 처리를 검증합니다.
-- Backend는 synthetic 요청과 fake LLM/MCP transport로 엔진·공개 API·내부 API를
-검증합니다.
-- MCP는 정본의 세션 개설 토큰·session·Resource·Tool 계약과 fake Engine transport로
-runtime을 검증합니다.
-- 자체 fixture는 정본에 없는 필드·enum·상태 전이를 임의로 추가하지 않습니다.
-- 통합 기준은 각 섹터의 fixture가 아니라 Backend `/openapi.json`과 정본 문서입니다.
-- 공개 API, 내부 Engine API, MCP wire, DB schema 또는 화면 상태 소유권을 바꾸면
-구현 전에 영향받는 정본을 갱신하고 세 섹터의 합의를 거칩니다.
-
-따라서 독립 개발을 위해 별도 mock·fixture 체계를 먼저 완성할 필요는 없지만, 각
-섹터는 자체 fixture의 계약 근거와 검증 명령을 완료 보고에 남겨야 합니다.
-
-### 게임 규칙 계약 개정 (2026-09-02)
-
-기획안 전체와 공통·섹터별 상세 플랜을 대조해 다음 후속 구현 계약을
-`mystery-v1`·`scenario-v1`로 확정했습니다.
+### 게임 규칙 (mystery-v1 · scenario-v1)
 
 - 전체 6~9명, 탐정·의사·시민과 서로 정체를 모르는 마피아
-- 첫날 낮은 좌석순 기본 1회 발언 후 무투표로 밤에 진입
-- 텍스트 토론은 200자 이하의 턴 방식, 밤 행동은 20초·투표는 30초의
+- 첫날 낮은 1분 45초 자유 채팅 후 무투표로 밤에 진입
+- 첫날(Day 1)은 인간·AI 모두 발언 PASS 금지. AI 생성·MCP 조회 실패 시에는 사실을
+  단정하지 않는 짧은 질문을 사용합니다. 확인한 공개 이력의 질문은 중복을 피하고,
+  준비된 질문을 모두 사용하면 가장 오래된 질문부터 재사용하며, 이력이 없으면
+  게임·AI·발언 창별로 결정적으로 선택합니다. 이력 조회 자체가 실패하면
+  중복 방지를 보장할 수 없습니다. 둘째 날 이후 PASS 규칙은 유지합니다
+- 정상 생성한 대사는 MCP 제출 실패만으로 기본 대사로 바꾸지 않습니다. 최초 상태
+  버전·발언 창으로 같은 대사를 재제출하며, 이미 처리됐거나 차례가 바뀌면 기존 검증이 거부합니다
+- 게임·관리자 API의 동기 DB 작업은 별도 스레드에서 실행합니다. 브라우저 조회나
+  관리자 집계가 오래 걸려도 공용 이벤트 루프와 MCP 응답 처리를 막지 않습니다
+- 발언은 200자 이하, 플레이어별 최근 1분에 최대 7회. 밤 행동은 20초·투표는 30초의
 Backend 권위 deadline
 - 다섯 개 시나리오와 플레이어별 알리바이·관찰 정보를 검증된 seed 기반
 카탈로그로 배정하고 사용자별 직전 시나리오 제외
 - 최대 다섯째 밤 뒤 표준 승패가 없으면 최종 지목으로 종료
+- 투표·재투표·최종 지목은 모든 미제출 AI가 병렬로 판단하고 완료된 표부터 저장
 - 투표는 후보별 집계만 공개하고 밤 사망 역할은 숨기며 처형 역할만 공개
 - AI GM은 공개 확정 이벤트만 받고 전체 비공개 상태는 Backend만 보유
+- 저장한 게임은 이어서 재개할 수 있고, 사용자는 진행·저장 게임을 수동으로 삭제할 수 있습니다
+- `IN_PROGRESS` 게임은 마지막 사용자 command 뒤 15분간 새 사용자 command가 없으면
+중앙 worker가 자동 삭제합니다(SAVED·COMPLETED·FAILED는 자동 삭제하지 않음)
 
-이 규칙의 Backend 엔진·시나리오·deadline 코드와 테스트는 작성됐지만 실제 영속 API와
-Front·MCP 연결까지 완료됐다는 뜻은 아닙니다. 규칙 수준의 밸런스는
-유료 LLM 없이 6~9명별 heuristic bot 시뮬레이션으로 검증합니다. 실제 Provider smoke는
-명시적으로 opt-in한 소수 표본만 사용하며 token·비용 KPI를 만들지 않습니다.
-마스터플랜의 개인 정보 문장 예시를 바탕으로 `004_seed_scenarios_and_personas.sql`에
-최대 9좌석용 최소 90개 template record를 작성했습니다. 실제 환경에 적용하기 전에
-문장별 역할 중립성·무모순을 제품 검수해야 `scenario-v1` 콘텐츠가 완료됩니다.
+### 사용자 전용 커스텀 직업 (CUSTOM_ROLE)
+
+새 게임 화면에서 기본 `STANDARD` 또는 인간 한 명만 자유 직업을 갖는 `CUSTOM_ROLE`을
+선택합니다. 커스텀 생성은 `mode=CUSTOM_ROLE`과 `custom_role`의 `name`, `faction`
+(`CITIZEN`/`MAFIA`), `catalog_version=custom-role-v1`, 중복 없는 `ability_ids` 1~3개를
+보냅니다. 직업명은 NFC·공백 정규화 후 1~40자의 일반 표시 문자열이며 prompt로 사용하지
+않습니다. 기존 마피아 총수와 AI 탐정·의사 구성을 유지하고 승패는 저장 진영으로 판정합니다.
+
+`GET /api/v1/game-config/custom-role-abilities`를 `X-User-Id`로 조회하며 catalog는
+다음 다섯 항목으로 고정됩니다. Front는 ID·label·진영 배열의 누락·중복·미지 항목을
+거부하고 안전한 재시도를 제공합니다.
+
+| 능력 ID | label | factions | 동작 |
+| --- | --- | --- | --- |
+| `night.attack.v1` | 공격 | `[MAFIA]` | 자신 외 생존자 공격 |
+| `night.investigate.v1` | 조사 | `[CITIZEN, MAFIA]` | 자신 외 생존자의 진영 조사 |
+| `night.protect.v1` | 보호 | `[CITIZEN, MAFIA]` | 자신을 포함한 생존자 보호 |
+| `vote.triple.v1` | 투표 조작 | `[CITIZEN, MAFIA]` | DAY_VOTE·REVOTE에서 본인의 한 표를 3표로 제출 |
+| `intel.special_roles.v1` | 특수 직업 열람 | `[CITIZEN, MAFIA]` | 첫 밤 종료 후 다른 탐정·의사 조회 |
+
+시민은 공격을 선택할 수 없고, 마피아는 공격을 반드시 포함합니다. 밤 능력이 여러 개여도
+매일 밤 `me.ability_options`에서 **하나만** 선택해 대상과 `SUBMIT_NIGHT_ACTION`의
+`ability_id`를 제출합니다. 낮/조회 능력만 가진 시민은 밤 제출 대상에서 제외됩니다.
+STANDARD는 기존 역할 배정·밤 제출을 유지하며 능력 ID를 보내지 않습니다.
+
+생존한 능력 보유자는 DAY_VOTE·REVOTE 화면에서 일반 1표 또는 능력 3표를 선택합니다.
+능력 선택은 공개 `SUBMIT_VOTE`에 `ability_id=vote.triple.v1`을 함께 보내며 창당 첫
+유효 제출만 받습니다. 누적 강화는 없고 일반·자동 투표·FINAL_ACCUSATION은 1표입니다.
+최종 지목에는 능력 선택을 표시하지 않습니다. 원장의 능력 ID로 재개 후 같은 가중치를
+복원하며 공개 집계에는 후보별 가중 합계만 제공합니다.
+
+특수 직업 열람은 생존한 CUSTOM_ROLE HUMAN 능력 보유자의 `IN_PROGRESS` 게임에서
+`day_number >= 2`일 때 본인 private panel로 제공합니다. Front는
+`GET /api/v1/games/{game_id}/special-roles`에 `X-User-Id`를 보내고, Backend는 기존
+읽기 service에서 소유권·능력·상태를 검증합니다. 응답은 공통 success envelope와
+`Cache-Control: no-store`를 사용하며 소유권 불일치 404, 능력 불일치 403,
+상태·해금 조건 불충족 409도 저장하지 않습니다. 사망자를 포함한 다른 탐정·의사만
+반환하고 밤 행동 횟수를 소모하지 않습니다. 실패·identity/game/state 변경·사망·종료 시
+Front 결과를 폐기하고 늦은 응답도 차단합니다. AI context·공개 명부·timeline·analytics·
+공유 cache에 복제하지 않습니다.
+
+역할 공개에는 본인 직업명·진영·능력을 표시하고, 공개 자유 직업명은 처형 또는 종료
+후에만 표시합니다. 종료 화면은 custom `role_name`·`faction`을 우선하며 표시 문자열을
+escape합니다. private 조회 결과를 종료 결과에 합치지 않습니다.
+
+Front는 raw MCP Tool을 직접 호출하지 않습니다. 세 밤 능력은 logical
+`propose_night_action` 계약을 참조하며 기존 wire Tool은 `submit_action`입니다.
+내부 `manipulate_vote`는 `/internal/mcp/actions`에 투표 능력 ID를 고정 전달하고,
+`inspect_special_roles`는 `/internal/mcp/special-roles`로 위임합니다. 공개 조회는 MCP를
+경유하지 않습니다. MCP는 DB·Redis에 직접 접근하지 않고 AI Tool 권한을 확대하지
+않으며 기존 UUID 소유권·loopback 신뢰 경계를 유지합니다.
+
+코드 연결은 WU-B16·F11·M10·B17·F12에 반영됐고, 팀 DB의 010·011은
+2026-09-08에 적용했습니다. 현재 통합 검증 결과는 아래 테스트 절을 따릅니다.
+
+### AI 플레이어
+
+- 역할(시민·탐정·의사·마피아)별 전략과 승리 계획은 MCP의 프롬프트가 제공하고,
+  기본 LLM 모델과 정보 접근 권한은 모든 AI에 동일합니다
+- 성격(preset)별 `speech_style`·`backstory`·`parameters`는 team DB의
+  `agent_personas`에 배정된 값을 모델에 그대로 전달합니다
+- AI는 상대 답변에 대한 인정·반박·정정과 조건부 협력을 섞고, 의심 대상과 설득할
+  상대를 구분하도록 안내합니다. 모든 성격에 도발을 강제하지 않으며 말투·감정 표현은
+  배정된 페르소나와 상황에 맞춥니다
+- 마피아는 사실과 필요한 왜곡을 섞어 신뢰·표를 확보하고, 시민 진영은 오처형 위험을
+  고려해 미끼 주장을 사용합니다. 탐정은 조사 공개 시점, 의사는 보호 계획의 노출,
+  마피아는 공격과 낮 처형의 이득을 비교합니다. 실제 기록·타인의 주장·자신의 블러핑을
+  구분하며 역할·허용 행동·정보 권한과 첫날 SPEAK 의무는 유지합니다. 프롬프트 지침이므로
+  실제 대화 품질이나 승률 개선을 보장하지는 않습니다
+- 문구는 `mcp_server/mafia_game/api/prompts/instructions.py`에서 관리합니다.
+  실행 중인 MCP는 재시작해야 바뀐 지침을 다음 AI 판단부터 전달합니다
+- Backend 중앙 AI worker가 열린 AI 차례(발언·밤·투표)를 비동기로 회복하며,
+  LLM·MCP 호출 실패 시에만 같은 규칙의 결정적 fallback을 사용합니다
+- AI 판단 단계(정보 확인 → 판단 → 선택 → 적용)와 제한된 공개 판단 근거 요약을
+  게임 화면에서 확인할 수 있습니다
+- Agent 예약은 최대 40초이며 실제 게임 창 마감을 넘지 않습니다. MCP 조회·최초
+  모델 요청·교정 요청이 같은 잔여 시간을 사용하고 완료·제출용으로 3초를 남깁니다.
+  요청 취소를 삼킨 늦은 응답도 거부하며, 시작할 시간이 없으면 추가 요청 없이 폐기합니다
+- `FALLBACK`은 예약 완료가 승인된 대체 선택이며 실제 반영은 `APPLIED`와 DB event로
+  확인합니다. 만료·fencing 거부로 버린 시도는 `FALLBACK PASS` 선택으로 기록하지 않습니다.
+  `AGENT_GENERATION_FAILED` 내부 진단은 비공개 actor·원문 없이 고정 실패 코드만 남깁니다
+
+### 화면
+
+- **사용자 앱**: UUID 자동 생성, 홈(게임 목록·이어하기), 새 게임 생성·역할 공개,
+  게임 진행·관전, 결과·게임 기록, 일반·게임별 피드백
+- 토론 입력은 Enter로 순서대로 예약하며 실시간 대화·상태 갱신 중에도 유지합니다.
+  밤·투표는 선택 입력과 시계 갱신을 분리하고, 홈 이동 시 저장·이탈 확인을 제공합니다.
+  탐정의 조사 결과는 본인 화면에서만 별도로 표시합니다
+- **관리자 앱**(read-only): 게임 KPI·진영별 승률·페르소나별 AI 승률, 사용자 피드백,
+  관리자 감사 로그와 공개 AI 발언 분석을 네 탭으로 표시하고 30초마다 갱신합니다.
+  발언 분석은 `speech_analysis` 임베딩으로 유사 주제를 묶고 원문 키워드·stance·
+  대표 근거를 함께 보여 줍니다. 운영 에이전트 계획 탭은 제거됐으며 질문 API는
+  Backend 독립 계약으로 유지합니다
+- 공개 발언의 실시간 임베딩·주장 분석과 투표 보조 정보 표시(선택 기능,
+  기본 비활성)
+
+## 아키텍처 개요
+
+- **Backend**(FastAPI, `backend/`): 게임 엔진(`backend/app/game_engine/`),
+  PostgreSQL 게임 원장·snapshot·event, 공개/내부 HTTP API, 중앙 AI worker,
+  발언 분석 worker
+- **MCP server**(FastMCP, `mcp_server/mafia_game/`): AI에게 게임 context를 제공하는
+  Resource·Prompt·행동 위임 Tool. DB·Redis에 직접 접근하지 않고 Backend 내부
+  API만 호출합니다
+- **Frontend**(Streamlit): `frontend_user/`(사용자), `frontend_admin/`(관리자,
+  read-only). 둘 다 Backend만 HTTP로 호출하고 DB·Redis·MCP에 직접 접근하지 않습니다
+- **PostgreSQL**: 게임 원본(SQL 파일 001~011, 팀 DB의 010·011 적용 완료)
+- **Redis**: 전체 공개 대화 cache와 보조 계층
+
+Backend는 actor별 허용된 정보만 scope별로 투영하고, 밤 행동과 개별 투표는 게임
+종료 전에 공개하지 않습니다.
+
+## 개발 문서
+
+| 문서 | 기록된 내용 |
+| --- | --- |
+| [AI_MAFIA_MASTER_PLAN.md](docs/개발상세플랜/AI_MAFIA_MASTER_PLAN.md) | 제품 규칙, 시나리오, 아키텍처, 보안 경계, 섹터 소유권, WU/CP 정본 |
+| [AI_MAFIA_DB_DESIGN.md](docs/개발상세플랜/AI_MAFIA_DB_DESIGN.md) | PostgreSQL·Redis schema, transaction, lock, migration과 보존 계약 |
+| [AI_MAFIA_API_SPEC.md](docs/개발상세플랜/AI_MAFIA_API_SPEC.md) | 일반·관리자·내부 Engine HTTP API와 MCP Resource·Tool 계약 |
+| [AI_MAFIA_MCP_SERVER_DESIGN.md](docs/개발상세플랜/AI_MAFIA_MCP_SERVER_DESIGN.md) | MCP runtime 구조, 보안 경계와 WU-M1A~WU-M8 실행·검증 계획 |
+| [AI_MAFIA_SCREEN_FLOW.md](docs/개발상세플랜/AI_MAFIA_SCREEN_FLOW.md) | UUID 초기화, 사용자 게임·관전·피드백과 관리자 화면 흐름 |
+| [AI_MAFIA_FRONTEND_TECHNICAL_DESIGN.md](docs/개발상세플랜/AI_MAFIA_FRONTEND_TECHNICAL_DESIGN.md) | Streamlit Front 전용 WU-F1~F10 기술 설계 |
+| [AI_MAFIA_FRONTEND_BACKEND_HANDOFF.md](docs/개발상세플랜/AI_MAFIA_FRONTEND_BACKEND_HANDOFF.md) | Frontend–Backend 공개 API, SSE·CORS, 오류·private 경계 요약 |
+| [AI_MAFIA_INDEPENDENT_CONTRACT.md](docs/개발상세플랜/AI_MAFIA_INDEPENDENT_CONTRACT.md) | 세 섹터 독립 구현 시 공통 최소 연결 형식·경계 |
+| [AI_MAFIA_GAME_ENGINE_STRATEGY_DRAFT.md](docs/개발상세플랜/AI_MAFIA_GAME_ENGINE_STRATEGY_DRAFT.md) | 게임 엔진·Agent Manager 모듈화 전략 임시 초안 |
+| [AI_MAFIA_CURRENT_CODE_STATUS.md](docs/AI_MAFIA_CURRENT_CODE_STATUS.md) | 현재 실제 코드 구조, 게임 흐름, 공개 API, 설정, 검증 결과와 제약 |
+| [AI_MAFIA_CUSTOM_ROLE_MCP_TOOLS_SUMMARY.md](docs/AI_MAFIA_CUSTOM_ROLE_MCP_TOOLS_SUMMARY.md) | 사용자 전용 투표 조작·특수 직업 열람 툴의 구현·검증·남은 적용 작업 요약 |
+| [AI_MAFIA_AGENT_ARCHITECTURE_DESIGN.md](docs/AI_MAFIA_AGENT_ARCHITECTURE_DESIGN.md) | StateGraph 도입안: 분기·기억·도구·공유 상태·종료 조건 |
+
+다섯 MCP Resource의 상세 `data` schema는 API 명세 8.2절만 정본입니다.
+날짜별 변경·검증 내역은 [docs/fix/](docs/fix/)를 참조하세요.
 
 ## 프로젝트 구조
 
@@ -303,86 +181,72 @@ Front·MCP 연결까지 완료됐다는 뜻은 아닙니다. 규칙 수준의 �
 ├── AGENTS.MD                         # 개발·기여 작업 규칙
 ├── README.md                         # 전체 설정·실행·검증 안내
 ├── .env.example                      # Backend 환경 변수 예시
+├── run_openai.sh                     # macOS/Linux용 OpenAI Backend·MCP·Front 동시 실행
+├── run_openai.bat                    # Windows용 PowerShell 실행 진입점
+├── run_openai.ps1                    # Windows용 OpenAI Backend·MCP·Front 실행 로직
 ├── pyproject.toml                    # ai-mafia 통합 런타임·개발 의존성 및 도구 설정
 ├── backend/
 │   ├── app/main.py                   # FastAPI 생성과 router·오류 처리 등록
 │   ├── app/routers/                  # health·공개 게임·내부 Engine endpoint
 │   ├── app/schemas/                  # 요청·응답 validation 계약
 │   ├── app/services/                 # UUID 사용자·게임 유스케이스
-│   │   └── game/                     # 게임 업무 Service·Repository 조합·공용 계약
-│   │       ├── postgres_helpers.py   # PostgreSQL 상태 복원·replay 공통 helper
-│   │       ├── service_errors.py     # 엔진 오류·API 오류 변환
-│   │       ├── runtime_factory.py    # 게임 runtime·Agent adapter composition root
-│   │       ├── postgres_runtime.py   # router·worker가 호출하는 PostgreSQL facade
-│   │       ├── turn_order_service.py # 다음 행동 주체·순서·cycle 계산
-│   │       ├── action_timer_service.py # 행동 deadline·잔여 시간 계산
-│   │       ├── window_service.py     # phase별 action window 조합·검증
-│   │       ├── actor_context.py      # HUMAN·AGENT 공통 행동 주체 계약
-│   │       ├── game_read_service.py  # 게임 목록·snapshot 조회와 row 변환
-│   │       ├── event_sync_service.py # event 변환·sync envelope 조합
+│   │   └── game/                     # 게임 업무 Service·공용 계약
 │   ├── app/models/identity.py        # UUID 내부 사용자 모델
 │   ├── app/repositories/             # PostgreSQL CRUD·row 변환 저장소
 │   ├── app/infrastructure/           # migration·PostgreSQL·내부 HMAC 구현
-│   ├── app/agent/                    # Agent 정책·projection·orchestration (DB·Engine 런타임 import 없음)
-│   │   └── activity.py               # 공개 AI 진행 메모리와 비밀정보 없는 순차 로그
-│   ├── app/game_engine/               # 순수 게임 규칙·phase·결정적 RNG 정본 package (현재 phase가 행동 실행 포함)
+│   ├── app/agent/                    # Agent 정책·projection·orchestration
+│   ├── app/game_engine/              # 순수 게임 규칙·phase·결정적 RNG 정본 package
 │   ├── app/llm_provider/             # 현재 LLM Provider adapter
 │   ├── app/mcp/                      # Backend Agent용 MCP context client·registry
-│   ├── migrations/                   # Backend 작성 SQL migration(MCP 실행)
+│   ├── migrations/                   # Backend 작성 SQL migration(MCP 실행, 001~011)
 │   ├── logs/                         # 실행 시 생성되는 순환 진행 로그 (Git 제외)
 │   ├── tests/
 │   └── README.md
 ├── frontend_user/
 │   ├── app.py                        # UUID bootstrap·화면 dispatcher
-│   ├── app_pages/home_page.py         # 게임 목록·이어하기 홈
-│   ├── app_pages/game_create_page.py  # 새 게임·인원 선택·생성 UI
-│   ├── app_pages/settings_page.py    # UUID 확인·복구·교체 화면
-│   ├── components/identity_bridge.py # 브라우저 local storage UUID bridge
-│   ├── components/theme.py           # 사용자 화면 공통 시각 토큰·접근성 스타일
-│   ├── components/browser_components/identity/ # 정적 UUID bridge
-│   ├── core/identity.py              # UUID v4 검증·생성
-│   ├── core/session.py               # identity scope·session mirror
-│   ├── core/api_client.py            # UUID 공개 Backend API client
+│   ├── app_pages/                    # 홈·생성·역할 공개·게임·결과·피드백·설정 화면
+│   ├── components/                   # identity bridge·테마·투표 보조 등 공통 UI
+│   ├── core/                         # identity·session·api_client·sync
 │   ├── .streamlit/secrets.toml.example
 │   └── tests/
-├── frontend_admin/                   # read-only 관리자 대시보드·게임 목록·상세
+├── frontend_admin/                   # read-only 관리자 운영 분석·발언 분석·피드백·로그
 ├── mcp_server/
-│   ├── pyproject.toml, uv.lock        # Python 3.12·MCP SDK 1.29.1 독립 실행 환경
+│   ├── pyproject.toml, uv.lock       # Python 3.12·MCP SDK 1.29.1 독립 실행 환경
 │   ├── mafia_game/                   # 최소 FastMCP 등록부·Backend HTTP adapter
-│   ├── tests/                        # 등록·adapter·ASGI 왕복 테스트
+│   ├── tests/
 │   └── mcp_2/                        # 후속 MCP 독립 예약 패키지
 ├── docs/
+│   ├── fix/                          # 날짜별 변경·검증 기록 모음
 │   ├── AI_MAFIA_GAME_TEST_GAP_REPORT.md # 게임 테스트 관점 미구현·미연결·규칙 차이 점검표
 │   ├── AI_MAFIA_PARALLEL_VOTE_BUG_REPORT.md # 자동 투표 원인·병렬 처리 수정·실행 확인
-│   ├── AI_MAFIA_UI_UX_PLAYTEST_REPORT.md # 실제 6인 게임 UI·UX 관찰·정본 대조·개선 우선순위
-│   └── 개발상세플랜/
-│       ├── AI_MAFIA_MASTER_PLAN.md    # 제품 규칙·시나리오·아키텍처·WU/CP 정본
-│       ├── AI_MAFIA_DB_DESIGN.md      # PostgreSQL·Redis 정본
-│       ├── AI_MAFIA_API_SPEC.md       # 공개·내부·MCP API 정본
-│       ├── AI_MAFIA_MCP_SERVER_DESIGN.md # MCP runtime·Data WU 구현 설계
-│       ├── AI_MAFIA_SCREEN_FLOW.md    # 사용자·관리자 화면 정본
-│       ├── AI_MAFIA_FRONTEND_TECHNICAL_DESIGN.md # Front WU-F1~F8 파생 기술 설계안
-│       ├── AI_MAFIA_FRONTEND_BACKEND_HANDOFF.md # Frontend–Backend 연동 인계 요약
-│       └── AI_MAFIA_INDEPENDENT_CONTRACT.md # 섹터 간 최소 연결 형식·독립 개발 규칙
+│   ├── AI_MAFIA_UI_UX_PLAYTEST_REPORT.md # UI·UX 관찰·정본 대조·개선 우선순위
+│   └── 개발상세플랜/                  # 위 개발 문서 표의 정본
 └── scripts/                          # 운영·개발 보조 스크립트
 ```
 
+## 시작하기
+
+### 사전 준비
+
+- Python 3.12 이상
+- PostgreSQL 서버와 데이터베이스 생성 권한(MCP 섹터 운영 책임)
+- Redis 실행 환경(MCP 섹터 운영 책임)
+- 권장 패키지 관리자: [uv](https://docs.astral.sh/uv/)
+
+모든 명령은 저장소 루트에서 실행합니다.
+
 ### 로컬 가상환경과 의존성 준비
 
-2026-09-07 macOS에서 Python 3.12.11로 다음 환경을 준비했습니다. 기존 루트·MCP
-환경은 재사용하고 나머지 환경은 컴포넌트의 의존성 파일에 맞춰 생성했습니다.
+| 위치 | 용도·설치 기준 |
+| --- | --- |
+| `.venv` | 통합 환경, 루트 `pyproject.toml`·`uv.lock`의 dev 포함 |
+| `backend/.venv` | `backend/requirements.txt`, pytest·pytest-asyncio·httpx2 포함 |
+| `frontend_user/.venv` | `frontend_user/requirements-dev.txt` |
+| `frontend_admin/.venv` | `frontend_admin/requirements.txt`와 테스트용 `pytest>=8,<9` |
+| `mcp_server/.venv` | 독립 `pyproject.toml`·`uv.lock`의 dev 포함, MCP SDK 1.29.1 |
 
-
-| 위치                     | 용도·설치 기준                                                    |
-| ---------------------- | ----------------------------------------------------------- |
-| `.venv`                | 기존 통합 환경, 루트 `pyproject.toml`·`uv.lock`의 dev 포함             |
-| `backend/.venv`        | `backend/requirements.txt`, pytest·pytest-asyncio·httpx2 포함 |
-| `frontend_user/.venv`  | `frontend_user/requirements-dev.txt`                        |
-| `frontend_admin/.venv` | `frontend_admin/requirements.txt`와 테스트용 `pytest>=8,<9`      |
-| `mcp_server/.venv`     | 독립 `pyproject.toml`·`uv.lock`의 dev 포함, MCP SDK 1.29.1       |
-
-
-기존 환경을 삭제하거나 덮어쓰지 않고, 없는 컴포넌트 환경만 `uv venv --python 3.12 <컴포넌트>/.venv`로 만듭니다. 설치·갱신은 저장소 루트에서 다음과 같이 수행합니다.
+기존 환경을 삭제하거나 덮어쓰지 않고, 없는 컴포넌트 환경만
+`uv venv --python 3.12 <컴포넌트>/.venv`로 만듭니다. 설치·갱신:
 
 ```bash
 uv sync --locked --dev
@@ -392,22 +256,7 @@ uv pip install --python frontend_admin/.venv/bin/python -r frontend_admin/requir
 uv sync --project mcp_server --locked --dev
 ```
 
-루트 dev에 `httpx2`를 추가하고 merge 이후 불일치하던 lock을 갱신했습니다.
-컴포넌트 requirements는 범위 설치이므로 루트 lock 환경과 패치 버전이 다를 수 있습니다.
-각 환경의 `uv pip check --python <환경>/bin/python`은 모두 통과했습니다.
-
-로컬 `.vscode/settings.json`, `.zshenv`, `.zshrc`, `project-venv.zsh`는 macOS의 새
-VS Code 터미널에서 사용자 shell 초기화 뒤 가장 가까운 `.venv`를 선택합니다.
-루트는 통합 환경, `cd backend`·`frontend_user`·`frontend_admin`·`mcp_server`는 각
-환경으로 전환하고 저장소 밖에서는 관리하던 환경을 해제합니다. 새 터미널과 폴더
-이동으로 `VIRTUAL_ENV`·`sys.executable`을 확인했습니다. `.vscode/`와 가상환경은
-Git 제외 대상인 로컬 설정입니다. 기존 터미널은 새로 열어야 하며 외부 터미널에서는
-`source backend/.venv/bin/activate`처럼 직접 활성화합니다.
-
-### Windows 컴포넌트별 설치
-
-Windows에서는 컴포넌트별 환경을 분리합니다. 기존 `.venv`가 있으면 삭제하지
-않고 재사용하며, 반드시 환경 내부 Python으로 설치합니다.
+Windows에서는 컴포넌트별 환경을 분리하고 반드시 환경 내부 Python으로 설치합니다:
 
 ```powershell
 & ".\backend\.venv\Scripts\python.exe" -m pip install -r ".\backend\requirements.txt"
@@ -415,207 +264,11 @@ Windows에서는 컴포넌트별 환경을 분리합니다. 기존 `.venv`가 �
 & ".\frontend_admin\.venv\Scripts\python.exe" -m pip install -r ".\frontend_admin\requirements.txt"
 ```
 
-이번 환경 준비는 macOS에서 수행했습니다. Windows 환경 및 PowerShell 자동
-전환 스크립트는 이번에 준비·검증하지 않았습니다.
+### 사용자 식별
 
-현재 일반 사용자 Frontend는 WU-F1 UUID-only bootstrap과 공통 화면 테마를 사용합니다. 브라우저
-저장 key는 `ai_mafia_user_id_v1`이며, Backend에는 UUID를 `X-User-Id` header로만
-전달합니다. 홈·게임·피드백 화면은 화면 정본의 상태 표현과 반응형·접근성 스타일을
-공유하며, 게임 상태와 결과의 원본은 계속 Backend snapshot입니다.
-
-Backend의 현재 게임 API는 canonical `mystery-v1` 계약을 사용하고, Backend에 남아 있는
-기존 migration 이력의 `scaffold_*` schema는 보존하지만 runtime에서는 사용하지 않습니다.
-Frontend의 Scaffold 전용 실행 경로와 client는 제거되었으며, Backend의 게임 API는
-PostgreSQL 정본 runtime만 사용합니다. 따라서 화면 확인과 API 테스트 전에 PostgreSQL
-migration과 연결 환경을 준비해야 합니다.
-관리자 통계 화면은 종료된 게임만 분석하며, 종료 게임이 없을 때는 빈 통계를 오류로
-표시하지 않고 안내 문구를 보여줍니다.
-
-관리자 화면에서는 Backend `ADMIN_USER_IDS`에 이미 등록된 UUID를 직접 입력하고
-확인한 뒤 적용합니다. 브라우저 저장 응답과 Backend 권한 확인이 끝나야 데이터가
-표시되며, 거부되면 UUID 교체나 재시도를 할 수 있습니다. 목록의 상태·단계 필터는
-실제 API query에 전달하고 `game_id` 주소로 상세를 다시 열 수 있습니다.
-UUID를 입력하는 것만으로 관리자 권한이 등록되지는 않습니다.
-
-`frontend_user`와 `frontend_admin`은 Backend만 HTTP로 호출합니다. Frontend가 DB,
-Redis, MCP 서버에 직접 연결하거나 MCP 서버끼리 서로의 내부 모듈을 import하지
-않습니다. MCP 섹터가 DB·Redis 실행 환경을 운영해도 `mcp_server/mafia_game`
-runtime은 DB·Redis에 직접 접근하지 않습니다.
-
-MCP 구현부터 `mcp_server/`를 독립 프로젝트 루트, `mafia_game`을 공식 Python import
-package로 사용합니다. composition root는 `mafia_game/main.py`, module 진입점은
-`mafia_game/__main__.py`, package test 위치는 `mcp_server/tests/`로 고정했습니다.
-독립 `pyproject.toml`과 `uv.lock`은 Python 3.12와 MCP SDK 1.29.1을 정확히 고정합니다.
-현재 runtime은 FastMCP 표준 session을 사용하며 별도 bootstrap·HMAC·capability
-registry를 구현하지 않습니다. Resource template은
-`mafia://context/current/{game_id}/{user_id}`와
-`mafia://context/scoped/{game_id}/{user_id}/{player_id}/{scope}`이며 두 Resource는
-`application/json`을 반환합니다. Prompt는 `agent_instruction`, Tool은 `submit_action`입니다.
-AI는 자기 actor의 public/me/turn/persona를 차례로 조회하고 명시적인 Tool 승인과
-window/version 일치를 확인합니다. 시각은 UTC RFC 3339의 `Z`와 `+00:00`을 허용합니다.
-
-## 사전 준비
-
-- Python 3.12 이상
-- PostgreSQL 서버와 데이터베이스 생성 권한(MCP 섹터 운영 책임)
-- Redis 실행 환경(MCP 섹터 운영 책임, 게임 기능 구현 단계부터 필요)
-- 권장 패키지 관리자: [uv](https://docs.astral.sh/uv/)
-
-모든 명령은 저장소 루트에서 실행합니다.
-
-```bash
-uv sync --dev
-```
-
-기존 LLM adapter는 선택한 Provider key를 사용합니다. 실제 값은 `.env.example`의
-placeholder만 참고하고 Git에 넣지 않습니다.
-
-## Backend·Data Infrastructure 환경 설정
-
-기존 `.env`에는 다른 로컬 설정이나 비밀값이 있을 수 있으므로 덮어쓰지 마세요.
-아래 복사는 현재 로컬 개발용 placeholder 시작점일 뿐입니다. 운영에서는
-`.env.example` 전체를 한 프로세스에 로드하지 않고 아래 allowlist대로 필요한
-키만 비밀 저장소나 프로세스 환경으로 주입합니다.
-
-```bash
-cp .env.example .env
-chmod 600 .env
-```
-
-필수·기본 설정은 다음과 같습니다.
-
-```dotenv
-DATABASE_URL=postgresql://app_user:change-me@localhost:5432/Team4_Proj
-DATABASE_MIGRATION_URL=postgresql://migration_user:change-me@localhost:5432/Team4_Proj
-DATABASE_NAME=Team4_Proj
-```
-
-- `TEAM_DATABASE_URL`에는 실제 원격 PostgreSQL의 DML 최소 권한 계정을 설정합니다.
-`TEAM_DATABASE_URL`이 없을 때만 `DATABASE_URL`을 로컬 테스트 fallback으로 사용합니다.
-- `TEAM_DATABASE_URL`이 설정되면 URL의 database path를 보존하며, 원격 검증 대상은
-`DATABASE_NAME`으로 덮어쓰지 않습니다.
-- `DATABASE_MIGRATION_URL`은 migration runner에 필수인 전용 DDL 연결입니다.
-runtime DSN으로 대체하지 않으며 Backend runtime 프로세스에는 전달하지 않습니다.
-- `DATABASE_URL` fallback일 때만 URL의 DB 경로를 `DATABASE_NAME`으로 바꿉니다.
-`DATABASE_NAME` 기본값은 `Team4_Proj`입니다.
-- 최소 FastMCP process는 `BACKEND_API_URL`, `MCP_LISTEN_HOST`, `MCP_LISTEN_PORT`만
-읽습니다. 기본 Backend 주소는 `http://127.0.0.1:8000`, MCP 주소는
-`http://127.0.0.1:8100/mcp`입니다. 현재 연결은 loopback 개발용이며 인증·TLS·운영
-보안은 이 최소 전환 범위에 포함하지 않습니다.
-- Backend 중앙 AI worker는 `MCP_SERVER_URL`로 FastMCP 서버 주소를 주입받아
-context 조회와 Agent action 전달에 사용합니다. MCP가 중지되거나 LLM 호출이
-실패하면 현재 AI speech window는 기존 규칙 기반 PASS fallback으로 종료됩니다.
-- LLM Provider 설정은 `config.py`에서 선택값과 모델·필수 키를 검증합니다.
-`LLM_PROVIDER=dummy`는 발언에 고정 PASS를 반환하는 테스트 전용 제공자입니다.
-실제 추론은 선택한 Local/OpenAI/Gemini adapter를 사용합니다. 이번 수정의 외부 호출은
-fake로 검증했으며 실제 모델의 발언 품질은 별도 실행 확인이 필요합니다.
-앱 수준의 token 사용량 집계·비용·게임별 예산 설정은 MVP에서 사용하지
-않습니다. 중단된 Agent worker는 조정 불가능한 고정 lease와 fencing token으로
-회수하며, 만료·실패한 동일 AI job은 다음 예약 시 lease를 재사용해 재시도할 수
-있습니다. LLM·MCP 호출 동안 PostgreSQL transaction이나 Redis
-game lock을 보유하지 않습니다.
-- Local Provider는 OpenAI 호환 `/chat/completions` 형식과 JSON 응답을 사용합니다.
-게임 proposal 요청에서는 `think=false`를 사용해 불필요한 reasoning 출력을 끕니다.
-모든 제공자에 역할·발언 목적·현재 job의 JSON schema를 전달합니다. 밤 행동·투표에서
-잘못된 PASS나 허용되지 않은 대상을 반환하면 한 번 교정하고, 실패 시 `FALLBACK`으로
-구분합니다. 대체 대상은 승인된 후보 UUID를 정렬한 뒤 게임·window·actor·행동 종류로
-결정적으로 선택해 후보 순서와 첫 좌석으로의 편향을 없앱니다. 합법 대상이 없으면
-선택을 만들지 않습니다. 정상 모델 선택은 그대로 유지합니다.
-- OpenAI 추론 모델(`gpt-5*`, `gpt-6*`, `o1*`, `o3*`, `o4*`)에는 낮은 reasoning effort와
-기본 8192토큰(`LLM_MAX_OUTPUT_TOKENS`)의 출력 여유를 적용하며 설정값이 작아도
-최소 4096토큰을 확보합니다. 기존 400토큰은 추론 중 소진되어
-최종 JSON이 나오지 않을 수 있습니다. `incomplete`는 별도 오류로 구분하며 자동
-Provider 전환은 하지 않습니다. SDK 자동 재시도를 끄고 `store=False`로 요청합니다.
-근거: [OpenAI 추론·출력 한도 문서](https://developers.openai.com/api/docs/guides/reasoning#allocating-space-for-reasoning).
-출력 토큰 설정과 프롬프트 수정 반영에는 Backend 재시작이 필요합니다.
-실제 Local endpoint가 실행되지 않은 환경에서는 유료 API 없이 fake transport로
-성공·timeout·잘못된 응답 처리를 검증합니다. Ollama 호환 서버에는
-`response_format=json_object`를 요청하고 Backend가 최종 proposal schema를 검증합니다.
-- FastMCP 전환은 `mcp_server/mafia_game/main.py`의 독립 composition 경계에서 실행되며,
-최소 Resource·Prompt·AI 행동 요청 Tool 등록과 initialize·호출·Backend 오류 왕복을
-`mcp_server/tests/test_fastmcp_roundtrip.py`에서 ASGI fixture로 검증합니다.
-- 기존 custom bootstrap·HMAC·nonce·session registry runtime은 제거되었으며, MCP protocol
-session은 FastMCP SDK 경계에서만 관리합니다.
-- FastMCP 계획은 Resource·Prompt·Tool 컨텍스트 제공에 집중하며, Tool의 행동 판정과
-상태 변경은 Backend가 담당합니다. MCP 내부 HMAC·bootstrap·session 상태 머신은
-FastMCP 전환 범위에서 제외합니다.
-- 기존 FastMCP 전환안은 보관용입니다. 현재 Resource data와 scope 계약은
-`docs/개발상세플랜/AI_MAFIA_API_SPEC.md` 8.2절을 따릅니다.
-- MCP 테스트는 등록부·adapter·ASGI 왕복을 대상으로 하며 Backend 회귀 테스트와 함께
-실행합니다.
-- 현재 MVP 동기화는 PostgreSQL `game_events` polling을 정본으로 사용하며, 기존
-`event_outbox`는 migration·호환 구조로 보존합니다. `LLM_MAX_OUTPUT_TOKENS`는
-실제 Agent 요청에 적용하고 legacy timeout·비용 단가는 사용하지 않습니다.
-- 기존 DB 게임 흐름 smoke test는 `py -m pytest backend/tests/test_postgres_game_flow.py -q`로
-실행합니다. 테스트는 고유 UUID와 실행 ID를 사용하고 종료 시 생성한 사용자·게임·Redis
-키만 정리합니다.
-- 최소 FastMCP는 `BACKEND_API_URL`을 Backend base URL로 사용하고 `/internal/mcp/*`
-경로를 호출합니다. MCP endpoint는 `MCP_LISTEN_HOST`와 `MCP_LISTEN_PORT`로 정합니다.
-- Backend는 `CORS_ALLOWED_ORIGINS`에 등록된 Front origin에만 SSE fetch preflight와
-동기화 header를 허용합니다. 활성 밤·투표 window의 `remaining_ms`는 저장된
-`deadline_at`을 기준으로 매 snapshot마다 계산하며, sync cursor 불일치 시 전체
-snapshot으로 복구합니다.
-
-
-| 환경 소비자            | 허용하는 AI 마피아 관련 키                                                                                                                                                          | 주입 금지                                       |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
-| Front 서버          | Backend URL                                                                                                                                                               | DB·Redis·LLM·MCP/Engine secret              |
-| Backend runtime   | `TEAM_DATABASE_URL`, `DATABASE_URL`, `DATABASE_NAME`, `REDIS_URL`, game state keyring, LLM Provider·model·key, `ADMIN_USER_IDS`, `MCP_SERVER_URL`, `CORS_ALLOWED_ORIGINS` | `DATABASE_MIGRATION_URL`, MCP runtime 전용 설정 |
-| migration 실행 프로세스 | `DATABASE_MIGRATION_URL`, 비교용 `TEAM_DATABASE_URL`/`DATABASE_URL`·`DATABASE_NAME`                                                                                          | LLM·MCP secret                              |
-| MCP runtime       | `BACKEND_API_URL`, `MCP_LISTEN_HOST`, `MCP_LISTEN_PORT`                                                                                                                   | DB·Redis·LLM·인증 secret                      |
-
-
-로컬에서도 실 자격증명을 채운 공용 루트 `.env`를 Backend와 MCP가 함께 읽게 하지
-않습니다. migration 자격증명은 migration 명령 프로세스에만 일시 주입하고, MCP
-서버는 자체 allowlist 밖 환경변수를 읽지 않도록 fail-closed합니다.
-
-섹터 작업에서는 MCP 담당자가 PostgreSQL·Redis를 구축하고 실제 접속 값을 비밀
-채널로 Backend 담당자에게 제공합니다. Backend 담당자는 제공받은 URL을 소비하며
-DB·Redis 프로세스를 직접 설치·기동하지 않습니다. 실제 URL·비밀번호는 문서,
-로그, 완료 보고에 기록하지 않습니다.
-
-`Team4_Proj` 데이터베이스는 앱이 만들지 않습니다. MCP 담당자가 migration 전에
-관리 도구로 데이터베이스, DDL migrator 계정과 DML runtime 계정을 분리해
-준비합니다. schema 생성·변경 권한은 migrator에만, 애플리케이션에 필요한
-테이블 DML 권한은 runtime에만 부여합니다.
-
-## 데이터베이스 마이그레이션
-
-Backend가 작성·소유하는 `backend/migrations/`의 SQL을 MCP 담당자가 이름순으로
-실행합니다. 아래 명령은 Backend 실행기를 사용하지만 실행 책임은 MCP 섹터에
-있습니다.
-
-일반 `Settings.from_env()`와 `get_settings()`는 DDL 환경키를 조회하거나 보관하지
-않습니다. CLI만 `Settings.from_migration_env()`로 별도 설정을 만들며 runtime 캐시를
-재사용하지 않습니다. runner는 전용 `DATABASE_MIGRATION_URL`만 DDL 연결에 사용합니다. runtime effective DSN과
-percent-decoding한 DB 경로를 대소문자까지 비교하며 불일치하면 연결 전에 거부합니다.
-URL의 계정·경로를 query로 덮어쓰는 옵션은 거부하고 `sslmode` 같은 일반 옵션은
-보존합니다. host·port의 물리적 동일성은 보장하지 않으므로 실행 담당자가 대상 서버와
-DDL 권한을 확인해야 합니다. 전용 DSN과 비교용 runtime DSN은 migration 프로세스에만
-필요 범위로 주입하고 실제 값은 shell history·로그·문서에 남기지 않습니다.
-CLI는 성공 시 SQL 파일명과 개수, 실패 시 고정 메시지와 실패 종료 코드만 출력합니다.
-
-```bash
-uv run python -m backend.app.infrastructure.migrations
-```
-
-현재 seed 정본은 `004_seed_scenarios_and_personas.sql` 하나이며, 중복된 `004` 번호의
-seed 파일을 함께 두지 않습니다. `001`·`002` migration은 legacy `users`·`oauth_identities`와 `scaffold_*` 게임
-테이블을 생성합니다. `003_create_mystery_v1_schema.sql`은 기존 객체와 데이터를
-삭제하지 않고 `users.last_seen_at`을 보강한 뒤
-[DB 설계 정본](docs/개발상세플랜/AI_MAFIA_DB_DESIGN.md)의 canonical `mystery-v1`
-테이블, 복합 FK, 상태 제약과 조회 index를 순방향으로 추가합니다.
-`004_seed_scenarios_and_personas.sql`은 정본 시나리오 5개, 시나리오별 알리바이 9개와
-관찰 9개로 구성된 최소 90개 문장, 최소 활성 persona 한 개를 고정 key 기반으로
-멱등 등록하고 콘텐츠 SHA-256 hash와 승인 시각을 기록합니다. legacy cleanup은 아직
-포함하지 않으며, 적용된 migration 파일은 수정하지 않고 이후 번호의 순방향
-migration으로 확장합니다.
-
-## Frontend 설정
-
-Frontend는 Google 로그인 없이 브라우저 localStorage에 UUID v4를 저장하고,
-Backend 요청의 `X-User-Id` header로 사용자 scope를 전달합니다. UUID는 인증 수단이
-아니므로 신뢰된 로컬·사설망 환경에서만 사용합니다. Backend 주소만 설정합니다.
+로그인 없이 브라우저가 생성·보관한 UUID v4 `user_id`와 `X-User-Id` header로
+사용자를 구분합니다(저장 key: `ai_mafia_user_id_v1`). UUID는 인증 수단이 아니므로
+신뢰된 로컬·사설망 환경에서만 사용합니다.
 
 ```bash
 cp frontend_user/.streamlit/secrets.toml.example \
@@ -625,245 +278,329 @@ chmod 600 frontend_user/.streamlit/secrets.toml
 
 실제 `.env`와 `secrets.toml`은 Git 무시 대상이며 이동·커밋하지 않습니다.
 
+## 환경 설정
+
+### Backend·Data Infrastructure
+
+기존 `.env`에는 다른 로컬 설정이나 비밀값이 있을 수 있으므로 덮어쓰지 마세요.
+아래 복사는 로컬 개발용 placeholder 시작점입니다. 운영에서는 프로세스별
+allowlist만 주입합니다(아래 표).
+
+```bash
+cp .env.example .env
+chmod 600 .env
+```
+
+필수·기본 설정 예시:
+
+```dotenv
+TEAM_DATABASE_URL=postgresql://runtime_user:change-me@remote-host:4000/Team4_Proj
+DATABASE_MIGRATION_URL=postgresql://migration_user:change-me@remote-host:4000/Team4_Proj
+DATABASE_NAME=Team4_Proj
+AI_MAFIA_STORAGE_MODE=team
+```
+
+- `TEAM_DATABASE_URL`의 팀 DB가 기본 테스트 DB입니다. DB 조사·실제 게임·DB 연동
+검증을 여기서 진행하며, 실제 `.env`에는 로컬 DB URL을 두지 않습니다. DML 최소 권한
+계정을 설정하고 다른 테스트의 게임·자료는 임의로 변경하지 않습니다.
+- 기존 `DATABASE_URL` fallback은 별도 로컬 작업을 명시적으로 선택할 때만 사용합니다.
+- `DATABASE_MIGRATION_URL`은 migration runner 전용 DDL 연결입니다. runtime DSN으로
+대체하지 않으며 Backend runtime 프로세스에는 전달하지 않습니다.
+- `run_openai.sh`의 `AI_MAFIA_STORAGE_MODE` 기본값은 `team`(공유
+`TEAM_DATABASE_URL` 사용)입니다. `isolated`는 별도 로컬 작업을 명시적으로 요청한
+경우에만 선택합니다.
+- LLM Provider는 `LLM_PROVIDER`로 `dummy`(테스트 전용 고정 PASS)·`local`·`openai`·
+`gemini` 중 하나를 선택하고, `config.py`가 모델·필수 키를 검증합니다.
+- `LLM_TIMEOUT_SECONDS`(기본 30초)는 모든 중앙 Agent의 요청별 상한입니다. 실제
+요청은 창·예약 마감에서 완료·제출 여유 3초를 뺀 잔여 시간보다 길게 실행하지 않습니다.
+3초는 여유이며 DB·네트워크 지연에도 제출 완료를 보장하는 값은 아닙니다. 늦은 제출은
+기존 마감·상태 검증으로 거부합니다. OpenAI의 `high` 추론 노력과 출력 한도는 유지합니다.
+- Backend 중앙 AI worker는 `MCP_SERVER_URL`로 FastMCP 서버를 호출합니다.
+- Backend는 `CORS_ALLOWED_ORIGINS`에 등록된 Front origin에만 SSE fetch preflight와
+동기화 header를 허용합니다.
+- 공개 발언 분석은 `SPEECH_ANALYSIS_ENABLED=false`가 기본이며, 활성화하려면
+migration 006·008 적용과 [.env.example](.env.example)의 `SPEECH_ANALYSIS_*` 설정이
+필요합니다.
+
+| 환경 소비자 | 허용하는 AI 마피아 관련 키 | 주입 금지 |
+| --- | --- | --- |
+| Front 서버 | Backend URL | DB·Redis·LLM·MCP/Engine secret |
+| Backend runtime | `TEAM_DATABASE_URL`, `DATABASE_URL`, `DATABASE_NAME`, `REDIS_URL`, game state keyring, LLM Provider·model·key, `ADMIN_USER_IDS`, `MCP_SERVER_URL`, `CORS_ALLOWED_ORIGINS` | `DATABASE_MIGRATION_URL`, MCP runtime 전용 설정 |
+| migration 실행 프로세스 | `DATABASE_MIGRATION_URL`, 비교용 `TEAM_DATABASE_URL`/`DATABASE_URL`·`DATABASE_NAME` | LLM·MCP secret |
+| MCP runtime | `BACKEND_API_URL`, `MCP_LISTEN_HOST`, `MCP_LISTEN_PORT` | DB·Redis·LLM·인증 secret |
+
+## 데이터베이스 마이그레이션
+
+Backend가 작성·소유하는 `backend/migrations/`의 SQL을 MCP 담당자가 이름순으로
+실행합니다.
+
+```bash
+uv run python -m backend.app.infrastructure.migrations
+```
+
+- `001` legacy `users`·`oauth_identities`, `002` scaffold `scaffold_*` 게임 테이블(보존, 미사용)
+- `003_create_mystery_v1_schema.sql`은 canonical `mystery-v1` 테이블을 순방향 추가
+- `004_seed_scenarios_and_personas.sql`은 정본 시나리오 5개·알리바이·관찰 문장·persona를 멱등 등록
+- `005_create_admin_knowledge_schema.sql` 관리자 운영 에이전트 색인(pgvector 필요)
+- `006_create_speech_analysis.sql` 발언 분석 파생 저장소(pgvector 비의존)
+- `007_add_stale_game_cleanup.sql` `games.last_user_action_at` 추가와 15분 무동작 정리 index
+- `008_allow_public_human_speech_analysis.sql` 공개 사용자 발언 분석 허용
+- `009_update_persona_reasoning_skill.sql` persona 추론 수치·내용 hash 갱신
+- `010_add_custom_role.sql` 게임 mode, HUMAN custom snapshot, 제출 ability_id 추가
+- `011_add_custom_role_tool_abilities.sql` HUMAN VOTE의 `vote.triple.v1` CHECK 확장
+
+**팀 DB 적용 기록 (2026-09-08):** 사용자 승인으로 설정된 `DATABASE_MIGRATION_URL`의
+대상 DB 경로와 DDL 권한을 확인한 뒤, 서비스를 중지하고 **010 → 011**만 적용했습니다.
+임시 디렉터리에 두 SQL만 연결해 기존 001~009를 다시 실행하지 않았습니다. 동일 순서
+재실행도 통과했으며 새 열 5개·검증된 CHECK 3개, 기존 테이블 행 수, 기존 게임의
+`STANDARD` 기본값과 custom/ability 열의 `NULL` 보존을 확인했습니다.
+
+위 기본 runner는 디렉터리의 전체 SQL을 이름순 실행하므로 이미 운영 중인 DB에서는
+적용할 파일 범위를 먼저 확정해야 합니다. runtime DSN으로 DDL 설정을 자동 대체하지
+않으며 URL과 자격 증명은 로그에 출력하지 않습니다. 다른 환경도 Backend·MCP를
+최신 코드로 실행하기 전에 010·011을 적용해야 합니다.
+
+자세한 기본값·권한 분리는 [.env.example](.env.example)과
+[DB 설계 정본](docs/개발상세플랜/AI_MAFIA_DB_DESIGN.md)을 참고하세요.
+
 ## 실행
 
-### 브라우저 게임 1회 검증과 후속 수정 (2026-09-07)
+### 한 번에 실행 (OpenAI)
 
-후속 수정은 [보고서 8절](docs/AI_MAFIA_GAME_TEST_GAP_REPORT.md#8-수정권고-반영과-ai-진행-표시)에
-기록합니다. UUID 초기 응답 전 API 요청을 막고 localStorage 복구 확인 뒤 사용자 scope를
-교체하며, 홈 목록 cache와 UUID 표시를 함께 초기화합니다. 새 게임은 성공 직후 실제
-참가자 이름이 있는 완료 화면으로 이동하고 이전 생성 결과를 재사용하지 않습니다.
-홈은 최신 20개에서 상태별 최대 3개를 표시하고 수동 새로고침·홈 이탈·30초 경과 뒤
-다음 진입에서 목록을 갱신합니다. TTL이 만료돼도 기존 카드와 홈·설정 입력을 먼저
-처리하고 홈에 남아 있을 때만 목록을 조회하므로 첫 클릭이 사라지지 않습니다.
-일반 피드백도 홈 버튼에서 열 수 있습니다.
+```bash
+./run_openai.sh --check  # 유료 API 호출 없이 세 런타임 설정·import 검증
+./run_openai.sh          # Backend·MCP·Front 동시 실행
+```
 
-진행 로그는 저장소 루트에서 다음 명령으로 순서대로 확인할 수 있습니다.
+Windows PowerShell 또는 명령 프롬프트에서는 다음처럼 실행합니다.
+
+```bat
+run_openai.bat --check
+run_openai.bat
+```
+
+동시 실행 주소: Backend `http://127.0.0.1:18000`, MCP
+`http://127.0.0.1:18100/mcp`, Front `http://127.0.0.1:18501`.
+다른 프로젝트와 포트가 겹치면 `AI_MAFIA_BACKEND_PORT`·`AI_MAFIA_MCP_PORT`·
+`AI_MAFIA_FRONTEND_PORT`로 바꿀 수 있습니다.
+
+Backend는 `backend/app` 안의 코드 변경만 `--reload`로 반영합니다. Front·테스트 편집은
+Backend를 재시작하지 않습니다. MCP 프롬프트·adapter는 자동 재적재하지 않습니다.
+MCP 변경 후에는 실행 터미널에서 `Ctrl+C`로 종료하고 `./run_openai.sh`로 전체 재시작합니다.
+
+두 실행 스크립트의 기본 저장소 모드는 `team`입니다. 명시적 `isolated`는
+`AI_MAFIA_DATABASE_URL`·`AI_MAFIA_REDIS_URL`을 사용하며 같은 팀 DB를 격리 DB로
+지정하면 거부합니다. Windows `--check`는 필수 환경값 읽기와 import만 검사하고,
+설정 객체·DB·Redis·migration·seed·API 연결은 검사하지 않습니다. macOS/Linux
+`--check`는 선택한 DB·Redis와 seed 준비 상태까지 읽기 전용으로 검사합니다.
+
+### 개별 실행
+
+```bash
+# Backend (dummy Provider로 첫 검증)
+LLM_PROVIDER=dummy .venv/bin/python -m uvicorn backend.app.main:app --reload --port 8000
+
+# MCP server
+(cd mcp_server && .venv/bin/python -m mafia_game)
+
+# 사용자 Front
+uv run streamlit run frontend_user/app.py --server.port 8501
+
+# 관리자 Front (실제 API 모드 예시)
+BACKEND_API_URL=http://127.0.0.1:18000 ADMIN_DEMO_MODE=false \
+  frontend_admin/.venv/bin/python -m streamlit run frontend_admin/app.py \
+  --server.address 127.0.0.1 --server.port 8502 --server.headless true
+```
+
+health 주소: 수동 Backend `http://127.0.0.1:8000/health`, 동시 실행
+`http://127.0.0.1:18000/health` → `{"status":"ok"}`.
+
+진행 로그 확인:
 
 ```bash
 tail -f backend/logs/game-progress.log
 ```
 
-`STARTED → CONTEXT_READY → DECIDING → DECIDED → APPLIED`가 정상 AI 처리 흐름이며,
-기본 행동·오류·중복은 `FALLBACK`·`FAILED`·`SKIPPED`로 구분합니다. dummy Provider는
-고정 행동임을 설명에 표시합니다. 공개 발언 진행 표시는 게임당 최근 50건, 최대
-128게임의 메모리에 한정하고 서버 재시작 시 비워집니다. 영구 게임 이력은 DB의
-공개 이벤트와 확정 행동 원장에서 복원합니다.
+관리자 앱의 실제 조회는 Backend `ADMIN_USER_IDS`에 등록된 UUID가 필요합니다.
+Backend·UUID 없이 화면만 확인하려면 `ADMIN_DEMO_MODE=true`로 실행하면 합성
+데이터가 표시됩니다(실제 권한 검증을 대신하지 않습니다).
 
-Agent가 선택을 마쳤어도 실제 행동 저장에 실패하면 같은 게임·window·version의
-미제출 작업만 lease 반환 또는 만료 후 재시도합니다. 저장된 선택은 Provider를 다시
-호출하지 않고 검증해 사용하며, 이미 제출된 행동이나 지난 window에는 적용하지 않습니다.
+### Backend와 관리자 Front만 실행
 
-이번 수정 검증은 기존 데이터와 분리한 임시 PostgreSQL에서 진행했습니다. 검증용
-사용자 화면은 [http://127.0.0.1:18501](http://127.0.0.1:18501), 관리자 화면은 [http://127.0.0.1:18502](http://127.0.0.1:18502)이며,
-Backend/MCP는 각각 18000/18100 포트입니다. 모두 loopback에서 실행하고 dummy Provider를
-사용합니다. 임시 DB는 `team4-game-qa-20260907` 컨테이너이며 종료 시 데이터가 사라집니다.
-실제 `.env`·secrets·운영 계정·keyring은 변경하지 않았습니다. 기존 설정을 사용하는
-8000/8100 Backend·MCP도 수정 코드와 dummy Provider로 재시작했으며, 일반 사용자
-접속 포트는 8501입니다. 대량 테스트와 migration은 격리 QA DB에서만 실행했습니다.
-
-처음 실행한 6인 게임의 발견 사항은 보고서 7절에 보존했습니다. 수정 후에는 별도의
-**8인·인간 시민 게임**에서 생성·발언·저장·재개·투표·사망 후 관전·최종 지목·피드백을
-진행했습니다. 낮 6일차/라운드 5의 최종 지목 실패로 마피아 승리가 확정됐고, 밤 기록
-5개·투표 기록 5개·공개 이벤트 83개가 결과에 남았습니다. 결과에서 새 6인 게임을
-만들어 탐정 조사 표시·저장 재개·사망 후 빠른 진행 선택과 종료도 확인했습니다.
-탐정 결과는 본인 정보 영역에서 이름·밤 번호·마피아 여부로 표시합니다. 결과의
-마지막 투표 표시는 해당 투표의 round/phase를 사용하며 실제 종료 원인과 구분합니다. 실제 LLM 품질이나 모든
-역할의 사람 입력을 이 한 판에서 검증한 것은 아닙니다.
-
-2026-09-07에는 같은 격리 환경의 Orca 내장 브라우저에서 **6인·인간 탐정 게임**을
-추가로 완주해 UI·UX를 점검했습니다. 생성·발언·저장·재개·자동 밤 행동·투표·결과
-기록은 정상 동작했지만, 누적 타임라인 아래에 인간 행동 패널이 묻혀 탐정 조사와
-낮 투표를 놓치고 자동 선택으로 처리되는 문제를 확인했습니다. 실게임 근거, 화면
-정본 대비 차이와 WU별 개선 순서는
-[UI·UX 플레이테스트 보고서](docs/AI_MAFIA_UI_UX_PLAYTEST_REPORT.md)에 기록했습니다.
-
-홈을 제외한 새 게임 설정·생성 완료·역할 공개·게임 진행·결과·일반 및 게임별 피드백
-화면에는 공통 `뒤로가기`와 `홈` 버튼이 표시됩니다. 뒤로가기는 검증된 앱 내부 방문
-기록을 따르고 기록이 없으면 홈으로 이동합니다. 홈 이동은 진행 게임·작성 중 입력과
-결과 불명 요청을 보존하고 홈 목록 cache만 무효화해 최신 게임 상태를 다시 조회합니다.
-두 버튼은 모바일에서도 유지됩니다.
-
-### 직접 실행
-
-MCP 담당자가 전용 테스트 PostgreSQL·Redis의 대상과 migration·seed 상태를 확인한
-뒤 Backend를 실행합니다. Backend worker는 DB에 열린 AI 차례를 처리하므로 공유
-게임 데이터와 분리된 환경을 사용합니다. 첫 게임 검증은 dummy Provider로 진행합니다.
+기존 `run_openai.sh` 실행은 해당 터미널의 `Ctrl+C`로 Backend·MCP·사용자 Front를
+함께 종료하고, 별도로 실행한 관리자 Front도 종료합니다. 아래 명령은 저장소 루트의
+서로 다른 터미널에서 실행합니다. Backend는 `.env`의 팀 DB와 관리자 allowlist를
+사용하며, 관리자 조회에 필요 없는 게임·발언 분석 백그라운드 worker는 시작하지 않습니다.
 
 ```bash
-LLM_PROVIDER=dummy .venv/bin/python -m uvicorn backend.app.main:app --reload --port 8000
+# Backend: 관리자 조회용으로 백그라운드 게임 진행을 중지한 상태로 실행합니다.
+CORS_ALLOWED_ORIGINS=http://127.0.0.1:18502,http://localhost:18502 \
+  .venv/bin/python -c 'import uvicorn; from backend.app.main import create_app; uvicorn.run(create_app(enable_background_worker=False), host="127.0.0.1", port=18000)'
+
+# 관리자 Front: 기존 Backend의 실제 관리자 API에 연결합니다.
+BACKEND_API_URL=http://127.0.0.1:18000 ADMIN_DEMO_MODE=false \
+  .venv/bin/python -m streamlit run frontend_admin/app.py \
+  --server.address 127.0.0.1 --server.port 18502 --server.headless true
 ```
 
-`http://127.0.0.1:8000/health`의 정상 응답은 `{"status":"ok"}`입니다.
-
-Mafia Game MCP는 Backend를 먼저 실행한 뒤 최소 FastMCP process로 실행합니다. 아래
-명령은 저장소 루트에서 실행하며, 개발 환경에서는 loopback 연결만 사용합니다.
-
-```bash
-uv sync --project mcp_server --locked --dev
-(cd mcp_server && .venv/bin/python -m mafia_game)
-```
-
-기본 endpoint는 `http://127.0.0.1:8100/mcp`입니다. `/health`나 다른 공개 endpoint는
-추가하지 않습니다. FastMCP composition에는 실제 게임 context를 읽고 Backend
-command를 호출하는 Resource·Prompt·AI 행동 요청 Tool이 등록됩니다. 게임 판정과
-상태 변경은 Backend/GameEngine이 수행합니다.
-
-일반 사용자 앱은 별도 터미널에서 실행합니다.
-
-```bash
-uv run streamlit run frontend_user/app.py --server.port 8501
-```
-
-Windows에서 `uv`를 사용하지 않는 경우 프로젝트 가상환경의 Python으로 실행할 수
-있습니다.
-
-```powershell
-& ".\frontend_user\.venv\Scripts\python.exe" -m streamlit run ".\frontend_user\app.py" --server.port 8501
-```
-
-브라우저에서 [http://localhost:8501](http://localhost:8501)을 엽니다. Backend
-설정이 없거나 연결되지 않으면 고정된 연결 오류 안내를 표시합니다.
-
-`test_process_backend_roundtrip.py`는 Backend·FastMCP subprocess와 실제 DB를 사용하는
-통합 테스트입니다. 독립 MCP 가상환경에는 Backend 의존성이 없으므로 아래 테스트
-절의 실행 조건을 먼저 확인하세요.
-
-관리자 앱은 read-only 통계·게임 목록·상세 화면을 제공합니다.
-
-```bash
-uv run streamlit run frontend_admin/app.py --server.port 8502
-```
-
-관리자 entrypoint는 실행 위치와 무관하게 저장소 루트를 import 경로에 등록해
-`frontend_admin` 패키지를 불러옵니다.
+접속 주소는 Backend `http://127.0.0.1:18000`, 관리자 Front
+`http://127.0.0.1:18502`입니다. 기동 확인은 각각 `/health`, `/_stcore/health`로
+수행합니다. 이 구성에서는 MCP·사용자 Front를 실행하지 않으며 실제 게임 진행에는
+전체 실행 구성이 필요합니다.
+Backend만 리로드할 때는 Backend 터미널에서 `Ctrl+C` 후 위 Backend 명령을 다시
+실행합니다. 관리자 Front는 그대로 유지하고 `/health`의 정상 응답을 확인합니다.
 
 ## 테스트와 정적 검사
 
-DB·Redis·유료 Provider 없이 실행할 범위는 다음과 같습니다. 실제 DB 테스트 세
-파일은 자동 skip되지 않으므로 아래 제외 목록과 MCP 파일 목록을 유지합니다.
-
-2026-09-07 WU-B6 발언·투표 수정은 사용자의 후속 요청에 따라 전체 회귀를 생략하고
-**Chrome에서 실제 OpenAI `gpt-5.6-luna`로 6인 게임 한 판을 완료**했습니다.
-기존 로컬 DB 환경의 `18000` Backend, `18100` MCP, `18501` 사용자 Front를 사용했고
-다른 원격 실행과 분리했습니다. `CORS_ALLOWED_ORIGINS`에는 실제 Front origin을
-명시해야 합니다. 이번 실행에는 `http://127.0.0.1:18501,http://localhost:18501`을 사용했습니다.
-
-- 첫날 AI 5명, 둘째 날 4명, 셋째 날 2명: **모델 발언 11회·적용 11회, PASS 0회**.
-- 첫 투표의 AI 선택은 좌석 순서로 **1번·6번·6번·4번**이었고 마지막 두 AI는
-공개된 탐정 조사 결과에 따라 1번을 선택했습니다. 실행 로그에서 AI 투표 6건 모두
-정상 선택·적용을 확인했으며 fallback은 없었습니다.
-- 셋째 날 마피아가 처형되어 **시민 진영 승리**로 종료됐습니다. 밤은 입력 마감에
-따른 자동 선택으로 해소됐으며 수동 밤 제출 성공은 이번 플레이에서 확인하지 않았습니다.
-- UI의 공개 판단 근거·모델/대체 구분과 종료 후 전체 투표 기록을 실제 브라우저에서
-확인했습니다. 저장·재개도 같은 게임에서 확인했습니다.
-- 최초 공유 DB 실행에서는 이 Backend가 완료하기 전에 다른 실행 경로가 AI PASS를
-기록하는 간섭이 관찰돼 해당 게임을 저장했습니다. 같은 DB를 쓰는 다른 Backend도
-동일 버전으로 갱신하거나 실행 대상을 분리해야 합니다. 이 작업은 원격 작업자를 중지하지 않습니다.
-
-후속 요청 전 focused 검증은 Backend 68개·Front 148개가 통과했습니다. 이후 추가한
-검증 코드와 전체 회귀는 사용자 요청에 따라 실행하지 않았습니다. 위 한 판의 결과는
-여러 게임의 추론 품질·승률을 보장하는 자료가 아닙니다.
-
-이어진 역할·페르소나 프롬프트와 결과 화면 대비 수정에서는 사용자 요청에 따라
-자동 테스트·lint·전체 회귀를 실행하지 않았습니다. 기존 완료 게임을 로컬 Front에서
-다시 열고 별도 Chromium의 다크 테마에서 밤·조사·투표 기록, 요약 숫자와 보조 설명의
-실제 색상·화면을 확인했습니다. 로컬 Backend를 재시작해 프롬프트도 반영했습니다.
-앞의 게임 한 판은 이번 프롬프트 보강 이전 기록이며, 새 지침의 역할 공개·페르소나
-발언 품질은 추가 실게임으로 평가하지 않았습니다.
-
-토큰·Redis 보완에서는 로컬 `.env`에 Redis 설정이 없어 실행 중인 loopback Redis의
-0번 DB를 지정하고 출력 한도를 8192로 설정한 뒤 로컬 Backend `18000`을 재시작했습니다.
-실제 게임 snapshot API가 200을 반환했고, PostgreSQL·응답·Redis의 공개 이력 63건
-(발언 45건)이 순서와 내용까지 일치했습니다. 해당 게임의 파생 캐시만 지운 뒤 다시
-조회해 전체 이력이 복구되는 것도 확인했습니다. 자동 테스트·lint·전체 회귀와
-추가 LLM 게임은 사용자 요청에 따라 생략했으며, 상향 후의 발언 품질은 미평가입니다.
-실제 Redis에서 이전 상태 버전의 저장이 거부되고 최신 이력이 유지되는 것도 확인했습니다.
+CP-7 코드 통합 회귀는 아래 각 전체 suite를 한 번씩 실행합니다. DB 쓰기 테스트도
+수집하되 연결 불가능한 합성 DSN으로 차단합니다. 이는 로컬 DB 생성·전환이 아니며 실제
+팀 DB와 `.env`를 변경하지 않습니다. 유료 Provider는 dummy/mock/fake 경로를 사용합니다.
 
 ```bash
-TEAM_DATABASE_URL='postgresql://test:synthetic@127.0.0.1:1/mafia_tests' \
-DATABASE_URL='postgresql://test:synthetic@127.0.0.1:1/mafia_tests' \
-GAME_STATE_KEYRING_FILE='' GAME_STATE_ACTIVE_KEY_ID='' \
-LLM_PROVIDER=dummy OPENAI_API_KEY='' GEMINI_API_KEY='' \
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 backend/.venv/bin/python -m pytest \
-  -p pytest_asyncio.plugin -p anyio.pytest_plugin backend/tests \
-  --ignore=backend/tests/test_b5_game_api.py \
-  --ignore=backend/tests/test_postgres_game_flow.py -q
-
-BACKEND_API_URL=http://127.0.0.1:8000 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-  frontend_user/.venv/bin/python -m pytest -c pyproject.toml frontend_user/tests -q
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 frontend_admin/.venv/bin/python -m pytest \
-  -c pyproject.toml frontend_admin/tests -q
-
-(cd mcp_server && PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest \
-  -p pytest_asyncio.plugin -p anyio.pytest_plugin \
-  tests/test_backend_context_client.py tests/test_fastmcp_composition.py \
-  tests/test_fastmcp_registration.py tests/test_fastmcp_roundtrip.py -q)
-```
-
-2026-09-07 후속 수정의 최종 회귀는 **Backend 510개, MCP 44개, 관리자 Front 18개**가
-통과했습니다. 사용자 Front **331개**를 더해 **총 903개 통과, 실패 0**입니다.
-실브라우저 근거는
-[보고서 8절](docs/AI_MAFIA_GAME_TEST_GAP_REPORT.md#8-수정권고-반영과-ai-진행-표시)에 기록합니다.
-최초 Backend 회귀의 2개 실패는 강화된 window 계약을 반영하지 않은 테스트 대역을
-수정한 뒤 해소됐습니다. Front의 낡은 sync fixture·소스 문자열 검사 2개도 현재 계약과
-Node 동작 검증으로 보완한 뒤 통과했습니다. 기존 config의 긴 줄 Ruff 경고 1개는 범위 밖으로 남겼습니다.
-
-실제 SQL을 사용하는 `test_b5_game_api.py`, `test_postgres_game_flow.py`,
-`test_b6_agent_manager.py`의 opt-in 8개와 MCP process 테스트도 **격리된 로컬 QA DB**에서
-검증했습니다. 공유 DB를 대상으로 실행하지 않습니다. MCP process 테스트는 이제
-Tool `accepted=true`, receipt와 window/version 변경을 확인하며 오류 응답을 통과시키지 않습니다.
-
-아래는 이번에 사용한 **합성 자격증명의 임시 DB 전용** 검증 예입니다. 해당 DB에
-기존 migration 4개를 적용하고 로컬 Redis 15번 DB를 준비한 뒤 실행합니다. 두 DB
-변수를 함께 덮어써 원격 `.env` 값이 선택되지 않게 합니다. B6 opt-in은 아래 loopback
-QA 주소만 허용합니다. 테스트는 자신이 만든 UUID·게임·Redis key만 정리합니다.
-
-```bash
-export TEAM_DATABASE_URL='postgresql://qa:synthetic-only@127.0.0.1:55432/mafia_qa'
+export TEAM_DATABASE_URL='postgresql://test:synthetic@127.0.0.1:1/mafia_tests'
 export DATABASE_URL="$TEAM_DATABASE_URL"
-export DATABASE_MIGRATION_URL="$TEAM_DATABASE_URL"
-export TEST_DATABASE_URL="$TEAM_DATABASE_URL"
-export DATABASE_NAME=mafia_qa REDIS_URL=redis://127.0.0.1:6379/15
-export GAME_STATE_KEYRING_FILE='' GAME_STATE_ACTIVE_KEY_ID=''
-export LLM_PROVIDER=dummy OPENAI_API_KEY='' GEMINI_API_KEY=''
-export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
-B6_LOCAL_QA=1 backend/.venv/bin/python -m pytest \
-  -p pytest_asyncio.plugin -p anyio.pytest_plugin backend/tests -q
-PYTHONPATH=.:mcp_server .venv/bin/python -m pytest \
-  -p pytest_asyncio.plugin -p anyio.pytest_plugin mcp_server/tests -q
+export REDIS_URL='redis://127.0.0.1:1/0'
+export DATABASE_MIGRATION_URL='' GAME_STATE_KEYRING_FILE='' GAME_STATE_ACTIVE_KEY_ID=''
+export SPEECH_ANALYSIS_ENABLED=false LLM_PROVIDER=dummy OPENAI_API_KEY='' GEMINI_API_KEY=''
+export B6_LOCAL_QA=0 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
+
+PYTHONPATH=mcp_server .venv/bin/python -m pytest \
+  -p pytest_asyncio.plugin -p anyio.pytest_plugin backend/tests -q --tb=no --show-capture=no -rN
+BACKEND_API_URL=http://127.0.0.1:8000 frontend_user/.venv/bin/python -m pytest \
+  -c pyproject.toml frontend_user/tests -q
+PYTHONPATH=.:mcp_server .venv/bin/python -m pytest -c mcp_server/pyproject.toml \
+  -p pytest_asyncio.plugin -p anyio.pytest_plugin mcp_server/tests -q --tb=no --show-capture=no -rN
+
+.venv/bin/python -m compileall -q -x '/\.venv/' backend/app frontend_user mcp_server/mafia_game
+git diff --check
 ```
 
-실제 유료/Local LLM의 추론 품질·운영 DDL 권한·기존 데이터 암호화 전환·운영 TLS는
-검증하지 않았습니다. 6~9명 각각 100판의 heuristic 시뮬레이션 400판은 전부 종료됐으나,
-마피아 승률 62/54/68/69%는 실제 LLM의 시나리오별 균형을 보장하지 않습니다.
+위 환경값은 검증 전용 셸에서만 사용하고 서비스 기동 셸에는 남기지 않습니다.
+Backend와 MCP 전체 suite에는 FastMCP·Backend·psycopg 의존성이 함께 필요하므로 통합
+`.venv`를 사용합니다. import 의존성 문제는 제품 회귀와 구분합니다.
+실제 환경을 읽는 테스트는 실패 시 DSN 일부가 assertion에 포함될 수 있어 traceback과
+captured output을 숨깁니다. 원인을 조사할 때도 node ID·오류 종류·코드 위치만 출력합니다.
+팀 DB 쓰기 검증 중에는 동일 DB를 사용하는 로컬 게임 worker를 중지해야 합니다.
+현재 worker는 테스트 식별자와 무관하게 진행 중인 게임을 조회하기 때문입니다.
+
+CP-7 전체 회귀 결과 (2026-09-08, JSONB 수정 후·마이그레이션 적용 전):
+
+| suite | 통과 | 실패 | 오류 | 생략 | 실패 분류 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Backend | 1,231 | 26 | 0 | 17 | 스키마 미적용 22건, 기존 계층 경계 3건·로컬 DB 전용 assertion 1건 |
+| 사용자 Front | 655 | 5 | 0 | 0 | 기존 UUID 교체 컨트롤 3건·결과 새 게임 버튼 2건 |
+| MCP server | 177 | 1 | 0 | 0 | 실제 Backend process 게임 생성 시 스키마 미적용 |
+
+Backend 계층 경계 실패는 `test_lb06_agent_boundaries.py`,
+`test_lb08_final_boundaries.py`, `test_repository_boundary.py`입니다. Front 실패는
+`test_identity_f1.py`의 `identity.replace_button`/`identity.replacement_input`과
+`test_result_f6.py`의 `result.new_game` 기대입니다. 모두 기존 기록과 일치하며 코드나
+fixture를 수정하지 않았습니다. 이전 MCP public context fixture 실패 3건은 이번 실행에서
+나타나지 않았습니다. compileall과 `git diff --check`는 통과했습니다.
+
+`custom_ability_ids`는 psycopg `Jsonb`로 감싸 JSON 배열로 저장하도록 보완했습니다.
+STANDARD·AI의 NULL 호환과 1~3개 배열 직렬화를 포함한 B16 165개 및
+B16·migration·config 집중 검증 240개가 통과했습니다. 브라우저에서 발견한 생성 화면
+능력 선택 상자, 역할 공개 직업명, 내 정보 능력 설명과 발언 입력 안내의 대비도
+보완했으며, 수정 후 F2 52개·F3 219개와
+최소 Ruff·compile·diff 검증이 통과했습니다.
+
+010·011 적용 후 팀 DB 회귀 재검증에서는 `test_b5_game_api.py` 19개가 통과했고,
+`test_postgres_game_flow.py`는 2개 통과·4개 실패, MCP process roundtrip은 1개가
+실패했습니다. 합계 21개 통과·5개 실패이며 스키마 누락 오류는 사라졌습니다.
+남은 실패는 첫날 PASS 허용을 기대하는 4건과 로컬 DB 호스트를 전제한 1건입니다.
+현재 제품의 첫날 PASS 금지·팀 DB 기본 정책과 충돌하는 기존 기대값은 수정하지
+않았습니다. DB 검증 중 실제 게임 worker는 중지하고 테스트 소유 자료만 정리했습니다.
+
+관리자 timeout 보정 후 focused 3개와 관리자 전체 22개가 통과했습니다. 실제 Chrome
+최종 검증은 코드 추가 수정 없이 다음 두 흐름이 연속 통과했습니다(2026-09-08).
+
+1. 시민 `감식 수호자 최종` + 조사·보호: 생성, 역할 공개, 시작, 발언 전송,
+   저장·불러오기·재개 후 직업/능력/발언 복원, 관리자 운영·발언 분석 표시.
+2. 마피아 `밤의 조율자 최종` + 필수 공격·투표 조작·특수 직업 열람: 같은 저장·복원
+   흐름, 첫날 열람 잠금, 관리자 실시간 재조회와 히트맵·키워드·공개 근거 표시.
+
+테스트 게임은 마지막에 다시 저장해 일시 정지했습니다. 브라우저 검증은 위 사용자
+흐름의 smoke test이며 두 게임의 승패까지 완주하거나 모든 능력 조합을 실제 유료
+모델로 반복한 검증은 아닙니다. 밤 선택·가중 투표·승패·거부 경로는 위 focused
+자동 테스트로 확인했습니다. 전체 회귀 이후 변경되지 않은 Backend·MCP suite는
+중복 실행하지 않았고, 마지막 관리자 보정은 해당 전체 suite로 검증했습니다.
+최종 변경 범위 검토, 비밀값 대조, 변경 Python 메모리 compile과 diff 검사가 통과했습니다.
+
+과거 회귀 집계는 아래 변경 이력과
+[날짜별 기록](docs/fix/)을 참고하세요.
+
+관리자 발언 분석 API는 `GET /api/v1/admin/speech-analytics`이며 기존 관리자 UUID
+allowlist와 감사 기록을 그대로 사용합니다. 화면의 분석 조건에서 기간·에이전트·라운드·
+게임 UUID를 좁혀 조회할 수 있고, 최대 500건의 결정적 표본을 Backend에서
+저장 벡터의 앞 96차원 투영으로 cosine 유사도(0.78)를 계산해 묶고, 미완료 분석과
+표본 제한을 coverage에 표시합니다. API는
+공개 AI 발언만 반환하며 벡터·역할·진영·개별 행동·투표·private context는 노출하지
+않습니다. 운영 화면에서 임베딩 행이 없으면 주제 대신 분석 대기 상태를 표시합니다.
+팀 DB의 전체 기간 발언 분석 GET에는 30초 제한을 사용하고 다른 관리자 요청은
+기존 5초를 유지합니다. 약 12초 걸리는 정상 집계를 연결 오류로 처리하던 문제를
+보정한 것이며, timeout·403 오류의 fail-closed 처리와 자동 재시도 없음은 유지합니다.
 
 ## 보안 원칙과 알려진 제약
 
 - `.env`, 실제 `secrets.toml`, token과 모든 실제 자격증명을 커밋하지 않습니다.
-- 목표 공개 API의 `X-User-Id`는 인증이 아니라 UUID scope 선택값입니다. UUID를 아는
+- 공개 API의 `X-User-Id`는 인증이 아니라 UUID scope 선택값입니다. UUID를 아는
 사용자의 가장을 막지 못하므로 MVP는 개인 개발 환경 또는 사설망으로 제한합니다.
 - 현재 최소 FastMCP는 custom bootstrap·HMAC·capability 인증을 제공하지 않습니다.
-요청 schema·게임 소유권·행동 유효성은 Backend가 검증하며, 운영 보안을 완료한
-공개 배포 구성으로 취급하지 않습니다.
+요청 schema·게임 소유권·행동 유효성은 Backend가 검증합니다.
 - Backend는 각 AI actor의 허용된 자기 정보만 scope별로 투영합니다. 밤 행동과
-개별 투표는 종료 전에 공개하지 않으며 확정 공개 결과와 본인의 조사 결과를
-구분합니다. GM 안내는 기본 게임 이벤트 수준이며 별도 GM LLM 연출은 후속 범위입니다.
+개별 투표는 종료 전에 공개하지 않으며 확정 공개 결과와 본인의 조사 결과를 구분합니다.
 - MCP runtime은 DB·Redis에 직접 접근하거나 영속 outbox를 소유하지 않습니다.
-구 custom MCP 감사 로그 프로파일을 현재 FastMCP의 검증된 보장으로 사용하지 않습니다.
 - seed와 engine snapshot keyring은 저장소 밖에 두고 과거 record가 참조하는 key를
-보존합니다. 현재 runtime은 keyring 미설정 시 legacy plaintext 경로를 사용하므로
-실제 게임 환경에서 암호화 설정 여부를 확인해야 합니다.
+보존합니다.
 - LLM prompt, raw response, private context, token과 비용을 로그에 넣지 않습니다.
+- 루트 `*_runtime*.log`는 사용자·게임 식별자가 포함될 수 있어 Git 추적에서 제외합니다.
+  2026-09-08 병합으로 들어온 6개 로그도 로컬 파일을 보존하면서 추적 해제했습니다.
+  기존 병합 이력에는 남으므로 외부 공유 범위를 점검해야 합니다. 비밀키가 추가로
+  확인되면 해당 키를 폐기·재발급해야 하며, 이번 작업은 Git 이력을 재작성하지 않습니다.
 - `ADMIN_USER_IDS`는 강한 인증이 아니므로 관리자 앱도 loopback·사설망에서만 사용합니다.
-- 관리자 앱은 UUID 입력·저장 확인, read-only 통계·상태/단계별 목록·주소로 여는 상세를
-제공합니다. 관리자 권한은 Backend allowlist로 확인하며 자동 등록하지 않습니다.
-- 현재 Mafia Game MCP에는 `/mcp` 서버, 최소 Resource·Prompt·Tool 등록부와 Backend
-HTTP adapter, fake·ASGI 테스트가 있습니다. 실제 프로세스 테스트는 DB를 사용하므로
-독립 테스트와 구분합니다.
+- 현재 홈에는 UUID 복구 설정 진입점이 없으며, 완료 화면의 새 게임 시작은 홈을
+  거쳐야 합니다. 관련 기존 회귀 실패는 이번 병합 수정 범위에서 유지합니다.
+- 팀 DB를 공유하는 Backend worker는 같은 버전으로 실행해야 합니다. 이번 실게임에서는
+  로컬 적용 로그가 없는 첫날 AI PASS와 마감이 없는 HUMAN 창이 관찰됐고, DB job·receipt와
+  lease 시간 비교는 다른 버전의 worker 개입을 강하게 시사했습니다. 저장된 정보만으로
+  호스트는 특정할 수 없으며 다른 개발자의 프로세스나 게임은 변경하지 않았습니다.
+  반복 발언 재현에서도 같은 게임의 MCP_UNAVAILABLE 기본 발언과 첫날 PASS가
+  다른 실행에서 적용됐고, 로컬 작업자가 정상 생성한 발언은 서로 달랐습니다.
+  로컬 재시작·코드 수정만으로 다른 worker의 대체 발언을 막을 수는 없습니다.
+  게임을 점검할 때는 Backend·MCP를 함께 최신 코드로 재시작하고 DB job 결과를
+  로컬 `game-progress.log`의 실행 식별자·상태 버전과 대조해야 합니다.
 
 비밀값 노출이 의심되면 값을 다시 출력하지 말고 즉시 폐기·재발급한 뒤 Git 이력과
 외부 로그를 별도로 점검하세요.
+
+## 변경 이력
+
+날짜별 변경·검증 기록은 [docs/fix/](docs/fix/)에 모아 두었습니다.
+
+2026-09-08 `chd_test`·`jyu` 병합 검증에서는 실시간 갱신·발언 예약·저장/이탈·
+조사 결과 표시와 관리자 접근 거부 후 복귀를 복구했습니다. 외부 Chrome의 6인 박물관
+게임은 시민 승리(2라운드), 8인 산장 게임은 저장·재개 후 마피아 승리(3라운드)로
+모두 `COMPLETED`/`ENDED`를 확인했습니다. 마지막 Front·관리자 회귀는 605 통과·
+기존 실패 5건, Backend는 전체 실행과 실패 재검증 합산 978 통과·기존 실패 14건·
+선택 검증 17건 생략, 독립 MCP 대상 검증은 101 통과였습니다. Windows 실기동은
+환경이 없어 생략했으며 PowerShell 스크립트는 합성 dotenv·대상 비교와 정적 검증만
+수행했습니다. 당시 후속 프롬프트 작업의 전체 회귀는 보류했으며, 현재 CP-7 검증은 위 테스트 절을 따릅니다.
+
+역할별 공격적 토론·블러핑 프롬프트 보완 후에는 최소 MCP 검증 48건이 통과했고,
+재시작한 MCP의 실제 Prompt 응답이 최종 소스와 일치함을 확인했습니다. 외부 Chrome의
+추가 6인 야간열차 게임은 직접 발언·투표, 관전 빠른 진행을 거쳐 3일차 2라운드에
+시민 승리로 종료됐습니다(16:19:34 KST). 실제 대화에서 직접 추궁·표 몰이·앞선 말과
+다른 해명을 관찰했습니다. 공유 worker 개입 가능성이 남아 있어 한 판만으로 역할별
+기만 빈도나 의도적 날조의 효과를 확정하지 않습니다.
+
+| 문서 | 기록 범위 |
+| --- | --- |
+| [persona-and-prompts](docs/fix/2026-09-08-persona-and-prompts.md) | 역할별 프롬프트, persona 추론 수치(009), dialogue_focus, 실게임 검증 |
+| [speech-analysis](docs/fix/2026-09-08-speech-analysis.md) | 공개 발언 분석 구현·006/008 적용·Team DB 적용·실게임 점검 |
+| [game-lifecycle](docs/fix/2026-09-08-game-lifecycle.md) | 저장·재개·삭제·뒤로가기, 병렬 투표, stale 게임 자동 정리(007) |
+| [frontend-ui](docs/fix/2026-09-07-08-frontend-ui.md) | WU-F5 발언 대기열, 홈·UUID 복구, 타임라인·채팅 UI |
+| [infra-merge-admin](docs/fix/2026-09-07-infra-merge-admin.md) | 섹터 병합, 관리자 앱 연결, Redis 캐시, 로깅, 회귀 기록 |
 
 ## 확장 지점
 
@@ -875,16 +612,12 @@ HTTP adapter, fake·ASGI 테스트가 있습니다. 실제 프로세스 테스�
 추가하고 MCP 담당자가 실제 환경에서 실행·재실행 검증
 - Agent·LLM·MCP client: `backend/app/agent/`, `backend/app/llm_provider/`,
 `backend/app/mcp/`
-- 독립 MCP 기능: `mcp_server/mafia_game/`(현재 FastMCP Resource·Prompt·Tool) 또는
-`mcp_server/mcp_2/` 내부 계층에만 추가
+- 관리자 발언 분석: `backend/app/repositories/admin_repository.py`,
+  `backend/app/services/admin_service.py`, `frontend_admin/app_pages/dashboard_page.py`
+- 독립 MCP 기능: `mcp_server/mafia_game/` 또는 `mcp_server/mcp_2/` 내부 계층에만 추가
 
 ## 기여
 
 작업을 시작하기 전에 [AGENTS.MD](AGENTS.MD)를 읽고 브랜치 정책, 사용자 승인,
-검증 수준, README 갱신 규칙을 따르세요. 구현 요청은 파일 변경을 승인하지만 커밋이나
-push를 자동 승인하지 않습니다.  
-  
-  
-  ---
-  
-+ 추가 기능) 타 직업의 툴을 호출할 수 있는 agent 생성 기능 (환경설정 페이지)
+검증 수준, README 갱신 규칙을 따르세요. 구현 요청은 파일 변경을 승인하지만
+커밋이나 push를 자동 승인하지 않습니다.

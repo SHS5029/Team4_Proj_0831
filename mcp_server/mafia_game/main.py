@@ -6,9 +6,9 @@ import os
 
 from mcp.server.fastmcp import FastMCP
 
-from mafia_game.api.prompts import register_prompts
-from mafia_game.api.resources import register_resources
-from mafia_game.api.tools import register_tools
+from mafia_game.api.prompts.registry import register_prompts
+from mafia_game.api.resources.registry import register_resources
+from mafia_game.api.tools.registry import register_tools
 from mafia_game.integrations.engine_http import (
     BackendContextClient,
     MinimalBackendContextClient,

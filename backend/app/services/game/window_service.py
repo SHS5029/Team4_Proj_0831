@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from collections.abc import Mapping
 from typing import Any
 from uuid import UUID
@@ -21,7 +21,7 @@ def next_window(state: GameState, now: datetime) -> ActionWindowInsert | None:
     """엔진이 확정한 phase에 맞는 단 하나의 다음 window를 만든다."""
 
     if state.phase in {GamePhase.DAY_DISCUSSION, GamePhase.FINAL_DISCUSSION}:
-        next_actor = next_speech_actor(state)
+        next_actor = next((p for p in state.alive_players if p.kind.value == "AI"), None) or next_speech_actor(state)
         if next_actor is None:
             return None
         return ActionWindowInsert(
@@ -33,7 +33,7 @@ def next_window(state: GameState, now: datetime) -> ActionWindowInsert | None:
             cycle=speech_cycle(state),
             turn_player_id=next_actor.player_id,
             opened_state_version=state.state_version,
-            deadline_at=None,
+            deadline_at=now + timedelta(seconds=105),
         )
     window_kind = timed_window_kind(state.phase)
     if window_kind is None:

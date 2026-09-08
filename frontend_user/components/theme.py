@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from html import escape
+
 import streamlit as st
 
 NAVIGATION_PAGES = frozenset({
@@ -81,14 +84,35 @@ html { color-scheme: light; }
   color: #173626 !important; background: #e8f5ec !important;
 }
 [data-testid="stAlertContentSuccess"] [data-testid="stMarkdownContainer"] * { color: inherit !important; }
-[class*="st-key-app-page-navigation"] {
-  margin: -1.15rem 0 1rem; padding: .55rem .65rem !important;
-  border: 1px solid var(--ai-border); border-radius: .8rem; background: rgba(255, 255, 255, .94);
-  box-shadow: 0 .35rem 1rem rgba(20, 42, 81, .06);
+[class*="st-key-app-header"] {
+  margin: 0 -1.5rem 2rem; padding: .7rem 1.5rem .55rem;
+  background: #0b1730; border-bottom: 1px solid #24324c;
 }
-[class*="st-key-app-page-navigation"] [data-testid="stButton"] button {
-  min-height: 2.65rem; color: #174ea6 !important; background: #f7faff !important;
-  border-color: #b8cdf8 !important;
+[class*="st-key-app-header"] [data-testid="stHorizontalBlock"] { align-items: center; }
+[class*="st-key-app-header"] [data-testid="stColumn"]:last-child {
+  display: flex; justify-content: flex-end; align-items: center;
+}
+.app-header-brand { color: #fff; font-size: 1.55rem; font-weight: 800; letter-spacing: -.06em; }
+.app-header-status { display: inline-flex; align-items: center; gap: .4rem; margin-left: 1rem; padding: .42rem .7rem;
+  border: 1px solid #2b3b57; border-radius: .55rem; color: #d8e2f3; font-size: .78rem; }
+.app-header-status::before { content: ""; width: .45rem; height: .45rem; border-radius: 50%; background: #31c477; }
+.app-header-phase { color: #fff; font-size: 1.35rem; font-weight: 800; text-align: center; }
+/* 페이지별 버튼 스타일보다 헤더 규칙이 우선하도록 body부터 포함한 선택자를 사용한다. */
+body [class*="st-key-app-header"] [data-testid="stButton"] button,
+body [class*="st-key-app-header"] [data-testid="stButton"] button:not(:disabled) {
+  min-height: 2.65rem; color: #eef4ff !important; background: #0b1730 !important;
+  border: 1px solid #405374 !important; box-shadow: inset 0 0 0 1px rgba(255,255,255,.03);
+}
+body [class*="st-key-app-header"] [data-testid="stButton"] button:hover:not(:disabled) {
+  color: #fff !important; background: #152846 !important; border-color: #8ba8d4 !important;
+}
+body [class*="st-key-app-header"] [data-testid="stButton"] button:active:not(:disabled),
+body [class*="st-key-app-header"] [data-testid="stButton"] button:focus-visible {
+  color: #fff !important; background: #1b3157 !important; border-color: #a9c5ef !important;
+}
+body [class*="st-key-app-header"] [data-testid="stButton"] button *,
+body [class*="st-key-app-header"] [data-testid="stButton"] button [data-testid="stMarkdownContainer"] * {
+  color: inherit !important; -webkit-text-fill-color: currentColor !important;
 }
 button:focus-visible, input:focus-visible, textarea:focus-visible {
   outline: 3px solid #245fd6 !important; outline-offset: 3px;
@@ -130,22 +154,52 @@ def sync_page_navigation(current_page: str) -> str:
     return page
 
 
-def render_page_navigation(*, current_page: str) -> None:
-    """홈을 제외한 사용자 화면에 앱 방문 기록 기반 이동 button을 표시한다."""
+def render_application_header(
+    *,
+    title: str,
+    action_renderer: Callable[[], None],
+    connection_label: str = "연결됨",
+    phase_label: str | None = None,
+) -> None:
+    """브랜드·현재 단계·실제 동작 button을 하나의 상단 헤더에 배치한다.
+
+    Streamlit button은 HTML header 내부에 넣을 수 없으므로, 같은 container의
+    우측 열에 네이티브 button을 렌더링한다. 이 방식은 버튼의 접근성·rerun
+    동작을 유지하면서도 시각적으로 헤더 오른쪽에 고정한다.
+    """
+
+    with st.container(key="app-header"):
+        brand_column, phase_column, action_column = st.columns([2, 3, 2])
+        with brand_column:
+            st.markdown(
+                f'<span class="app-header-brand">{escape(title)}</span>'
+                f'<span class="app-header-status">{escape(connection_label)}</span>',
+                unsafe_allow_html=True,
+            )
+        with phase_column:
+            if phase_label:
+                st.markdown(
+                    f'<div class="app-header-phase">{escape(phase_label)}</div>',
+                    unsafe_allow_html=True,
+                )
+        with action_column:
+            action_renderer()
+
+
+def render_header_back_button(*, current_page: str, on_back: Callable[[], None] | None = None) -> None:
+    """진행 게임은 저장·삭제 확인을 먼저 열고 일반 화면은 홈으로 이동한다.
+
+    방문 이력으로 역할 공개 화면에 되돌아가는 혼동을 피하면서도 진행 게임의
+    이탈 확인 계약을 보존한다. callback이 있으면 navigation은 해당 화면이 맡는다.
+    """
 
     if current_page == "home":
         return
-    history = _navigation_history(current_page=current_page)
-    back_target = history[-1] if history else "home"
-    remaining_history = history[:-1] if history else []
-    with st.container(key="app-page-navigation"):
-        back_column, home_column, _ = st.columns([1, 1, 5])
-        with back_column:
-            if st.button("← 뒤로가기", key="navigation.back", width="stretch"):
-                _navigate(page=back_target, history=remaining_history)
-        with home_column:
-            if st.button("⌂ 홈", key="navigation.home", width="stretch"):
-                _navigate(page="home", history=[])
+    if st.button("홈으로", key="header.back", width="stretch"):
+        if on_back is not None:
+            on_back()
+        else:
+            _navigate(page="home", history=[])
 
 
 def _navigation_history(*, current_page: str) -> list[str]:

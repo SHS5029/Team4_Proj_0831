@@ -148,8 +148,10 @@ seed loader와 테스트에서 검증한다.
 | `content_hash` | `char(64)` | NOT NULL |
 | `created_at` | `timestamptz` | NOT NULL |
 
-수치 field는 모두 0.0~1.0이며 `reasoning_skill`은 `mystery-v1` preset 전체에서 같은
-값이어야 한다. seed loader와 테스트가 key 누락·추가 및 범위를 검증한다.
+수치 field는 모두 0.0~1.0이며 key 누락·추가와 유한 수치 범위를 검증한다.
+`reasoning_skill`의 전원 동일 값 제약은 해제한다. 현재 등록 목표는 마스터플랜의
+WU-B6 추론 수치 표에 따른 0.60~0.80이다. 기존 004 seed의 0.5는 009 migration에서
+갱신하며, 다른 parameters는 보존하고 바뀐 내용에 맞춰 content_hash를 다시 계산한다.
 
 ### 4.5 `games`
 
@@ -181,6 +183,7 @@ seed loader와 테스트에서 검증한다.
 | `finished_at` | `timestamptz` | NULL 또는 최초 종료 commit 시각 |
 | `created_at` | `timestamptz` | NOT NULL |
 | `updated_at` | `timestamptz` | NOT NULL |
+| `last_user_action_at` | `timestamptz` | NOT NULL, 생성 또는 마지막 성공 공개 사용자 command의 DB 시각 |
 
 허용 `phase`:
 
@@ -206,6 +209,8 @@ ENDED
 - `finished_at`은 최초 종료 transaction에서만 설정하고 replay로 변경하지 않는다.
 - `idx_games_owner_updated(owner_user_id, updated_at DESC, id DESC)`를 둔다.
 - `idx_games_status_updated(status, updated_at DESC)`는 관리자 목록에 사용한다.
+- `idx_games_stale_in_progress(last_user_action_at, id) WHERE status='IN_PROGRESS'`는
+  15분 무동작 게임의 제한된 정리 후보 조회에만 사용한다.
 
 ### 4.6 `game_players`
 
@@ -472,8 +477,10 @@ normalized table과 event로 재구성하고 새 snapshot을 쓴다. 공개 API�
   때만 AI player proposal을 submission으로, GM narration을 `PUBLIC` event로 반영한다.
   GM 결과는 action submission이나 MCP Tool proposal로 저장하지 않는다. 검증에
   실패하거나 fencing 조건이 바뀌었으면 `STALE` 또는 정의된 fallback으로 끝낸다.
-- lease는 reservation 시각부터 15초 또는 action window deadline 중 이른 시각까지다.
+- lease는 reservation 시각부터 40초 또는 action window deadline 중 이른 시각까지다.
   이 값은 코드의 고정 안전 상수이며 환경 변수나 관리자 설정이 아니다.
+  Agent는 완료 저장·행동 제출에 3초를 남기고 MCP·모델·교정 호출에 남은 시간을
+  공유한다. 이는 schema 변경 없이 Backend 실행 상수와 호출 예산으로 적용한다.
 - scheduler는 만료된 lease 하나를 조건부 UPDATE로 인수해 fallback을 확정한다. 늦게
   돌아온 이전 worker는 fencing token이 달라 결과를 반영할 수 없다. lease는 고정된
   장애 복구 장치이며 환경에서 조정하는 LLM timeout이나 측정 KPI가 아니다.
@@ -584,6 +591,42 @@ MCP runtime은 이 table·publisher·Redis stream을 직접 읽거나 쓰지 않
 IP 원문, header 전체, 비밀값과 응답 payload는 저장하지 않는다. 관리자 API가 read-only인
 MVP에서도 접근 흔적을 남긴다.
 
+### 4.20 `admin_knowledge_documents`와 `admin_knowledge_chunks`
+
+운영 에이전트는 승인된 자료만 검색한다. 원본 피드백·종료 게임 공개 요약·승인된
+운영 문서의 정제 결과를 문서와 청크로 분리하고, 질문 API는 이 두 테이블을 읽기만
+한다. 색인은 별도 수동 명령에서 개인정보·비밀값·private context를 제거한 뒤 수행한다.
+
+| 테이블·컬럼 | 타입 | 제약·의미 |
+|---|---|---|
+| `admin_knowledge_documents.id` | `uuid` | 문서 PK |
+| `source_type` | `varchar(32)` | `FEEDBACK`, `GAME_SUMMARY`, `OPERATIONS_DOC` |
+| `source_id` | `varchar(160)` | 원본을 가리키는 공개 식별자 |
+| `title` | `varchar(240)` | 관리자에게 보여줄 제목 |
+| `document_version` | `varchar(64)` | 같은 원본의 버전 구분 |
+| `visibility` | `varchar(32)` | `ADMIN_APPROVED`만 검색, `REVOKED`는 제외 |
+| `feedback_rating` | `smallint` | 피드백만 1~5, 나머지는 NULL |
+| `content_hash` | `char(64)` | 정제 문서 변경 감지용 SHA-256 |
+| `approved_at` | `timestamptz` | 승인·검색 기간 필터 기준 |
+| `admin_knowledge_chunks.content` | `text` | 정제 후 최대 500자의 검색 청크 |
+| `content_tsv` | `tsvector` | `simple` 사전의 생성 컬럼과 GIN index |
+| `embedding` | `vector(64)` | 현재 고정 토큰 해싱 기반 로컬 임베딩 |
+| `metadata` | `jsonb` | 비민감 필터용 metadata object |
+
+`005_create_admin_knowledge_schema.sql`은 `vector` extension, GIN full-text index와
+cosine용 pgvector HNSW index를 만든다. 실제 Provider 임베딩으로 교체할 때는 차원과
+index를 함께 migration해야 한다. 질문 API는 역할·개별 행동·투표·seed·LLM prompt를
+이 테이블에 색인하지 않으며, 조회 결과와 질문 상태만 `admin_audit_events`에 남긴다.
+
+관리자 센터 확장(WU-B8, API 7.4~7.7)은 기존 테이블을 사용한다. users 전체 수,
+games의 UTC 생성 추이, 완료 게임의 game_players(kind=AI) 직업별 집계를 읽는다.
+feedback는 (created_at, id) 내림차순, admin_audit_events는 PK id 내림차순 커서로 읽는다.
+감사 action의 공개 이름은 event_type이며 서버 원문 로그나 임의 등급을 추가하지 않는다.
+관리자 운영 에이전트(WU-B10)는 승인 지식 테이블의 full-text·pgvector 혼합 검색과
+정제된 근거 문장 반환을 사용한다. `backend/index_admin_knowledge.py`는 기존 피드백과
+완료 게임 공개 요약 및 승인 문서를 별도 수동 작업으로 색인한다. 질문 API 자체는
+DB 구조를 변경하거나 예시 기록을 자동 삽입하지 않는다.
+
 ## 5. 핵심 transaction
 
 ### 5.1 사용자 최초 쓰기와 게임 생성
@@ -637,6 +680,13 @@ deadline을 넣지 않고 성공 뒤 sync로 현재 상태를 읽는다.
 보장한다.
 request hash의 concrete path에는 command 대상 `game_id`가 들어간다. 따라서 같은 key와
 같은 body를 다른 game에 보내도 receipt replay가 아니라 `IDEMPOTENCY_KEY_REUSED`다.
+
+`SAVE_AND_EXIT`만 요청의 화면 버전 일치 검증을 생략한다. 소유권과 receipt를 검증하고
+게임 행 잠금 뒤 읽은 마지막 확정 상태를 복원해 저장한다. UPDATE의 기대 버전은 요청
+값이 아니라 잠긴 게임의 실제 버전을 사용하며 event·window·receipt를 한 번에 commit한다.
+잠금 대기 중 흐른 시간을 저장 잔여 시간에 더하지 않도록 시각은 게임·window 잠금 뒤
+계산한다. 확정된 제출·결과는 보존하고 아직 진행 중인 외부 응답을 기다리지 않는다.
+저장 후 도착한 이전 Agent 결과는 기존 상태·버전·window 검증으로 거부한다.
 
 ### 5.3 action window 해소
 
@@ -840,21 +890,44 @@ cleanup 승인이 나기 전 legacy object는 사용 금지 상태이며 새 for
 
 | 데이터 | MVP 기본 정책 |
 |---|---|
-| 진행·저장 게임 | 사용자가 재개할 수 있도록 유지 |
+| 진행 게임 | 마지막 사용자 동작 후 15분이 지나면 게임과 종속 원장을 자동 삭제 |
+| 저장 게임 | 사용자가 재개할 수 있도록 유지 |
 | 종료 게임·event·feedback | 명시적 운영 정책 승인 전 자동 삭제하지 않음 |
 | Redis cache·stream | bounded TTL/trim, 원본 아님 |
-| command receipt | 게임과 함께 유지해 장기 replay도 중복 mutation 방지 |
+| command receipt | 게임이 존재하는 동안 함께 유지해 replay의 중복 mutation 방지 |
 | admin audit | 운영 환경 정책에 따라 별도 보존 기간 승인 필요 |
 | legacy identity data | cleanup migration 승인 전 접근 금지 보존 |
 
-MVP에는 사용자 삭제 API가 없다. 실제 개인정보를 수집하지 않더라도 UUID와 게임 기록
-삭제 정책은 공개 인터넷 배포 전에 별도로 정해야 한다.
+자동 정리는 `status=IN_PROGRESS AND last_user_action_at <= transaction_timestamp() -
+interval '15 minutes'`인 행만 `FOR UPDATE SKIP LOCKED`로 최대 100개 선택한 뒤 삭제한다.
+게임 생성과 성공한 USER command는 같은 상태 mutation transaction에서
+`last_user_action_at=transaction_timestamp()`로 갱신한다. replay, 거부된 command,
+GET·SSE·polling, AGENT·AUTO 처리와 발언 분석은 사용자 동작으로 세지 않는다. 기존 행은
+성공한 USER command receipt의 마지막 `created_at`, receipt가 없으면 `games.created_at`으로
+순방향 migration에서 한 번 초기화한다. 초기화 중에는 같은 DDL transaction의 배타 잠금
+아래 `games.updated_at` 갱신 트리거만 잠시 끄고 복구하여 기존 갱신 시각과 목록 정렬을
+보존한다. 정리 시 모든 게임 종속 원장은 기존 `ON DELETE CASCADE`로 함께 삭제하고,
+게임을 참조하지 않는 관리자 감사 기록과 사용자는 보존한다. Redis 공개
+대화 cache는 DB commit 뒤 최선형으로 지우며 실패해도 권위 DB 삭제를 되돌리지 않는다.
+삭제된 게임을 참조하던 command receipt도 함께 없어지므로 과거 생성 idempotency key를
+다시 보내면 새 생성 요청으로 처리한다. 이는 삭제된 게임의 결과를 장기 replay하지 않는
+15분 보존 경계이며, 게임이 존재하는 동안의 기존 replay 계약은 그대로 유지한다.
+공유 DB의 모든 Backend instance를 사용자 동작 시각을 기록하는 WU-B15 코드로 맞춘 뒤
+정리 worker를 운영한다. 구버전의 사용자 command는 새 시각을 기록하지 않아 혼합 배포하면
+실제 플레이 중인 게임도 생성 후 15분이 지난 것으로 잘못 판정할 수 있다.
+
+사용자가 게임 이탈 팝업에서 삭제를 선택하면 `IN_PROGRESS`·`SAVED` 게임 하나를
+수동 삭제할 수 있다. Backend는 같은 게임 행을 `FOR UPDATE`로 잠그고 소유 UUID와
+요청의 상태 버전을 검증한 뒤 삭제한다. 기존 FK cascade로 종속 원장을 함께 정리하고
+사용자·관리자 감사 기록은 보존한다. 실패 시 transaction 전체를 rollback하며 Redis
+공개 이력은 commit 뒤 정리한다. 완료·실패 게임과 UUID 삭제 정책은 별도로 정해야 한다.
 
 ## 11. 검증 목록
 
 - 6~9명 role count와 player 제약
 - user 동시 게임 생성 시 직전 scenario 제외 직렬화
 - command replay, key/body 충돌, stale version, 같은 actor 동시 제출
+- 15분 직전·정확한 경계·직후 정리, 사용자 command와 정리 행 잠금 경쟁, 비진행 상태 보존
 - deadline 직전·동시·직후 서버 시각 경계
 - 밤 행동 동시 해소와 자동 선택 재현성
 - 일반·재·최종 투표 동률과 결과 재현성
@@ -874,3 +947,175 @@ MVP에는 사용자 삭제 API가 없다. 실제 개인정보를 수집하지 �
 - 다른 player·GM·admin projection의 비공개 정보 비간섭성
 - DB 오류, 암호화 key 없음과 Redis 장애의 rollback·fail-closed 경로
 - token·비용·LLM timeout 컬럼·로그가 생성되지 않는 schema 검토
+
+## 2026-09-07 자유 토론 변경 (사용자 승인 WU-B4)
+
+이번 단일 WU-B4는 1분 45초 자유 토론과 연결되는 Front·MCP 표현의 변경이다. 이 절이 기존 좌석당 한 번 발언·전원 PASS 추가 순환 규칙보다 우선한다. 새 일반·최종 토론은 Backend deadline 105초까지 열리며 인간은 AI 처리 순서와 무관하게 발언한다. 플레이어별 최근 60초 SPEAK는 최대 7회이며 서버 게임 행 잠금 안에서 원장으로 검증한다. PASS는 조기 마감하지 않는다. AI 작업은 기존 단일 예약 창을 재사용해 공정하게 배분하고, 발언마다 새 window를 열되 토론 deadline은 보존한다. turn_player_id는 AI 스케줄링 힌트이며 인간의 발언 권한 제한이 아니다. SPEECH에도 deadline·remaining_ms가 제공된다. 저장 시 잔여 시간을 보존한다. 마감 뒤 첫날은 밤, 이후 낮은 투표, 최종 토론은 최종 지목으로 진행한다. 과거 deadline 없는 발언 창은 기존 방식으로 처리한다. DB 구조와 idempotency·게임 상태 버전 검증은 보존한다.
+
+## 2026-09-07 WU-B11 공개 AI 발언 분석 저장 계약
+
+`006_create_speech_analysis.sql`은 001~003 canonical schema 위에 독립 적용한다.
+005와 pgvector는 필요하지 않으며 기존 게임 원장 행을 변경하지 않는다.
+추가 파일은 `backend/app/repositories/speech_analysis_repository.py`와
+`backend/tests/test_speech_analysis_repository.py`이고 README는 통합 담당자가 갱신한다.
+
+`speech_analysis` 결과 테이블은 `id`, `game_id`, `event_id`, `player_id`,
+`source_sequence`, `discussion_segment` (`DAY_DISCUSSION:round` 또는
+`FINAL_DISCUSSION:round`), `round`, UTF-8 SHA-256 `content_hash`,
+`analysis_version`, `embedding_model`, `dimensions`, `claims_model`을 저장한다.
+`(game_id,event_id,source_sequence)` 복합 FK와 `(game_id,player_id)` 복합 FK,
+`UNIQUE(event_id,analysis_version)`으로 원본 소속·순서·멱등성을 보장한다.
+`speech_analysis_versions`는 `analysis_version` PK, `embedding_model`, `dimensions`,
+`claims_model`, `activated_at timestamptz`를 영속 저장한다. discover는 버전별 transaction
+잠금 아래 최초 버전을 원자 등록하고 모델 계약을 검사한다. 발언이 0개여도 등록되며
+재시작·재실행은 activated_at을 덮어쓰지 않는다. 006 재실행 시 기존 분석의 최초
+created_at으로 미등록 버전만 보완한다. 버전은 두 모델과 차원을 함께 식별하며
+같은 버전을 다른 모델 설정으로 재사용하지 않는다.
+source는 같은 게임 AI의 PUBLIC PLAYER_SPOKE만 허용하고 원문을 복제하지 않는다.
+공개 대상 player가 없는 schema version 1의 APPEND_PUBLIC_EVENT만 분석하며,
+이름만 PLAYER_SPOKE인 다른 operation이나 미지원 schema는 발견·선점·trigger에서 거부한다.
+토론 phase/round는 발언 이전 마지막 PUBLIC SET_ACTION_WINDOW의 같은 게임 SPEECH window에서 얻는다.
+같은 발언 transaction 앞부분의 SET_GAME_STATE는 다음 phase일 수 있으므로 사용하지 않는다.
+DB trigger도 이 source 직전 window를 다시 유도하여 NEW.round와 discussion_segment를
+대조하므로 직접 INSERT로 다른 토론 구간을 위조할 수 없다. 원문은 공백만 아닌
+1~200 Unicode 문자이며 같은 게임·공개 AI·원본 hash 검증을 유지한다.
+analysis_version은 최대 256자이며 모델 이름은 최대 128자다.
+
+실제 벡터는 표준 `double precision[]`이고 유한수, 정확한 차원, 비영벡터만 허용한다.
+`embedding_status`, `claims_status`는 각각 PENDING/READY/FAILED이며 단계별
+`*_attempts`, `*_retry_at`, `*_failure_code`를 둔다. `embedding`, `claims`는
+READY 결과만 저장한다. `lease_token`, `lease_expires_at`, `lease_stage`는 한 묶음이다.
+선점은 SKIP LOCKED와 행 UPDATE로 원자화하며 시도 횟수는 선점 때 증가한다.
+만료·token·stage·미완료 조건을 모두 만족해야 완료/실패 CAS가 성공한다.
+외부 Provider 호출은 repository transaction 밖에서 수행한다. 임베딩 READY 후
+claims 실패/재선점은 기존 벡터를 변경하지 않는다. claim_next는 같은 버전의 만료 lease를
+SKIP LOCKED로 최대 100행 먼저 회수하고 token·stage·만료를 CAS로 재확인한다.
+만료된 선점 단계가 미완료이며 시도 상한을 소진했으면 FAILED/LEASE_EXPIRED로 기록한다.
+다른 단계와 READY 결과는 보존하며, 미소진 단계는 정상 재선점한다. 재시도 상한
+초과는 재선점하지 않는다. 외부 호출이나 대기 동안 transaction을 유지하지 않는다.
+
+claims는 최대 32개 폐쇄형 object 배열이다. 필수 필드는 `target_player_id`
+(같은 게임 공개 player UUID 또는 null; null은 지목 집계에서 제외), `stance` (SUSPICION/DEFENSE/QUESTION/NEUTRAL),
+`proposition` (공백만 아닌 1~500자), `evidence_start`, `evidence_end`
+(원문 Unicode code point 기준 0-based 반개구간), `quote` (정확한 substring)다.
+게임 밖 대상, 숨은 추가 필드, 잘못된 offset/quote는 DB에서도 거부한다.
+
+`PostgresSpeechAnalysisRepository(transactions)` 공개 메서드는 다음과 같다.
+모든 인수는 생성자의 transactions를 제외하고 keyword-only다.
+
+- `discover(analysis_version, embedding_model, dimensions, claims_model, game_id=None, limit=500) -> int`:
+  진행·저장 게임의 미등록 공개 AI 발언을 멱등 등록한다. 같은 버전으로 이미 추적한 게임은
+  종료·실패 뒤에도 마지막 누락분을 등록한다. games.updated_at >= 버전 activated_at이거나
+  같은 게임 PUBLIC PLAYER_SPOKE의 created_at >= activated_at이면 최초 분석행 이전에
+  종료해도 자동 탐색한다. 시간 조건은 게임 선별에만 적용하여 해당 게임의 이전 발언도
+  모두 등록한다. action_command는 상태 갱신 후 event를 추가하지만 EventRepository.append
+  자체는 games.updated_at을 갱신하지 않으므로 event 시각도 보조 조건으로 사용한다.
+  활성화 이전 종료·미추적 게임은 명시 game_id로만 backfill한다.
+- `claim_next(analysis_version, lease_seconds=60, max_attempts=3, game_id=None) -> dict | None`:
+  임베딩을 우선하되 실패 대기·상한 초과일 때도 주장은 독립 처리한다. 반환은 `job_id`, `lease_token`,
+  `stage` (EMBEDDING/CLAIMS), `message`, `players`만 포함한다. players는
+  `player_id`, `display_name`, `seat`, `kind`만 가지며 역할·진영·private context는 없다.
+- `prepare_for_vote(game_id, analysis_version, embedding_model, dimensions, claims_model, max_attempts) -> bool`:
+  해당 게임의 누적 공개 발언을 등록하고 미등록·미완료·유효 선점·재시도 대상이 남으면
+  false를 반환한다. 양 단계가 READY 또는 FAILED이면서 시도 상한을 소진하고 유효
+  선점이 없을 때 true다. 발견 batch 한도 밖 미등록 원본도 별도로 확인한다.
+- `complete_embedding(job_id, lease_token, embedding) -> bool`
+- `complete_claims(job_id, lease_token, claims) -> bool`
+- `fail(job_id, lease_token, stage, failure_code, retry_seconds=30) -> bool`
+
+실패 코드는 대문자 ASCII 식별자로 한정하며 외부 오류 원문을 저장하지 않는다.
+게임 state_version·game_events·ballots 쓰기는 금지한다. runtime에는 이 테이블의
+SELECT/INSERT/UPDATE와 버전 테이블의 SELECT/INSERT만 부여하고 DDL·DELETE 권한은 부여하지 않는다.
+
+후속 실행 시점 변경(2026-09-07): discover는 원문 참조 등록만 수행한다. 모델 작업 선점은
+진행 중 게임의 현재 OPEN SPEECH 창이 마감되었고 DAY_DISCUSSION의 2일차 이후 또는
+FINAL_DISCUSSION인 투표 준비 경계에서만 허용한다. 첫날·토론 중·밤·저장·종료·투표 중에는
+새 분석을 선점하지 않으며 game_id 지정으로도 우회하지 않는다. 기존 READY는 재호출하지
+않고 지난 날짜의 누적 공개 발언까지 처리한다. runtime은 게임 잠금 밖에서 준비 여부를
+확인하고 같은 창을 잠금 안에서 재검증한 후 투표 창과 새 deadline을 연다. 구형 순차
+토론의 마지막 행동은 즉시 마감된 SPEECH 창을 남겨 같은 경로로 복구한다. 006은 변경하지 않는다.
+
+기존 토론 복원은 현재 games.day_number·phase와 공개 SET_GAME_STATE의 연속 진입 버전으로
+범위를 정한다. round·cycle을 재사용한 과거 날짜의 제출과 미래 버전은 제외하고 같은
+토론의 여러 창·현재 cycle 제출은 유지한다. 진입 이벤트가 없는 불완전 원장은 과거
+기록을 임의로 섞지 않고 빈 발언 이력으로 복원한다.
+
+
+### 2026-09-08 WU-B11 실시간 공개 발언 계약
+
+이번 절은 위의 투표 준비 전용 선점 및 AI 전용 source 제한을 대체한다.
+`008_allow_public_human_speech_analysis.sql`은 기존 006을 수정하지 않고 검증 함수를
+교체하여 같은 게임의 PUBLIC HUMAN·AI PLAYER_SPOKE를 허용한다. private·PASS·GM·
+미확정 입력은 제외하며 원문·구간·hash·claim·벡터·불변 참조 검증은 유지한다.
+새 테이블·열·권한은 필요 없다. 006 적용 뒤 008을 적용한다.
+
+`discover`와 `prepare_for_vote`는 동일한 공개 HUMAN·AI source를 사용한다.
+`claim_next`는 IN_PROGRESS 게임의 미완료 단계를 현재 phase·day·window deadline과
+무관하게 선점한다. 첫날과 열린 토론에서도 확정 발언부터 처리한다. 저장·종료·실패
+게임은 신규 선점하지 않고 재개하면 보존한 PENDING·시도 수를 이어간다. 저장·종료
+직전 이미 선점한 요청은 유효 lease일 때 결과만 저장할 수 있다. 삭제된 행은 늦은
+완료 CAS가 false이며 게임 원장이나 state_version을 갱신하지 않는다.
+
+요약은 검증된 claims.proposition을 읽기 projection으로 누적하며 별도 결과 열이나
+모델 호출·쓰기 transaction을 추가하지 않는다. 기존 READY와 분석 버전을 재사용한다.
+
+
+2026-09-08 사용자 승인 WU-M9 적용 기록: Team 4team_db에 008 함수 교체를
+적용·commit했다. 원본/분석 6개 테이블의 동일 snapshot 행 수·내용 hash와 기존
+함수 OID·소유권·ACL·실행 설정·트리거·relation 메타데이터가 보존됐다.
+독립 연결에서 008 본문과 활성 트리거·health를 재확인했다. 실제 데이터 보정·권한
+변경·서비스 재시작·유료 모델 호출은 없으며 집계와 검증 재사용 근거는 README를 따른다.
+
+## 2026-09-08 CUSTOM_ROLE additive 저장 계약 (CP-0)
+
+WU-B16 migration은 기존 migration을 수정하지 않고 다음 nullable/additive 열을 추가한다.
+
+| 테이블 | 열 | 타입·기본값 | 제약·의미 |
+|---|---|---|---|
+| `games` | `mode` | `varchar(16) NOT NULL DEFAULT 'STANDARD'` | `STANDARD` 또는 `CUSTOM_ROLE`; 기존 행은 `STANDARD` |
+| `game_players` | `custom_role_name` | `varchar(40) NULL` | HUMAN CUSTOM_ROLE 좌석의 NFC·공백 정규화 표시 문자열 |
+| `game_players` | `custom_ability_ids` | `jsonb NULL` | HUMAN CUSTOM_ROLE 좌석의 순서가 보존된 중복 없는 versioned ID 배열 1~3개 |
+| `game_players` | `custom_role_catalog_version` | `varchar(32) NULL` | v1에서는 `custom-role-v1` |
+
+`STANDARD`와 모든 AI 행의 세 custom 열은 NULL이다. `CUSTOM_ROLE` 게임에서는 정확히 한 HUMAN 행에 세 값이 모두 존재해야 하며, 기존 `role_id` 또는 동등한 표준 역할 열과 별개로 저장된 `faction`이 권위 있는 승패 값이다. DB check만으로 진영별 조합을 느슨하게 허용하지 않고 Backend가 catalog allowlist·중복·팀 제약을 transaction 안에서 fail-closed로 검증한 결과만 기록한다. 직업명은 평문 비신뢰 데이터이므로 prompt·SQL·로그 제어 문자열로 해석하지 않으며 출력 경계에서 escape한다.
+
+`custom_ability_ids`의 v1 allowlist는 `night.attack.v1`, `night.investigate.v1`,
+`night.protect.v1`, `vote.triple.v1`, `intel.special_roles.v1`이다. `CITIZEN`은 공격 외
+네 능력 중 1~3개(낮/조회 능력만도 가능), `MAFIA`는 공격 필수와 나머지 추가로 총 1~3개를
+허용하며 배열 중복이나 알 수 없는 ID는 저장하지 않는다.
+
+역할 배정 시 기존 `games.mafia_count`를 유지한다. CUSTOM_ROLE 인간의 저장 faction이 `MAFIA`이면 mafia 슬롯 하나, `CITIZEN`이면 citizen 슬롯 하나를 선점한다. 나머지 AI에는 표준 mafia 총수와 detective·doctor 각 한 명 구성을 보존한다. 밤 원장은 actor별 `ability_id`와 대상을 구분할 수 있어야 하며 복수 INVESTIGATE·PROTECT 제출을 허용하고, 해소 시 유효 PROTECT actor의 모든 대상 집합을 공격 대상과 비교한다. migration upgrade 검증은 기존 행이 `mode=STANDARD`, custom 열 NULL로 읽히며 기존 게임 결과가 변하지 않는지 포함한다.
+
+### 2026-09-08 WU-M10 능력 저장 확장
+
+catalog allowlist에 `vote.triple.v1`, `intel.special_roles.v1`을 두 진영 공통으로 추가한다.
+1~3개 제한과 MAFIA 공격 필수는 유지한다. 신규 migration
+`011_add_custom_role_tool_abilities.sql`은 010 뒤에 실행하며 기존 행을 변경하지 않고
+`action_submissions_ability_id_check`에 `vote.triple.v1` + `action_type=VOTE` 조합만 추가한다.
+이 신규 조합은 `source=HUMAN`도 필수로 검증한다.
+능력 투표는 기존 immutable 제출 행의 ability_id에 기록하고 복원 시 게임 mode·HUMAN·
+보유 능력·phase와 대상을 재검증해 3표를 재현한다. NULL은 기존 1표이며 가중치를 외부
+숫자로 저장/수용하지 않는다. 공개 counts와 순수 엔진은 같은 가중 합계를 사용한다.
+확정 해소 원장과 종료 결과의 ballots도 능력 사용 표에만 `ability_id`를 추가한다.
+구형/일반 ballot의 생략은 1표이고 숫자 weight와 AUTO 능력 ballot은 거부한다.
+특수 직업 열람은 현재 소유 게임 snapshot에서 검증·최소 projection만 만들고 저장,
+event, Redis cache를 추가하지 않는다. 첫 밤 완료는 저장된 day_number >= 2로 판정한다.
+
+
+### 2026-09-08 CP-0.1 공개 조회 저장 경계
+
+WU-B17의 공개 `GET /api/v1/games/{game_id}/special-roles`는 기존 `read_special_roles`의
+동일 읽기 snapshot과 소유권·능력·생존·진행 상태·day>=2 검증을 재사용한다. 별도 테이블·
+migration·이벤트·Redis cache를 만들지 않으며 내부 MCP 전용 조회 계약도 유지한다.
+Front의 결과는 identity/game/state 범위의 본인 UI에만 두고 범위 변경 시 폐기하며,
+공개 명부·timeline·analytics 또는 종료 결과 저장에 복제하지 않는다.
+응답 envelope·no-store·오류의 정본은 [API 명세](AI_MAFIA_API_SPEC.md)의 CP-0.1 절이다.
+
+### 2026-09-08 CP-7 팀 DB 적용 검증
+
+사용자가 설정한 `DATABASE_MIGRATION_URL`로 팀 DB 대상과 DDL 권한을 확인한 뒤,
+Backend·MCP·사용자 Front를 중지하고 010 다음 011을 적용했다. 두 SQL만 담은
+임시 migration 디렉터리를 사용했으며 기존 001~009는 재실행하지 않았다.
+같은 순서의 재실행도 성공했고, 새 열 5개·검증된 CHECK 3개·기존 세 테이블 행 수와
+기존 게임의 STANDARD/default 및 custom/ability NULL 보존을 확인했다.
+URL·자격 증명은 출력하지 않았으며 실제 서비스 검증 결과는 루트 README에 기록한다.
