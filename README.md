@@ -172,10 +172,10 @@ API 사용량이 발생합니다. 분석 DB 연결·명령·잠금 대기는 각
 
 **현재 원격 연결(2026-09-07):** 후속 요청으로 원격 `4team_db`에 006을 적용하고
 `.env`의 `AI_MAFIA_STORAGE_MODE=team`으로 현재 Backend 연결을 전환했습니다.
-`run_openai.sh`는 `TEAM_DATABASE_URL`과 `REDIS_URL`을 사용하며 분석 설정은 켜져 있습니다.
+`run_openai.sh`와 Windows용 `run_openai.bat`는 `TEAM_DATABASE_URL`과 `REDIS_URL`을 사용하며 분석 설정은 켜져 있습니다.
 원격 `public.speech_analysis.embedding`에 1536차원 벡터를 저장하고, 기동 직후
 공개 발언 2개의 임베딩·주장 `READY` 저장을 확인했습니다. 로컬의 기존 게임·분석 데이터는
-보존했으며 원격으로 복제하지 않았습니다. 다음 실행도 `./run_openai.sh`를 사용합니다.
+보존했으며 원격으로 복제하지 않았습니다. 다음 실행도 운영체제에 맞는 `./run_openai.sh` 또는 `run_openai.bat`를 사용합니다.
 
 원격 DDL은 기존 계정의 소유권·DDL 권한과 대상을 확인한 별도 관리 연결에서 006만
 적용했습니다. 적용 전후 게임 118개를 포함한 기존 23개 테이블의 행수·내용 집계·권한·
@@ -625,7 +625,9 @@ Front·MCP 연결까지 완료됐다는 뜻은 아닙니다. 규칙 수준의 �
 ├── AGENTS.MD                         # 개발·기여 작업 규칙
 ├── README.md                         # 전체 설정·실행·검증 안내
 ├── .env.example                      # Backend 환경 변수 예시
-├── run_openai.sh                     # OpenAI Backend·MCP·Front 동시 실행
+├── run_openai.sh                     # macOS/Linux용 OpenAI Backend·MCP·Front 동시 실행
+├── run_openai.bat                    # Windows용 PowerShell 실행 진입점
+├── run_openai.ps1                    # Windows용 OpenAI Backend·MCP·Front 실행 로직
 ├── pyproject.toml                    # ai-mafia 통합 런타임·개발 의존성 및 도구 설정
 ├── backend/
 │   ├── app/main.py                   # FastAPI 생성과 router·오류 처리 등록
@@ -676,7 +678,7 @@ Front·MCP 연결까지 완료됐다는 뜻은 아닙니다. 규칙 수준의 �
 │   ├── core/api_client.py            # UUID 공개 Backend API client
 │   ├── .streamlit/secrets.toml.example
 │   └── tests/
-├── frontend_admin/                   # read-only 관리자 운영 분석·피드백·로그·에이전트 계획
+├── frontend_admin/                   # read-only 관리자 운영 분석·피드백·로그
 ├── mcp_server/
 │   ├── pyproject.toml, uv.lock        # Python 3.12·MCP SDK 1.29.1 독립 실행 환경
 │   ├── mafia_game/                   # 최소 FastMCP 등록부·Backend HTTP adapter
@@ -752,8 +754,11 @@ Windows에서는 컴포넌트별 환경을 분리합니다. 기존 `.venv`가 �
 & ".\frontend_admin\.venv\Scripts\python.exe" -m pip install -r ".\frontend_admin\requirements.txt"
 ```
 
-이번 환경 준비는 macOS에서 수행했습니다. Windows 환경 및 PowerShell 자동
-전환 스크립트는 이번에 준비·검증하지 않았습니다.
+Windows에서는 `run_openai.bat --check`로 설정과 import를 확인한 뒤
+`run_openai.bat`를 실행합니다. 배치 파일은 저장소의 `run_openai.ps1`을
+PowerShell로 호출하며, 기존 기본 포트인 18000, 18100, 18501을 사용합니다.
+가상환경의 원본 Python 경로가 변경되었거나 실행되지 않으면 두 `uv sync` 명령을
+다시 실행해 Windows용 가상환경을 재생성해야 합니다.
 
 현재 일반 사용자 Frontend는 WU-F1 UUID-only bootstrap과 공통 화면 테마를 사용합니다. 브라우저
 저장 key는 `ai_mafia_user_id_v1`이며, Backend에는 UUID를 `X-User-Id` header로만
@@ -1105,8 +1110,8 @@ LLM_PROVIDER=dummy .venv/bin/python -m uvicorn backend.app.main:app --reload --p
 
 OpenAI Provider로 실행할 때는 루트 `.env`에 `OPENAI_API_KEY`와 `OPENAI_MODEL`을
 설정한 뒤 전용 스크립트를 사용합니다. `.env`의 `AI_MAFIA_STORAGE_MODE` 기본값은
-`isolated`이며 migration·seed가 준비된 `AI_MAFIA_DATABASE_URL`과
-`AI_MAFIA_REDIS_URL`을 사용합니다. 이 모드에서는 `TEAM_DATABASE_URL`과 같은 DB를
+`isolated`이며 migration·seed가 준비된 `DATABASE_URL`과
+`REDIS_URL`을 사용합니다. 이 모드에서는 `TEAM_DATABASE_URL`과 같은 DB를
 거부합니다. 명시적 `team` 모드는 `TEAM_DATABASE_URL`과 `REDIS_URL`을 함께 사용합니다.
 공유 DB에서는 다른 Backend worker가 같은 게임을 선점할 수 있으므로 실행 담당자를
 조율해야 합니다. 스크립트는 키와 접속 URL을 하드코딩하거나 출력하지 않고
@@ -1118,6 +1123,13 @@ Backend·MCP·일반 사용자 Front를 함께 실행하고, `Ctrl+C` 또는 한
 ```bash
 ./run_openai.sh --check  # 유료 API 호출 없이 세 런타임 설정·import 검증
 ./run_openai.sh          # Backend·MCP·Front 동시 실행
+```
+
+Windows PowerShell 또는 명령 프롬프트에서는 다음처럼 실행합니다.
+
+```bat
+run_openai.bat --check
+run_openai.bat
 ```
 
 동시 실행 주소는 Backend `http://127.0.0.1:18000`, MCP
@@ -1169,14 +1181,10 @@ Windows에서 `uv`를 사용하지 않는 경우 프로젝트 가상환경의 Py
 통합 테스트입니다. 독립 MCP 가상환경에는 Backend 의존성이 없으므로 아래 테스트
 절의 실행 조건을 먼저 확인하세요.
 
-관리자 앱은 read-only 통합 운영 분석·피드백/로그/운영 에이전트 계획 화면을 제공합니다. 현재 Backend 계약이 제공하는 게임 KPI와 시민/마피아 결과는
+관리자 앱은 read-only 통합 운영 분석·피드백/로그 화면을 제공합니다. 현재 Backend 계약이 제공하는 게임 KPI와 시민/마피아 결과는
 실제 값으로 표시하고, 에이전트 페르소나별 AI 승률·사용자 피드백 목록·관리자 감사 로그도 Backend
-조회 API에 연결합니다. 피드백 종류/평점과 감사 이벤트 유형을 필터링하고 20건씩
-이전·다음 페이지로 조회합니다. 전체 사용자 KPI는 DB의 UUID 수입니다.
-운영 에이전트 계획 탭에서는 승인 자료에 질문하고 검색 근거·점수·신뢰도를 확인할 수
-있으며, Backend의 `POST /api/v1/admin/insights/query`는 질문 후 게임·문서 데이터를
-변경하지 않습니다.
-
+조회 API에 연결합니다. 피드백 종류/평점과 현재 화면에 연동된 운영 지표·페르소나 승률·피드백 목록·감사 로그 이벤트 유형을 필터링하고 20건씩
+`← 이전 · 페이지·건수 · 다음 →` 한 줄 컨트롤로 조회합니다. 전체 사용자 KPI는 DB의 UUID 수입니다.
 관리자 데모 모드에는 공개 테스트 키 `demo_ai_mafia_admin_v1`의 연결 확인 입력창이
 있습니다. 실제 인증 키가 아닌 로컬 가상 API 전용 값입니다. 게임 1,200건·사용자 300명,
 페르소나별 승률·30일 추이·피드백 240건·감사 로그 180건의 합성 예시를 표시하며 조회 유형 필터를
@@ -1214,8 +1222,15 @@ BACKEND_API_URL=http://127.0.0.1:18000 ADMIN_DEMO_MODE=false \
   --server.address 127.0.0.1 --server.port 8502 --server.headless true
 ```
 
-운영 분석 화면은 전체 사용자·누적 게임·완료율·시민/마피아 승률 KPI, 진영별 도넛,
-얇은 페르소나별 가로 막대와 상세 표를 중복 없이 한 화면에 배치합니다. 최근 게임 목록과
+운영 분석 화면은 전체 사용자·누적 게임·완료율·평균 경기 라운드·시민/마피아 승률 KPI, 매끈한 원형 분리선이 적용된 진영별 도넛,
+페르소나별 가로 막대와 일별 게임 막대 그래프를 중복 없이 한 화면에 배치합니다. 페르소나 상세 정보 팝오버는
+제목 오른쪽에 고정해 확인할 수 있도록 구성합니다. 관리자 식별자는 정상 연결 시 별도 상태 배지를 표시하지 않고,
+미설정·권한 오류 시에만 입력 카드를 표시합니다.
+관리자 본문은 좌우 여백을 포함한 폭 계산을 고정해 마지막 KPI 카드가 잘리지 않도록 하며, 좁은 창에서는 KPI 카드가 자동으로 다음 줄에 배치됩니다.
+일별 게임 그래프에는
+최근 30일 총합·일평균·최다 생성일을 함께 표시하며 세 요약값에 초록색 상승 배지를 적용하고 날짜별 막대는 노란색 계열로 표시합니다. 날짜는 균등한 간격의 범주형 축으로 배치하고 최다 생성일은 더 진한 노란색으로 강조하며 막대 위 수치 라벨은 흰색으로 표시합니다.
+운영 분석 그래프는 30초마다 Backend를 자동 재조회하고, 그래프 위에 초록 상태 표시·마지막 조회 시각·자동 갱신 주기와 `지금 새로고침` 버튼을 제공합니다.
+페르소나 상세 수치는 제목 오른쪽의 `상세 정보` 팝오버에서 확인하며, 최근 게임 목록과
 종료 게임 수는 관리자 요약 화면에서 제외했습니다.
 
 관리자 계약은 [API 명세 7절](docs/개발상세플랜/AI_MAFIA_API_SPEC.md)의 7.4~7.8에
@@ -1229,12 +1244,8 @@ Backend 실행 명령은 저장소 루트에서 `python -m uvicorn backend.app.m
 `python -m pytest -c pyproject.toml frontend_admin/tests backend/tests/test_b8_admin_api.py -q`.
 실 PostgreSQL 집계 실행 계획·DB 통합 검증은 격리된 테스트 DB에서 별도로 수행해야 합니다.
 
-관리자 센터의 운영 분석·사용자 피드백·관리자 로그·운영 에이전트 계획 네 화면은 동일한
-짙은 퍼플 관리자 스타일로 통일해 운영 화면의 구분과 가독성을 높였습니다. 운영 에이전트
-계획 탭은 RAG/운영 에이전트의 구현 계획과 데이터 보호 경계를 설명하며, 검색 코드 경로는
-외부 LLM 없는 로컬 임베딩과 pgvector 혼합 검색으로 동작하도록 연결했습니다. 자동 조치는 연결하지 않습니다.
-상세 계획은
-[AI 마피아 관리자 운영 에이전트 계획서](docs/개발상세플랜/AI_MAFIA_ADMIN_AGENT_PLAN.md)에 정리했습니다.
+관리자 센터의 운영 분석·사용자 피드백·관리자 로그 세 화면은 동일한
+짙은 퍼플 관리자 스타일로 통일해 운영 화면의 구분과 가독성을 높였습니다.
 
 화면용 `ADMIN_DEMO_MODE=true` 합성 데이터와 별도로, 실제 DB 검증이 필요한 담당자는
 `backend/seed_admin_demo_data.sql`을 수동 실행할 수 있습니다. 이 파일은 기존 데이터를
@@ -1375,7 +1386,7 @@ PYTHONPATH=.:mcp_server .venv/bin/python -m pytest \
 실제 게임 환경에서 암호화 설정 여부를 확인해야 합니다.
 - LLM prompt, raw response, private context, token과 비용을 로그에 넣지 않습니다.
 - `ADMIN_USER_IDS`는 강한 인증이 아니므로 관리자 앱도 loopback·사설망에서만 사용합니다.
-- 관리자 앱에는 read-only 운영 분석·피드백·로그·운영 에이전트 계획이 있으며 UUID 입력·필터 등 화면
+- 관리자 앱에는 read-only 운영 분석·피드백·로그가 있으며 UUID 입력·필터 등 화면
   동선이 일부 남아 있습니다. 관리자 권한은 Backend allowlist로 확인합니다.
 - 현재 Mafia Game MCP에는 `/mcp` 서버, 최소 Resource·Prompt·Tool 등록부와 Backend
 HTTP adapter, fake·ASGI 테스트가 있습니다. 실제 프로세스 테스트는 DB를 사용하므로
