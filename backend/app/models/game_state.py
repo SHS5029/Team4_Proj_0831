@@ -32,12 +32,18 @@ class PlayerState:
     kind: PlayerKind = PlayerKind.AI
     display_name: str = ""
     alive: bool = True
+    custom_role_name: str | None = None
+    custom_role_catalog_version: str | None = None
+    custom_ability_ids: tuple[str, ...] = ()
+    custom_faction: Faction | None = None
 
     @property
     def faction(self) -> Faction:
         """역할에서 진영을 계산한다. 진영을 별도로 바꾸지 못하게 한다."""
 
-        return Faction.MAFIA if self.role is PlayerRole.MAFIA else Faction.CITIZEN
+        return self.custom_faction or (
+            Faction.MAFIA if self.role is PlayerRole.MAFIA else Faction.CITIZEN
+        )
 
 
 @dataclass(frozen=True)
@@ -51,10 +57,17 @@ class NightAction:
 
 @dataclass(frozen=True)
 class Vote:
-    """한 플레이어가 제출한 유효한 표이다."""
+    """검증된 능력 ID만 보관하고 숫자 가중치는 내부 규칙으로 계산하는 표다."""
 
     actor_id: UUID
     target_id: UUID
+    ability_id: str | None = None
+
+    @property
+    def weight(self) -> int:
+        """구형·일반 표는 1표이며 검증된 조작 능력 사용 표만 3표로 센다."""
+
+        return 3 if self.ability_id == "vote.triple.v1" else 1
 
 
 @dataclass(frozen=True)
@@ -66,6 +79,7 @@ class EngineOperation:
     target_id: UUID | None = None
     text: str | None = None
     result_state_version: int = 0
+    ability_id: str | None = None
 
 
 @dataclass
@@ -97,6 +111,7 @@ class GameState:
     operations: list[EngineOperation] = field(default_factory=list)
     # 인간 사망 여부와 별개의 명시적 설정이다. 영속 저장·복원과 변경 명령은 B5가 담당한다.
     fast_forward_enabled: bool = False
+    mode: str = "STANDARD"
 
     @property
     def alive_players(self) -> list[PlayerState]:

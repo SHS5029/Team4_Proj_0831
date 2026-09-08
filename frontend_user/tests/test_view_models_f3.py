@@ -14,6 +14,18 @@ HUMAN = "00000000-0000-4000-8000-000000000203"
 RUN = "00000000-0000-4000-8000-000000000204"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_action_attention_component(monkeypatch):
+    """F3는 화면·저장 흐름을 검증하므로 브라우저 접근성 전송만 격리한다.
+
+    공통 하단 시계는 그대로 실행하며 주의 안내 payload와 fragment 경계는 F4·F5가
+    검증한다. 수집 때 등록된 component가 새 AppTest runtime에 남는다고 가정하지 않는다.
+    """
+
+    monkeypatch.setattr("frontend_user.components.action_panel.ACTION_ATTENTION_COMPONENT",
+                        lambda **kwargs: {})
+
+
 def _snapshot(status="IN_PROGRESS", phase="DAY_DISCUSSION", version=12):
     return {
         "game": {"game_id": GAME, "status": status, "phase": phase,
@@ -312,7 +324,7 @@ def test_snapshot_sync_rejects_get_with_different_scope_or_reversed_cursor(secti
 
 
 @pytest.mark.parametrize("spectating", [False, True])
-def test_timeline_explains_saved_and_resumed_events(spectating):
+def test_public_chat_excludes_saved_and_resumed_events(spectating):
     snapshot = _snapshot()
     snapshot["me"]["alive"] = not spectating
     snapshot["public_events"] = [{
@@ -322,10 +334,26 @@ def test_timeline_explains_saved_and_resumed_events(spectating):
     } for event_id, event_type in [(GAME, "GAME_SAVED"), (RUN, "GAME_RESUMED")]]
     app = AppTest.from_function(_page_app, args=(_Client(snapshot), snapshot)).run()
     assert not app.exception
-    text = " ".join(item.value for item in app.markdown)
-    assert "게임을 저장했습니다. (저장 시각: 2026-09-07 01:00:00 UTC)" in text
-    assert "게임을 재개했습니다. 저장한 지점부터 이어서 진행합니다." in text
-    assert "공개 사건 기록이 갱신되었습니다" not in text
+    text = " ".join(item.value for item in [*app.markdown, *app.info])
+    assert game_page._player_conversation_events(snapshot) == []
+    assert "게임을 저장했습니다" not in text
+    assert "게임을 재개했습니다" not in text
+
+
+def test_public_chat_keeps_turn_speech_and_pass_in_order():
+    snapshot = _snapshot()
+    snapshot["public_events"] = [
+        {"event_type": "GAME_BEGAN", "data": {"message": "GM 브리핑"}},
+        {"event_type": "TURN_OPENED", "data": {"player_id": AI}},
+        {"event_type": "PLAYER_SPOKE", "data": {"player_id": AI, "message": "공개 발언"}},
+        {"event_type": "PLAYER_PASSED", "data": {"player_id": HUMAN}},
+        {"event_type": "NIGHT_RESOLVED", "data": {"killed_player_id": AI}},
+    ]
+    assert [event["event_type"] for event in game_page._player_conversation_events(snapshot)] == [
+        "TURN_OPENED",
+        "PLAYER_SPOKE",
+        "PLAYER_PASSED",
+    ]
 
 
 @pytest.mark.parametrize("event_type", ["GAME_SAVED", "GAME_RESUMED"])
@@ -397,16 +425,38 @@ def test_vote_resolved_rejects_noncanonical_or_private_payload(changes):
 
 @pytest.mark.parametrize("phase", ["NIGHT_ACTION", "DAY_VOTE", "REVOTE", "FINAL_ACCUSATION"])
 def test_every_active_phase_keeps_public_timeline_visible(phase):
+    """GM 브리핑과 분리된 실제 공개 발언이 밤·각 투표 단계에서도 유지되는지 확인한다."""
+
     snapshot = _snapshot(phase=phase)
+    snapshot["game"].update(
+        day_number=6 if phase == "FINAL_ACCUSATION" else 1 if phase == "NIGHT_ACTION" else 2,
+        round=5 if phase == "FINAL_ACCUSATION" else 1,
+    )
     snapshot["public_events"] = [{
         "event_id": RUN,
-        "event_type": "GAME_BEGAN",
+        "event_type": "PLAYER_SPOKE",
         "created_at": "2026-09-07T01:00:00Z",
-        "data": {"message": "공개 타임라인 유지 확인"},
+        "data": {"player_id": AI, "message": "공개 타임라인 유지 확인"},
     }]
     app = AppTest.from_function(_page_app, args=(_Client(snapshot), snapshot)).run()
     assert not app.exception
-    assert "공개 타임라인 유지 확인" in " ".join(item.value for item in app.markdown)
+    assert "공개 타임라인 유지 확인" in " ".join(
+        item.value for item in [*app.markdown, *app.info, *app.success]
+    )
+
+
+def test_selected_player_summary_uses_only_selected_public_speeches():
+    snapshot = _snapshot()
+    snapshot["public_events"] = [
+        {"event_type": "PLAYER_SPOKE", "data": {"player_id": AI, "message": "AI 공개 발언"}},
+        {"event_type": "PLAYER_SPOKE", "data": {"player_id": HUMAN, "message": "내 공개 발언"}},
+        {"event_type": "NIGHT_RESOLVED", "data": {"killed_player_id": AI}},
+    ]
+    assert game_page._selected_player_speeches(
+        snapshot=snapshot,
+        selected_player_id=AI,
+        player_names={AI: "AI", HUMAN: "사람"},
+    ) == ["AI 공개 발언"]
 
 
 def test_begin_unknown_retry_remains_visible_after_server_phase_change():
@@ -473,15 +523,53 @@ def test_only_exact_dummy_summary_is_projected_as_fixed_action(stage, action, su
     assert "summary" not in record
 
 
-@pytest.mark.parametrize("tick,component_failed,expected", [(1, False, 0), (0, False, 1), (1, True, 1)])
-def test_python_sync_only_runs_before_tick_or_when_component_fails(tick, component_failed, expected):
+@pytest.mark.parametrize("tick", [0, 1])
+def test_python_sync_fallback_belongs_only_to_the_failed_component_refresh(monkeypatch, tick):
+    """초기 tick 여부와 무관하게 현재 component가 실패한 갱신만 Python fallback을 쓴다.
+
+    전체 페이지 fixture는 연결 라벨 초기화로 추가 rerun을 만들 수 있다. fallback
+    정책은 live fragment가 호출하는 한 번의 동기화 경계에서 검증하고, 실패 뒤 정상
+    복구 시에는 이전 실패 표시 때문에 Python polling이 계속되지 않는지도 확인한다.
+    """
+
+    from types import SimpleNamespace
     from unittest.mock import Mock
+
     snapshot = _snapshot()
     client = _Client(snapshot)
-    client.get_sync = Mock(return_value=None)
-    app = AppTest.from_function(_page_app, args=(client, snapshot, tick, True, False, component_failed)).run()
-    assert not app.exception
-    assert client.get_sync.call_count == expected
+    client.config = SimpleNamespace(api_url="http://127.0.0.1:1")
+    client.user_id = HUMAN
+    client.get_sync = Mock(return_value={"data": {
+        "game_id": GAME, "mode": "DELTA", "from_state_version": 12,
+        "state_version": 12, "last_sequence": 0, "operations": [], "snapshot": None,
+    }})
+    # 진행 표시 GET의 tick 처리와 transport fallback을 분리해 현재 갱신만 관찰한다.
+    state = {"game.sync_tick": tick, "game.activity_tick": tick, "game.client": client}
+    monkeypatch.setattr(game_page.st, "session_state", state)
+
+    for component_failed in (False, True, False, True):
+        def mount(**kwargs):
+            # 실제 bridge처럼 매 갱신에서 실패 표시를 다시 결정한다. 정상 component도
+            # 새 envelope가 없는 동안에는 None을 반환하므로 이를 실패로 간주하지 않는다.
+            state["game.sync_component_failed"] = component_failed
+            return None
+
+        mounted = Mock(side_effect=mount)
+        monkeypatch.setattr(game_page, "mount_sse", mounted)
+        client.get_sync.reset_mock()
+        assert game_page._sync_snapshot(client=client, snapshot=snapshot) == snapshot
+        mounted.assert_called_once_with(
+            backend_url=client.config.api_url, game_id=GAME, user_id=HUMAN,
+            last_sequence=0, after_state_version=12,
+        )
+        if component_failed:
+            client.get_sync.assert_called_once_with(
+                game_id=GAME, after_state_version=12, after_sequence=0,
+            )
+        else:
+            client.get_sync.assert_not_called()
+        assert state["game.latest_snapshot"] == snapshot
+    assert client.reads == 0 and client.calls == []
 
 
 def test_hidden_game_blocks_action_panel_and_shell_buttons():
@@ -754,7 +842,7 @@ def _navigation_app(initial_page):
 def test_every_non_home_route_has_only_one_header_back_button(page):
     app = AppTest.from_function(_navigation_app, args=(page,)).run()
     assert not app.exception
-    assert app.button(key="header.back").label == "← 뒤로가기"
+    assert app.button(key="header.back").label == "홈으로"
     assert len(app.button) == 1
 
 
@@ -765,7 +853,9 @@ def test_invalid_navigation_page_returns_to_home_without_rendering_duplicate_con
     assert not app.button
 
 
-def test_back_uses_validated_app_history_without_creating_a_navigation_loop():
+def test_home_button_clears_app_history_without_creating_a_navigation_loop():
+    """이전 역할·생성 화면으로 되돌아가지 않고 홈 이동 시 방문 기록을 비우는지 확인한다."""
+
     app = AppTest.from_function(_navigation_app, args=("home",)).run()
     app.session_state["navigation.page"] = "create"
     app.run()
@@ -774,8 +864,9 @@ def test_back_uses_validated_app_history_without_creating_a_navigation_loop():
     assert list(app.session_state[theme.NAVIGATION_HISTORY_KEY]) == ["home", "create"]
 
     app.button(key="header.back").click().run()
-    assert app.session_state["navigation.page"] == "create"
-    assert list(app.session_state[theme.NAVIGATION_HISTORY_KEY]) == ["home"]
+    assert app.session_state["navigation.page"] == "home"
+    assert list(app.session_state[theme.NAVIGATION_HISTORY_KEY]) == []
+    assert not app.button
 
 
 def test_back_to_home_clears_history_and_only_invalidates_home_list_projection():
@@ -981,3 +1072,220 @@ def test_exit_save_response_loss_keeps_retry_available(phase):
     assert not app.exception
     assert app.session_state["navigation.page"] == "home"
     assert client.calls[0] == client.calls[1]
+
+
+def test_exit_save_uses_server_confirmation_when_screen_version_is_older():
+    """화면 갱신을 기다리지 않고 저장 의도를 제출하며 서버가 확정한 저장 성공으로 이동한다."""
+
+    snapshot = _snapshot(version=12)
+    client = _Client(_snapshot(version=15))
+    app = AppTest.from_function(_page_app, args=(client, snapshot)).run()
+    app.button(key="header.back").click().run()
+    assert any("마지막으로 확정된 진행 상황" in caption.value for caption in app.caption)
+    reads = client.reads
+    app.button(key="game.save_confirm").click().run()
+    assert not app.exception
+    assert client.calls[0]["command"] == {"type": "SAVE_AND_EXIT", "expected_state_version": 12}
+    assert client.snapshot["game"]["state_version"] == 16
+    assert client.reads == reads + 1
+    assert app.session_state["navigation.page"] == "home"
+
+
+def test_custom_private_fields_never_enter_public_player_projection():
+    """타인에게 섞인 비공개 직업·능력을 공개 목록이 복사하지 않는지 검증한다."""
+
+    from frontend_user.core.view_models import custom_role_description
+
+    private = {"role_name": "본인 감식관", "faction": "CITIZEN", "ability_ids": ["night.investigate.v1"],
+               "ability_options": []}
+    snapshot = {"me": private, "players": [{"player_id": AI, "seat": 1,
+        "role_name": "타인 비밀", "faction": "MAFIA", "ability_ids": ["night.attack.v1"], "ability_options": []}]}
+    assert own_private_view(snapshot) == private
+    assert public_players(snapshot) == [{"player_id": AI, "seat": 1}]
+    assert "조사" in custom_role_description(own_private_view(snapshot))
+    assert "타인 비밀" not in custom_role_description(own_private_view(snapshot))
+
+
+def test_custom_investigator_can_read_only_own_results():
+    snapshot = _investigation_snapshot()
+    snapshot["game"]["mode"] = "CUSTOM_ROLE"
+    snapshot["me"].update(role="CITIZEN", role_name="감식관", faction="CITIZEN",
+                          ability_ids=["night.investigate.v1"], ability_options=[])
+    app = AppTest.from_function(_page_app, args=(_Client(snapshot), snapshot)).run()
+    assert not app.exception
+    assert any("밤 1 조사 결과" in item.value for item in app.text)
+    assert any("시민 진영" in item.value for item in app.text)
+
+
+def _intel_snapshot():
+    """첫 밤 이후 본인 전용 능력이 해금된 최소 공개 snapshot이다."""
+
+    snapshot = _snapshot()
+    snapshot["game"].update(mode="CUSTOM_ROLE", day_number=2)
+    snapshot["me"].update(ability_ids=["intel.special_roles.v1"], faction="CITIZEN", role_name="기록관")
+    return snapshot
+
+
+class _IntelClient:
+    """동기 HTTP 도중의 identity·snapshot 변경도 재현하는 비공개 조회 대역이다."""
+
+    user_id = HUMAN
+
+    def __init__(self):
+        self.snapshot = _intel_snapshot()
+        self.calls = 0
+        self.refreshes = 0
+        self.change = None
+        self.error = None
+        self.response = {"data": {"game_id": GAME, "player_id": HUMAN,
+            "ability_id": "intel.special_roles.v1", "state_version": 12,
+            "roles": [{"player_id": AI, "display_name": "<b>비공개 탐정</b>", "role": "DETECTIVE", "alive": False}]}}
+
+    def get_special_roles(self, game_id):
+        import streamlit as st
+
+        self.calls += 1
+        if self.change:
+            self.change(st.session_state)
+        if self.error:
+            raise self.error
+        return deepcopy(self.response)
+
+    def get_game(self, game_id):
+        self.refreshes += 1
+        return {"data": deepcopy(self.snapshot)}
+
+
+def _intel_app(client):
+    from copy import deepcopy
+    import streamlit as st
+    from frontend_user.app_pages.game_page import _render_special_roles
+
+    st.session_state.setdefault("identity.user_id", client.user_id)
+    st.session_state.setdefault("game.game_id", client.snapshot["game"]["game_id"])
+    st.session_state.setdefault("game.latest_snapshot", deepcopy(client.snapshot))
+    _render_special_roles(client=client, snapshot=st.session_state["game.latest_snapshot"])
+
+
+def test_intel_private_panel_plain_text_rerun_error_discards_and_retries():
+    client = _IntelClient()
+    app = AppTest.from_function(_intel_app, args=(client,)).run()
+    app.button(key="game.special_roles_query").click().run()
+    assert not app.exception
+    assert any("<b>비공개 탐정</b>" in item.value for item in app.text)
+    assert "비공개 탐정" not in str(app.session_state["game.latest_snapshot"])
+    app.run()
+    assert client.calls == 1
+    client.error = ApiResponseError(status_code=403, code="PRIVATE_RAW_ERROR")
+    app.button(key="game.special_roles_query").click().run()
+    assert "game.special_roles" not in app.session_state
+    assert not any("비공개 탐정" in item.value for item in app.text)
+    assert "PRIVATE_RAW_ERROR" not in str([item.value for item in app.warning])
+    assert client.refreshes == 1
+    client.error = None
+    app.button(key="game.special_roles_query").click().run()
+    assert app.session_state["game.special_roles"]["roles"]
+    assert not app.exception
+
+
+@pytest.mark.parametrize("change", ["identity", "game", "version", "phase", "dead", "ended", "ability", "logout", "player"])
+def test_intel_scope_changes_discard_success_and_late_response(change):
+    from frontend_user.core.session import maintain_special_roles, special_roles_scope
+
+    def mutate(state):
+        if change == "identity":
+            state["identity.user_id"] = AI
+        elif change == "logout":
+            state.pop("identity.user_id", None)
+        elif change == "game":
+            state["game.game_id"] = AI
+        else:
+            snapshot = deepcopy(state["game.latest_snapshot"])
+            if change == "version":
+                snapshot["game"]["state_version"] += 1
+            elif change == "phase":
+                snapshot["game"]["phase"] = "NIGHT_ACTION"
+            elif change == "dead":
+                snapshot["me"]["alive"] = False
+            elif change == "ended":
+                snapshot["game"]["status"] = "COMPLETED"
+            elif change == "ability":
+                snapshot["me"]["ability_ids"] = []
+            else:
+                snapshot["me"]["player_id"] = AI
+            state["game.latest_snapshot"] = snapshot
+
+    snapshot = _intel_snapshot()
+    state = {"identity.user_id": HUMAN, "game.game_id": GAME, "game.latest_snapshot": snapshot}
+    state["game.special_roles"] = {"scope": special_roles_scope(state, snapshot), "roles": [{"secret": True}]}
+    mutate(state)
+    maintain_special_roles(state, state["game.latest_snapshot"])
+    assert "game.special_roles" not in state
+    client = _IntelClient()
+    client.change = mutate
+    app = AppTest.from_function(_intel_app, args=(client,)).run()
+    app.button(key="game.special_roles_query").click().run()
+    assert not app.exception
+    assert "game.special_roles" not in app.session_state
+    assert not any("비공개 탐정" in item.value for item in app.text)
+
+
+@pytest.mark.parametrize("change", ["day", "standard", "ai", "dead", "saved", "ability"])
+def test_intel_ineligible_never_calls_api(change):
+    client = _IntelClient()
+    if change == "day":
+        client.snapshot["game"]["day_number"] = 1
+    elif change == "standard":
+        client.snapshot["game"]["mode"] = "STANDARD"
+    elif change == "ai":
+        client.snapshot["players"][1]["kind"] = "AI"
+    elif change == "dead":
+        client.snapshot["me"]["alive"] = False
+    elif change == "saved":
+        client.snapshot["game"]["status"] = "SAVED"
+    else:
+        client.snapshot["me"]["ability_ids"] = []
+    app = AppTest.from_function(_intel_app, args=(client,)).run()
+    assert not app.button
+    assert client.calls == 0
+    assert not app.exception
+
+
+@pytest.mark.parametrize("field,value", [("game_id", AI), ("player_id", AI), ("state_version", 13),
+    ("state_version", True), ("ability_id", "other"), ("roles", [{"role": "MAFIA"}])])
+def test_intel_response_scope_and_schema_fail_closed(field, value):
+    client = _IntelClient()
+    client.response["data"][field] = value
+    app = AppTest.from_function(_intel_app, args=(client,)).run()
+    app.button(key="game.special_roles_query").click().run()
+    assert "game.special_roles" not in app.session_state
+    assert app.warning
+    assert not app.exception
+
+
+def test_intel_failed_snapshot_refresh_blocks_query_until_revalidated():
+    class FailingRefreshClient(_IntelClient):
+        """권한 오류 뒤 snapshot 의존성까지 실패하면 다음 클릭도 먼저 재검증한다."""
+
+        fail_refresh = True
+
+        def get_game(self, game_id):
+            self.refreshes += 1
+            if self.fail_refresh:
+                raise ApiUnavailableError(status_code=503, code="PRIVATE_FAILURE")
+            return {"data": deepcopy(self.snapshot)}
+
+    client = FailingRefreshClient()
+    client.error = ApiResponseError(status_code=409, code="ABILITY_NOT_AVAILABLE")
+    app = AppTest.from_function(_intel_app, args=(client,)).run()
+    app.button(key="game.special_roles_query").click().run()
+    assert client.calls == 1
+    app.button(key="game.special_roles_query").click().run()
+    assert client.calls == 1
+    assert "game.special_roles" not in app.session_state
+    client.fail_refresh = False
+    client.error = None
+    app.button(key="game.special_roles_query").click().run()
+    assert client.calls == 2
+    assert app.session_state["game.special_roles"]["roles"]
+    assert not app.exception

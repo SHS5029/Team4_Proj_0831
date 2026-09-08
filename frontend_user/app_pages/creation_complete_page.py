@@ -66,7 +66,7 @@ def render(pending: dict[str, object]) -> None:
             st.session_state["navigation.page"] = "game"
             st.rerun()
     with right:
-        if st.button("홈으로 돌아가기", key="creation.complete.home", width="stretch"):
+        if st.button("홈으로", key="creation.complete.home", width="stretch"):
             st.session_state["navigation.page"] = "home"
             st.session_state.pop("game.game_id", None)
             st.rerun()

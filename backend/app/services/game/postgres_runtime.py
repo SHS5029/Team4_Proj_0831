@@ -353,6 +353,7 @@ class PostgresGameRuntime:
                 provider=get_llm_provider(self._settings),
                 context_client=context, activity=self._activity, owner_user_id=owner_user_id,
                 max_output_tokens=self._settings.llm_max_output_tokens,
+                timeout_seconds=self._settings.llm_timeout_seconds,
             )
             result = await orchestrator.run(AgentJobSpec(
                 game_id=game_id, player_id=player_id, window_id=window_id,
@@ -414,6 +415,19 @@ class PostgresGameRuntime:
             self._record_agent(owner_user_id, game_id, player_id, phase, version, "SKIPPED")
             return {"status": "DEFERRED"}
         window_id = UUID(window["window_id"])
+        spec = AgentJobSpec(game_id, player_id, window_id, "SPEECH", phase, version,
+                            day_number=snapshot["game"]["day_number"])
+        fallback_proposal = AgentOrchestrator._fallback_proposal(spec, {})
+
+        def submit_bound_proposal(proposal):
+            """모든 대체·복구 발언을 최초 관찰한 window와 버전에서만 제출한다."""
+
+            if proposal.type == "SPEAK":
+                return self.agent_speak(owner_user_id, game_id, player_id, proposal.message,
+                    expected_state_version=version, window_id=window_id)
+            return self.agent_pass(owner_user_id, game_id, player_id,
+                expected_state_version=version, window_id=window_id)
+
         context = FastMcpGameContextClient(self._settings.mcp_server_url, user_id=owner_user_id, game_id=game_id,
                                            player_id=player_id, phase=phase, state_version=version, window_id=window_id)
         result = None
@@ -421,42 +435,31 @@ class PostgresGameRuntime:
         try:
             orchestrator = AgentOrchestrator(repository=self._agent_repository, provider=get_llm_provider(self._settings),
                 context_client=context, activity=self._activity, owner_user_id=owner_user_id, close_context=False,
-                max_output_tokens=self._settings.llm_max_output_tokens)
-            result = await orchestrator.run(AgentJobSpec(game_id, player_id, window_id, "SPEECH", phase, version))
+                max_output_tokens=self._settings.llm_max_output_tokens,
+                timeout_seconds=self._settings.llm_timeout_seconds)
+            result = await orchestrator.run(spec)
             if result.status in {"STALE", "DUPLICATE"}:
                 return {"status": "DEFERRED"}
             proposal = result.proposal
             if proposal is None or proposal.type not in {"PASS", "SPEAK"}:
-                proposal = NormalizedAgentProposal(type="PASS")
-                self._record_agent(owner_user_id, game_id, player_id, phase, version, "FALLBACK", "PASS")
-            if result.recovered:
-                # 저장된 선택은 재생성하거나 PASS로 바꾸지 않고 원래 binding으로 재시도한다.
-                # 정상 신규 선택은 계속 MCP Tool을 사용하며 복구도 동일한 service를 통과한다.
-                if proposal.type == "SPEAK":
-                    receipt, replayed = self.agent_speak(owner_user_id, game_id, player_id, proposal.message,
-                        expected_state_version=version, window_id=window_id)
-                else:
-                    receipt, replayed = self.agent_pass(owner_user_id, game_id, player_id,
-                        expected_state_version=version, window_id=window_id)
-            elif result.status == "FALLBACK":
-                # MCP 응답 자체가 불완전하면 Tool binding을 재구성하지 않는다.
-                # 원래 관찰한 version/window에만 deterministic PASS를 시도한다.
-                proposal = NormalizedAgentProposal(type="PASS")
-                receipt, replayed = self.agent_pass(owner_user_id, game_id, player_id,
-                    expected_state_version=version, window_id=window_id)
+                proposal = fallback_proposal
+                self._record_agent(owner_user_id, game_id, player_id, phase, version, "FALLBACK", proposal.type)
+            if result.recovered or result.status == "FALLBACK":
+                # MCP 조회가 실패하면 불완전한 Tool binding을 재구성하지 않고 같은
+                # service에 제출한다. 첫날의 기본 SPEAK도 다시 PASS로 바꾸지 않는다.
+                receipt, replayed = submit_bound_proposal(proposal)
             else:
                 try:
                     accepted = await context.submit_action(game_id=game_id, player_id=player_id,
                                                             action=proposal.model_dump(mode="json"))
                     receipt, replayed = accepted["result"], accepted["replayed"]
                 except Exception:
-                    # Tool 응답 유실 시 이미 commit한 행동을 반복하지 않는다. 원래
-                    # window/version에 고정한 PASS만 시도하므로 새 차례에는 적용될 수 없다.
-                    proposal = NormalizedAgentProposal(type="PASS")
-                    self._record_agent(owner_user_id, game_id, player_id, phase, version, "FALLBACK", "PASS",
+                    # 제출 경로 장애만으로 검증된 발언을 기본 대사로 바꾸지 않는다.
+                    # 이미 commit된 응답이 유실돼도 최초 window/version 검증을 유지해
+                    # 같은 원문이 새 차례에 중복 적용되는 것을 막는다.
+                    self._record_agent(owner_user_id, game_id, player_id, phase, version, "FALLBACK", proposal.type,
                                        reason_code="MCP_SUBMISSION_FAILED")
-                    receipt, replayed = self.agent_pass(owner_user_id, game_id, player_id,
-                        expected_state_version=version, window_id=window_id)
+                    receipt, replayed = submit_bound_proposal(proposal)
             applied = True
             self._record_agent(owner_user_id, game_id, player_id, phase, version,
                                "SKIPPED" if replayed else "APPLIED", proposal.type)
@@ -566,6 +569,13 @@ class PostgresGameRuntime:
 
         snapshot = self._read.snapshot(owner_user_id, game_id)
         return {**snapshot, "agent_activity": self._activity.recent(owner_user_id, game_id)}
+
+    def special_roles(self, owner_user_id: UUID, game_id: UUID) -> dict[str, Any]:
+        """공개 조회도 내부 MCP와 동일한 읽기 검증·최소 projection만 사용한다."""
+
+        from backend.app.services.game.game_read_service import read_special_roles
+
+        return read_special_roles(self._read, owner_user_id=owner_user_id, game_id=game_id)
 
     def delete_game(
         self, owner_user_id: UUID, game_id: UUID, *, expected_state_version: int,

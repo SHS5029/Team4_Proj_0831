@@ -13,8 +13,9 @@ from frontend_user.app_pages.game_page import (
     render_game_back_button,
     render_saved_control,
 )
+from frontend_user.components.action_panel import render_status_bar
 from frontend_user.components.theme import render_application_header
-from frontend_user.core.view_models import own_private_view, public_players
+from frontend_user.core.view_models import own_private_view, public_players, custom_role_description
 
 ROLE_REVEAL_CSS = """
 <style>
@@ -61,6 +62,12 @@ ROLE_REVEAL_CSS = """
 [class*="st-key-role-reveal-card"] h2,
 [class*="st-key-role-reveal-card"] h3,
 [class*="st-key-role-reveal-card"] p { color: var(--role-ink); }
+[class*="st-key-role-reveal-card"] [data-testid="stText"] {
+  color: var(--role-ink) !important;
+  -webkit-text-fill-color: var(--role-ink) !important;
+  font-size: 1.7rem; font-weight: 800; line-height: 1.35;
+  overflow-wrap: anywhere;
+}
 .role-pill {
   width: fit-content; margin: 0 auto .7rem; padding: .42rem .9rem;
   border-radius: 999px; color: #fff; background: var(--role-blue);
@@ -110,7 +117,7 @@ ROLE_PRESENTATION = {
     "MAFIA": (
         "마피아",
         "🥷",
-        "밤에 다른 플레이어를 제거합니다. 마피아가 생존 비마피아 이상이면 승리합니다.",
+        "밤에 다른 플레이어를 제거합니다. 게임이 끝날 때까지 정체를 숨기면 승리합니다.",
     ),
     "DETECTIVE": (
         "탐정",
@@ -136,6 +143,8 @@ def render(snapshot: dict[str, Any]) -> None:
     # snapshot의 private projection 가운데 본인 필드만 일반 Streamlit 텍스트로
     # 렌더링한다. Backend 문자열을 unsafe HTML에 삽입하지 않아 마크업 주입과
     # 다른 플레이어 정보의 우발적 노출을 함께 방지한다.
+    game = snapshot.get("game", {})
+    game_id = str(game.get("game_id"))
     st.markdown(ROLE_REVEAL_CSS, unsafe_allow_html=True)
     render_application_header(
         title="AI 마피아",
@@ -143,22 +152,27 @@ def render(snapshot: dict[str, Any]) -> None:
     )
 
     scenario = snapshot.get("scenario", {})
-    game = snapshot.get("game", {})
     client = st.session_state["game.client"]
-    game_id = str(game.get("game_id"))
     _process_shell_pending(client=client, game_id=game_id)
-    pending_save = st.session_state.get("game.save_pending")
-    if isinstance(pending_save, dict) and pending_save.get("game_id") == game_id:
-        _render_save_control(client=client, game_id=game_id, snapshot=snapshot)
+    # 이탈 팝업에서 저장 요청이 전송된 뒤 응답이 유실되어도 최초 요청의
+    # 재확인 제어를 유지한다. 아직 게임을 시작하지 않은 역할 공개도 같은 경계다.
+    _render_save_control(client=client, game_id=game_id, snapshot=snapshot)
+    render_status_bar(game_id=game_id, snapshot=snapshot)
     me = own_private_view(snapshot)
     role_name, role_icon, role_text = ROLE_PRESENTATION.get(
         me.get("role"),
         ("역할 확인 중", "❔", "역할 정보를 확인하는 중입니다."),
     )
 
+    if custom_role_description(me):
+        role_name = me["role_name"]
+        role_text = custom_role_description(me)
     with st.container(key="role-reveal-card", border=True):
         st.markdown('<div class="role-pill">🎭 &nbsp; 역할 공개</div>', unsafe_allow_html=True)
-        st.markdown(f"## 당신은 **{role_name}**입니다")
+        if custom_role_description(me):
+            st.text(f"당신은 {role_name}입니다")
+        else:
+            st.markdown(f"## 당신은 **{role_name}**입니다")
         st.markdown(f'<div class="role-avatar" aria-hidden="true">{role_icon}</div>', unsafe_allow_html=True)
         st.markdown(
             '<div class="role-scenario">현재 사건 정보</div>',

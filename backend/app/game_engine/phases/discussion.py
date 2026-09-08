@@ -7,7 +7,7 @@ from uuid import UUID
 
 from backend.app.game_engine.errors import RuleViolation
 from backend.app.game_engine.phases.transition import touch
-from backend.app.game_engine.rules.discussion_rules import normalize_speech
+from backend.app.game_engine.rules.discussion_rules import is_first_day_discussion, normalize_speech
 from backend.app.game_engine.rules.player_rules import require_alive_player
 from backend.app.models.enums import GamePhase
 from backend.app.models.game_state import GameState
@@ -65,6 +65,8 @@ def pass_turn(state: GameState, actor_id: UUID) -> None:
     actor = require_alive_player(state, actor_id)
     if actor.player_id in state.speech_actors:
         raise RuleViolation("DUPLICATE_ACTION")
+    if is_first_day_discussion(state.phase, state.day_number):
+        raise RuleViolation("ACTION_NOT_ALLOWED")
     state.speech_actors.add(actor.player_id)
     touch(state)
     advance_if_done(state)

@@ -133,3 +133,39 @@ def test_delete_game_sends_owner_and_confirmed_version() -> None:
         with pytest.raises(ValueError):
             client.delete_game(game_id=REQUEST_ID, expected_state_version=version)
     assert len(captured) == 1
+
+
+def test_custom_catalog_and_create_preserve_public_contract():
+    """catalog GET과 CUSTOM_ROLE body에 공개 versioned ID만 전달되는지 검증한다."""
+
+    requests = []
+    def transport(request, timeout):
+        requests.append(request)
+        return 200, b'{"data": {}}'
+    client = ApiClient(user_id=USER_ID, transport=transport)
+    client.get_custom_role_abilities()
+    custom = {"name": "감식관", "faction": "CITIZEN", "catalog_version": "custom-role-v1",
+              "ability_ids": ["night.investigate.v1"]}
+    client.create_game(player_count=6, idempotency_key=REQUEST_ID, mode="CUSTOM_ROLE", custom_role=custom)
+    assert requests[0].full_url.endswith("/api/v1/game-config/custom-role-abilities")
+    body = json.loads(requests[1].data)
+    assert body == {"player_count": 6, "ruleset_version": "mystery-v1", "scenario_version": "scenario-v1",
+                    "mode": "CUSTOM_ROLE", "custom_role": custom}
+    assert _header(dict(requests[1].headers), "Idempotency-Key") == str(REQUEST_ID)
+
+
+def test_special_roles_uses_public_get_identity_header_without_actor_or_cache():
+    requests = []
+
+    def transport(request, timeout):
+        requests.append(request)
+        return 200, b'{"data": {"roles": []}}'
+
+    client = ApiClient(user_id=USER_ID, transport=transport)
+    client.get_special_roles(REQUEST_ID)
+    client.get_special_roles(REQUEST_ID)
+    assert len(requests) == 2
+    assert requests[0].method == "GET"
+    assert requests[0].full_url.endswith(f"/api/v1/games/{REQUEST_ID}/special-roles")
+    assert _header(requests[0].headers, "X-User-Id") == USER_ID
+    assert requests[0].data is None

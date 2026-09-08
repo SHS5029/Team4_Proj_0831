@@ -156,6 +156,7 @@ async def test_stance_contract_preserves_fake_classification(setup_provider, mes
         {"role": "MAFIA"},
         {"stance": "GUILTY"},
         {"proposition": ""},
+        {"proposition": " \t\n\u3000"},
     ],
 )
 async def test_malicious_claims_rejected(setup_provider, patch):
@@ -164,6 +165,16 @@ async def test_malicious_claims_rejected(setup_provider, patch):
     client.responses.create.return_value.output_text = json.dumps({"claims": [item]})
     with pytest.raises(SpeechAnalysisError, match="INVALID_RESPONSE"):
         await provider.extract_claims("3번이 의심돼", roster())
+
+
+@pytest.mark.asyncio
+async def test_nonempty_proposition_preserves_original_wording(setup_provider):
+    """공백 검사는 빈 주장만 거부하며 부정·인용을 담은 요약 문구를 다시 쓰지 않는다."""
+    provider, client, _ = setup_provider
+    message = "3번은 마피아가 아니다"
+    item = claim(message, stance="DEFENSE") | {"proposition": f" {message} "}
+    client.responses.create.return_value.output_text = json.dumps({"claims": [item]})
+    assert await provider.extract_claims(message, roster()) == [item]
 
 
 @pytest.mark.asyncio

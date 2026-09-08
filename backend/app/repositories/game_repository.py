@@ -173,7 +173,7 @@ GAME_COLUMNS = """
     next_event_sequence, next_front_sequence, player_count, mafia_count,
     ruleset_version, scenario_version, scenario_id, scenario_content_hash,
     seed_ciphertext, seed_nonce, seed_key_id, agent_config_version,
-    fast_forward_enabled, winner, win_reason, saved_at, finished_at,
+    fast_forward_enabled, mode, winner, win_reason, saved_at, finished_at,
     created_at, updated_at
 """
 # scenario_catalog과 join할 때 id 같은 공통 컬럼이 모호해지지 않도록 games alias를
@@ -220,7 +220,7 @@ class PostgresGameRepository:
         ):
             raise ValueError("Scenario content hash is invalid")
 
-        mafia_count = sum(player.role.value == "MAFIA" for player in state.players)
+        mafia_count = sum(player.faction.value == "MAFIA" for player in state.players)
         cursor.execute(
             """
             INSERT INTO public.games (
@@ -229,14 +229,14 @@ class PostgresGameRepository:
                 player_count, mafia_count, ruleset_version, scenario_version,
                 scenario_id, scenario_content_hash, seed_ciphertext, seed_nonce,
                 seed_key_id, agent_config_version, fast_forward_enabled,
-                winner, win_reason, saved_at, finished_at
+                mode, winner, win_reason, saved_at, finished_at
             ) VALUES (
                 %s, %s, %s, %s, %s, %s,
                 %s, 1, 1,
                 %s, %s, 'mystery-v1', %s,
                 %s, %s, %s, %s,
                 %s, %s, FALSE,
-                NULL, NULL, NULL, NULL
+                %s, NULL, NULL, NULL, NULL
             )
             RETURNING id, owner_user_id, status, phase, round, day_number,
                       state_version, player_count, mafia_count, scenario_id
@@ -258,6 +258,7 @@ class PostgresGameRepository:
                 encrypted_seed.nonce,
                 encrypted_seed.key_id,
                 agent_config_version,
+                state.mode,
             ),
         )
         row = cursor.fetchone()

@@ -216,8 +216,9 @@ API:
 - `게임 만들기` primary button
 - `취소` secondary button
 
-시나리오, 역할과 persona는 사용자가 고르지 않는다. 반복 플레이 편향을 줄이기 위해
-Backend가 결정적으로 선택한다.
+`STANDARD`에서는 시나리오, 역할과 persona를 사용자가 고르지 않는다. 반복 플레이
+편향을 줄이기 위해 Backend가 결정적으로 선택한다. `CUSTOM_ROLE`의 인간 자유 직업
+선택은 이 문서의 CP-0 절을 따른다.
 
 ### 6.2 제출
 
@@ -331,7 +332,7 @@ HTML을 허용하지 않고 plain text로 렌더링한다. 내부 event payload 
 
 | Phase·상태 | 안내 | 입력 | 완료 후 |
 |---|---|---|---|
-| `DAY_DISCUSSION`, 내 차례 | 최대 200자 발언 또는 넘기기 | textarea, 글자수, `발언`, `PASS` | panel 잠금, 다음 turn 대기 |
+| `DAY_DISCUSSION`, 발언 가능 | 최대 200자 발언, 첫날은 인간·AI 모두 PASS 금지 | 발언 입력, 글자수, 첫날에는 `PASS` 숨김 | 서버 legal action·deadline에 따른 제어 |
 | `DAY_DISCUSSION`, 다른 차례 | 현재 발언자 표시 | 없음 | event 대기 |
 | `NIGHT_ACTION`, 마피아 | 공격 대상 선택, 20초 | target radio, 제출 | 대상 비공개 유지 |
 | `NIGHT_ACTION`, 탐정 | 조사 대상 선택, 20초 | target radio, 제출 | private 결과 event 대기 |
@@ -390,6 +391,10 @@ stateDiagram-v2
 - command 처리 중 또는 server resolution 중에는 button을 잠시 비활성화한다.
 - 성공 뒤 local game cache를 비우고 홈의 `이어하기` section으로 이동한다.
 - 저장 실패 시 게임 화면에 남고 UUID·현재 snapshot을 삭제하지 않는다.
+- 저장은 화면의 최신 버전 일치를 요구하지 않고 마지막으로 확정된 진행 상황을 사용한다.
+  팝업에는 작성 중인 입력·처리 중인 응답이 포함되지 않을 수 있음을 안내한다. 저장 전
+  최신 화면을 맞추기 위한 반복 조회·재확인은 요구하지 않으며 실제 저장 단계·시간은
+  서버가 확정한다.
 - 진행 중 게임의 `뒤로가기`는 즉시 이동하지 않고 `저장하고 나가기`, `게임 삭제`,
   `계속 플레이` 팝업을 연다. 저장은 기존 확인 흐름으로, 삭제는 복구 불가 안내를
   표시한 뒤 사용자의 명시적 선택으로만 실행한다. 취소·닫기는 게임 화면을 유지한다.
@@ -510,18 +515,20 @@ flowchart TD
 ```
 
 - `403`이면 dashboard component와 partial data를 렌더링하지 않는다.
-- allowlist UUID 변경 drawer는 일반 사용자 복구와 같은 경고·확인 절차를 쓴다.
+- 정상 연결 시에는 관리자 식별자 UI를 표시하지 않고 관리자 화면으로 진입한다.
+- UUID 최초 설정·권한 오류 시에만 입력 카드와 교체 확인 절차를 표시한다.
 - 공개 인터넷에서 사용할 수 있는 관리자 인증이라고 안내하지 않는다.
 
 ### 15.2 대시보드
 
 관리자 화면은 다음 네 탭으로 나누어 운영자가 필요한 정보를 한눈에 확인한다.
 
-- **운영 분석**: 전체 사용자·누적 게임·완료율·시민/마피아 승률, 평균 round, 자동 행동,
-  진영별 승리 도넛, 에이전트 페르소나별 얇은 승률 그래프와 일별 생성 추이
+- **운영 분석**: 전체 사용자·누적 게임·완료율·시민/마피아 승률, 평균 round,
+  진영별 승리 도넛, 에이전트 페르소나별 얇은 승률 그래프와 날짜별 노란색 생성 추이
 - **사용자 피드백**: 평균 피드백 점수, 종류·평점 필터, 사용자 의견과 커서 페이지 이동
 - **관리자 로그**: 조회 유형 필터, 관리자 API 조회 이력과 요청·대상 식별자
-- **운영 에이전트 계획**: RAG/운영 에이전트의 자료 경계·검색 방식·근거 답변·도입 순서만 표시한다. 검색·답변·자동 조치는 미구현이다.
+- **AI 발언 분석**: 공개 AI 발언의 임베딩 유사 주제 히트맵, 원문 키워드 빈도,
+  페르소나별 발언 비중·stance와 대표 근거 발언
 - 최근 게임 목록·종료 게임 수 KPI는 요약 화면에서 제외한다.
 - 진행 중 role·개별 행동·private context는 표시하지 않는다.
 - 수정, 강제 종료, 삭제, Provider 변경과 LLM 비용·token·timeout panel은 없다.
@@ -532,20 +539,31 @@ WU-F8 화면 개발 시 `ADMIN_DEMO_MODE=true`에서만 합성 데이터로 미�
 공개 테스트 문자열 `demo_ai_mafia_admin_v1`은 로컬 가상 클라이언트의 연결 시험용이며,
 실제 관리자 인증 키가 아니다. 실 API header나 Backend 권한 계약에 추가하지 않는다.
 키 입력 실패 시 예시 데이터도 숨기고 재입력할 수 있게 한다.
-페르소나별 집계·사용자 수·피드백·감사 로그는 API 명세 7.4~7.8에 따라 운영 모드에서도
+페르소나별 집계·사용자 수·피드백·감사 로그·AI 발언 분석은 API 명세 7.4~7.10에 따라 운영 모드에서도
 조회한다. 데모는 같은 필드의 합성 응답을 제공하고 화면에 가상 데이터임을 표시한다.
 운영 분석 화면은 metrics, persona-win-rates와 metrics.daily_games, 피드백/로그는
 feedback와 audit-logs를 사용한다. 운영 분석에는 전체 사용자·누적 게임·완료율·진영별
-승률·평균 라운드·자동 행동 KPI를 중복 없이 배치한다. 목록은 필터 변경 시 첫 페이지로
+승률·평균 라운드 KPI를 중복 없이 배치한다. 페르소나 상세 수치는 그래프 옆 상세 정보
+팝오버에서 확인한다. 목록은 필터 변경 시 첫 페이지로
 돌아가며 이전/다음
 버튼으로 읽는다. 감사 로그의 필터는 저장된 이벤트 종류이며 가상의 로그 등급이 아니다.
+운영 분석 fragment는 30초마다 Backend를 다시 조회하며 그래프 위에 실시간 API 또는 가상
+데이터 상태, 마지막 조회 시각, 자동 갱신 주기와 즉시 새로고침 버튼을 표시한다.
 실제 관리자 모드는 기존 UUID allowlist를 유지하고 데모 오류로 자동 전환하지 않는다.
-운영 에이전트 계획 탭은 구현 상태와 데이터 보호 원칙을 설명하는 설계 검토용 화면이며,
-실제 RAG 색인·질문 API·외부 LLM 호출·자동 변경을 실행하지 않는다.
 가상 게임 1,200건은 20건씩 페이지를 선택하며 상태 필터별 페이지를 구분한다.
 진영별 승리는 도넛 차트와 승리 횟수·비율 텍스트를 함께 표시한다.
 페르소나별 AI 집계는 종료된 합성 게임에서 사람 좌석을 제외하고 계산하며, 페르소나의
 성격 요약만 설명용으로 표시한다.
+
+AI 발언 분석은 `GET /api/v1/admin/speech-analytics`를 사용한다. 화면은 분석 버전과
+대상 발언·임베딩·주장 완료 수를 표시한다. 기간·에이전트·라운드·게임 UUID 조건을
+적용할 수 있으며, 주제 선택 시 해당 주제의 대표 원문과 최대
+5개 공개 근거를 펼친다. 히트맵과 비율 그래프는 표본 상한·부분 완료를 숨기지 않으며,
+키워드와 같은 주제의 표현은 동의어 확정이 아닌 원문 동시 출현 후보로 안내한다.
+벡터·role·faction·개별 행동·투표·private context는 표시하지 않는다.
+팀 DB의 전체 기간 집계가 일반 조회보다 오래 걸릴 수 있으므로 발언 분석 GET만
+최대 30초를 기다리고, 나머지 관리자 요청은 기존 5초 제한을 유지한다. 제한 시간을
+넘거나 403을 받으면 기존 fail-closed 오류 처리를 유지하며 자동 재시도하지 않는다.
 
 ## 16. 화면 상태 소유권
 
@@ -580,6 +598,22 @@ phase와 action panel이 중간 상태로 보이지 않게 한다.
 
 Streamlit rerun은 transport reconnect를 일으킬 수 있으므로 화면 widget state와
 authoritative game state를 분리한다. callback 안에서 domain phase를 직접 바꾸지 않는다.
+
+자동 sync·AI 진행·공개 기록 갱신은 채팅 입력 영역을 로딩 상태로 만들지 않는다.
+countdown 표시는 입력과 분리해 갱신하며, 같은 자유 토론 안에서 AI 예약 window가
+교체돼도 작성 중인 초안·선택·포커스를 유지한다. 실제 단계·행동 허용·생존 상태의
+변경은 서버 snapshot에 맞춰 입력을 갱신한다. 발언과 PASS 제출에는 같은 게임의
+최신 검증 상태를 사용하고, 결과 불명 요청의 기존 body와 idempotency key는 보존한다.
+Shift+Enter로 작성한 줄바꿈은 전송 전에 공백으로 정리한다. 자유 토론의 연속 발언은
+Front 세션의 대기열에 입력 순서대로 예약하며, 전송 중에도 다음 발언을 입력할 수 있다.
+예약 내용과 대기 상태를 표시한다. 동일 토론 범위에서 확정된 버전/창 충돌은 최신
+상태로 자동 재시도하고, 발언 빈도 제한은 예약 순서를 유지하며 기다린다. 응답 불명
+요청은 최초 body/key로만 재확인한다. 입력 형식 오류는 원문을 보존해 수정할 수 있다.
+빈도 제한으로 `SPEAK`가 없어지고 `has_submitted=true`가 되어도 같은 자유 토론의
+예약 입력·초안·포커스는 유지한다. 실제 전송은 `SPEAK`가 다시 허용된 뒤에만 수행한다.
+토론 종료·사망·저장·이탈·사용자 변경 시 아직 보내지 않은 예약은 취소한다. 이미
+서버로 보낸 요청을 취소한 것으로 표시하지 않으며 다른 토론으로 예약을 넘기지 않는다.
+예약은 현재 Front 세션에만 유지되며 새로고침·재접속 후 영구 복원하지 않는다.
 
 ## 18. 접근성·반응형
 
@@ -665,10 +699,87 @@ authoritative game state를 분리한다. callback 안에서 domain phase를 직
 - 공개 AI 발언 기준이며 사실 판정이 아니라는 안내, 범위, 분석 단계별 완료/전체/실패 수,
   부분 결과 표시를 항상 제공한다. 빈 READY와 PENDING/PARTIAL/UNAVAILABLE을 구분한다.
   READY/UNAVAILABLE/실패는 같은 창·범위에서 반복 조회하지 않고 PENDING/PARTIAL만
-  기존 전체 화면 rerun 주기에 재조회한다. 매초 countdown fragment에서는 조회하지 않는다.
+  공개 기록 갱신 fragment에서 재조회한다. 매초 countdown fragment에서는 조회하지 않는다.
   보조 조회 timeout은 최대 0.75초로 제한한다.
 - 현재 timeline에는 event별 deep link가 없으므로 원문 expander의 event ID·시점·sequence와
   공개 발언 전문을 최소 대체로 제공한다. 이름은 공개 player 목록으로 매핑하고
   주장·이름·원문은 `st.text`로 출력하여 HTML 또는 Markdown 원문을 삽입하지 않는다.
 - 선택·command pending·기존 timer anchor는 별도 상태로 보존한다. 테스트는 fake API와
   component로 상태, stale, 실패 격리, 범위 전환과 기존 투표 상태 보존을 검증한다.
+
+
+### 2026-09-08 WU-F9 실시간 공개 대화 요약
+
+이 확장은 기존 투표 전용·AI 전용 안내보다 우선한다. 같은 vote_insights 컴포넌트의
+접이식 제목을 `대화 요약과 발언 분석`으로 바꾸고 일반·최종 토론에서도 표시한다.
+현재 토론/게임 누적 범위의 공개 사용자·AI 발언을 함께 보여준다. conversation_summary의
+핵심 주장과 원문을 안전한 st.text로 표시하고 최신 20발언 제한과 생략 수를 안내한다.
+별도 모델의 전체 대화 종합문으로 표현하지 않는다. coverage와 부분 결과를 함께 표시한다.
+토론 중에는 지목 순위·후보 선택을 표시하지 않고 투표 화면에서는 기존 카드를 유지한다.
+토론 응답은 READY라도 공개 기록 갱신 fragment에서 다시 조회한다. 실패도 다음 갱신에
+재시도하며 초당 countdown fragment에서는 조회하지 않는다. 투표는 고정 cutoff의
+완료 캐시를 재사용한다. 저장·일시정지 중에는 조회하지 않고 재개 후 이어간다.
+
+토론 분석 범위 선택은 game/phase/round에 묶어 발언마다 바뀌는 window_id와 분리한다.
+같은 토론의 새 발언이 도착해도 게임 누적 선택을 유지하며, 각 요약 바로 앞에 공개
+명부의 화자 이름을 표시한다. 원문 expander를 펼치지 않아도 화자를 구분할 수 있다.
+
+## 2026-09-08 CUSTOM_ROLE 사용자 흐름 (CP-0, WU-F11 예약)
+
+새 게임 설정의 기본값은 `STANDARD`이고 기존 화면·요청을 그대로 유지한다.
+`CUSTOM_ROLE`을 선택하면 Front는 `GET /api/v1/game-config/custom-role-abilities`의
+`custom-role-v1` catalog를 읽어 진영, 자유 직업명, 능력 1~3개를 받는다. 직업명은
+NFC·연속 공백·앞뒤 공백 정규화 결과 1~40자를 안내하고, 서버 응답 전에는 catalog를
+신뢰한 것으로 간주하지 않는다. `CITIZEN` 화면은 공격 외 네 능력 중 1~3개를 제공하며 낮/조회 능력만도 선택할 수 있다.
+`MAFIA` 화면은 공격을 선택 해제할 수 없게 하고 나머지 중 추가하여 총 1~3개를 받되, 조작된 요청의 최종 거부는 Backend가 담당한다.
+
+역할 공개와 내 정보에는 snapshot의 `me.role_name`, `me.faction`, `me.ability_ids`,
+`me.ability_options`만 사용한다. 이 값은 본인 projection 밖의 상태·cache·analytics에
+복제하지 않는다. 공개 플레이어 목록은 처형 또는 게임 종료 전에는 자유 직업명을
+표시하지 않고, 그 뒤 Backend가 보낸 additive `revealed_role_name`만 표시한다.
+
+CUSTOM_ROLE 밤 화면은 `ability_options` 중 하나를 먼저 선택한 뒤 해당 능력의
+`valid_targets`에서 대상을 골라 `SUBMIT_NIGHT_ACTION`에 `ability_id`를 보낸다. 한 밤에
+한 능력만 제출할 수 있고 두 번째 제출은 기존 `ACTION_ALREADY_SUBMITTED` 처리를 따른다.
+STANDARD는 능력 선택 UI와 `ability_id`를 보내지 않으며 Backend가 기존 role에서 행동을
+결정한다. catalog 실패·구버전·빈 허용 목록·진영 불일치에서는 생성 또는 제출을
+fail-closed로 막고 안전한 재시도를 제공한다. raw MCP Tool명, action subtype, prompt는
+어떤 입력 필드나 화면 상태에도 노출하지 않는다.
+
+### 2026-09-08 WU-M10 추가 능력의 Front 연결 준비
+
+catalog에는 두 진영 모두 `vote.triple.v1`과 `intel.special_roles.v1`이 추가된다.
+이번 WU는 MCP/Backend 연결 준비이며 Front 화면 구현은 후속 WU-F12 범위다.
+투표 조작은 DAY_VOTE·REVOTE에서 선택한 대상에 `SUBMIT_VOTE`와 고정 ability_id를 함께
+보내는 한 번의 제출이다. 일반 투표·자동 투표·최종 지목은 1표다. 특수 직업 조회는
+첫 밤 종료 이후 본인에게만 보여 주며 AI·공개 명부·analytics에 복제하지 않는다.
+밤 화면은 기존 ability_options에 있는 밤 능력만 사용하므로 낮/조회 능력만 가진
+시민 커스텀 직업은 밤 제출 UI를 표시하지 않는다. raw Tool명은 공개 선택값으로 쓰지 않는다.
+
+
+### 2026-09-08 CP-0.1 사용자 Front 확장 (WU-F12)
+
+생성 화면은 [API 정본](AI_MAFIA_API_SPEC.md)의 `custom-role-v1` 다섯 descriptor의
+ID·label·factions를 정확히 검증한다. 누락·미지/중복 ID·미지 필드·타입 오류·진영 배열
+불일치·중복 진영은 fail-closed로 막고 안전한 재시도를 제공한다. `vote.triple.v1`과
+`intel.special_roles.v1`은 정상 선택값이다. 공격은 `[MAFIA]`, 나머지 네 능력은
+`[CITIZEN, MAFIA]`이며 생성 시에도 중복 없는 1~3개와 진영 제약을 검증한다.
+
+생존 CUSTOM_ROLE HUMAN의 `vote.triple.v1` 보유자에게 DAY_VOTE/REVOTE에서
+일반 1표 또는 능력 3표를 명시적으로 선택하게 한다. 일반 선택은 `SUBMIT_VOTE`의
+ability_id를 생략하고 능력 선택은 `ability_id=vote.triple.v1`을 보낸다. 기존 target·
+window·state_version·멱등성·제출 잠금 규칙을 유지하며 숫자 weight는 보내지 않는다.
+FINAL_ACCUSATION에는 이 선택을 노출하거나 능력 ID를 전달하지 않는다.
+
+생존 CUSTOM_ROLE HUMAN의 `intel.special_roles.v1` 보유자는 IN_PROGRESS이고
+`day_number >= 2`일 때 본인 private panel에서 조회한다. raw MCP Tool 대신
+`GET /api/v1/games/{game_id}/special-roles`를 `X-User-Id`로 호출한다. 해금 전에는
+첫 밤 종료 후 사용 가능함을 안내한다. 실패 시 서버 원문/비공개 payload 대신 안전한
+오류와 재시도를 제공하고 오래된 성공 결과를 남기지 않는다. 권한·상태 오류는 snapshot을
+갱신해 사용 가능 조건을 재평가한 뒤 재시도한다.
+
+결과는 요청 identity/game/player/state_version과 현재 본인 상태의 일치를 확인한 뒤
+본인 UI에만 둔다. identity·game·state 전환, 로그아웃, 사망·종료·권한 상실 때 폐기하며
+이전 요청의 늦은 응답도 표시하지 않는다. 공유 cache·공개 명부·timeline·analytics에
+복제하지 않고 표시 이름은 평문 escape한다. 종료 화면은 custom `role_name`·`faction`을
+표준 역할 표시보다 우선하고 평문 escape하며 private 조회 결과를 재사용하지 않는다.

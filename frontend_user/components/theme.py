@@ -89,17 +89,30 @@ html { color-scheme: light; }
   background: #0b1730; border-bottom: 1px solid #24324c;
 }
 [class*="st-key-app-header"] [data-testid="stHorizontalBlock"] { align-items: center; }
+[class*="st-key-app-header"] [data-testid="stColumn"]:last-child {
+  display: flex; justify-content: flex-end; align-items: center;
+}
 .app-header-brand { color: #fff; font-size: 1.55rem; font-weight: 800; letter-spacing: -.06em; }
 .app-header-status { display: inline-flex; align-items: center; gap: .4rem; margin-left: 1rem; padding: .42rem .7rem;
   border: 1px solid #2b3b57; border-radius: .55rem; color: #d8e2f3; font-size: .78rem; }
 .app-header-status::before { content: ""; width: .45rem; height: .45rem; border-radius: 50%; background: #31c477; }
 .app-header-phase { color: #fff; font-size: 1.35rem; font-weight: 800; text-align: center; }
-[class*="st-key-app-header"] [data-testid="stButton"] button {
-  min-height: 2.65rem; color: #d8e2f3 !important; background: transparent !important;
-  border-color: #2b3b57 !important;
+/* 페이지별 버튼 스타일보다 헤더 규칙이 우선하도록 body부터 포함한 선택자를 사용한다. */
+body [class*="st-key-app-header"] [data-testid="stButton"] button,
+body [class*="st-key-app-header"] [data-testid="stButton"] button:not(:disabled) {
+  min-height: 2.65rem; color: #eef4ff !important; background: #0b1730 !important;
+  border: 1px solid #405374 !important; box-shadow: inset 0 0 0 1px rgba(255,255,255,.03);
 }
-[class*="st-key-app-header"] [data-testid="stButton"] button:hover:not(:disabled) {
-  color: #fff !important; background: #152846 !important; border-color: #6b85ad !important;
+body [class*="st-key-app-header"] [data-testid="stButton"] button:hover:not(:disabled) {
+  color: #fff !important; background: #152846 !important; border-color: #8ba8d4 !important;
+}
+body [class*="st-key-app-header"] [data-testid="stButton"] button:active:not(:disabled),
+body [class*="st-key-app-header"] [data-testid="stButton"] button:focus-visible {
+  color: #fff !important; background: #1b3157 !important; border-color: #a9c5ef !important;
+}
+body [class*="st-key-app-header"] [data-testid="stButton"] button *,
+body [class*="st-key-app-header"] [data-testid="stButton"] button [data-testid="stMarkdownContainer"] * {
+  color: inherit !important; -webkit-text-fill-color: currentColor !important;
 }
 button:focus-visible, input:focus-visible, textarea:focus-visible {
   outline: 3px solid #245fd6 !important; outline-offset: 3px;
@@ -174,18 +187,19 @@ def render_application_header(
 
 
 def render_header_back_button(*, current_page: str, on_back: Callable[[], None] | None = None) -> None:
-    """게임은 확인 콜백을 먼저 실행하고 일반 화면은 검증된 방문 기록으로 이동한다."""
+    """진행 게임은 저장·삭제 확인을 먼저 열고 일반 화면은 홈으로 이동한다.
+
+    방문 이력으로 역할 공개 화면에 되돌아가는 혼동을 피하면서도 진행 게임의
+    이탈 확인 계약을 보존한다. callback이 있으면 navigation은 해당 화면이 맡는다.
+    """
 
     if current_page == "home":
         return
-    history = _navigation_history(current_page=current_page)
-    back_target = history[-1] if history else "home"
-    remaining_history = history[:-1] if history else []
-    if st.button("← 뒤로가기", key="header.back", width="stretch"):
+    if st.button("홈으로", key="header.back", width="stretch"):
         if on_back is not None:
             on_back()
         else:
-            _navigate(page=back_target, history=remaining_history)
+            _navigate(page="home", history=[])
 
 
 def _navigation_history(*, current_page: str) -> list[str]:

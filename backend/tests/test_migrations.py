@@ -18,6 +18,10 @@ EXPECTED_MIGRATIONS = [
     "005_create_admin_knowledge_schema.sql",
     "006_create_speech_analysis.sql",
     "007_add_stale_game_cleanup.sql",
+    "008_allow_public_human_speech_analysis.sql",
+    "009_update_persona_reasoning_skill.sql",
+    "010_add_custom_role.sql",
+    "011_add_custom_role_tool_abilities.sql",
 ]
 
 EXPECTED_SCENARIOS = (

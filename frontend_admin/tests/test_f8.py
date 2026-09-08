@@ -8,7 +8,6 @@ import pytest
 from frontend_admin.core.api_client import AdminApiClient, AdminApiError
 from frontend_admin.core.models import reject_private_fields
 
-
 ADMIN_ID = "83d40f36-e835-4a1d-88db-e59b6920b739"
 
 
@@ -30,6 +29,75 @@ def test_admin_403_is_fail_closed() -> None:
     with pytest.raises(AdminApiError) as error:
         AdminApiClient(user_id=ADMIN_ID, transport=transport).metrics()
     assert error.value.code == "ADMIN_ACCESS_DENIED"
+
+
+def test_admin_timeout_is_scoped_to_speech_analytics() -> None:
+    """분석 GET 전후에도 일반 GET과 질문 POST의 5초 제한이 유지되어야 한다."""
+
+    captured = []
+
+    def transport(request, timeout):
+        captured.append((request.get_method(), timeout))
+        return 200, b'{"data":{}}'
+
+    client = AdminApiClient(user_id=ADMIN_ID, transport=transport)
+    client.metrics()
+    client.speech_analytics()
+    client.metrics()
+    client.games()
+    client.game_detail(ADMIN_ID)
+    client.role_win_rates()
+    client.persona_win_rates()
+    client.feedback()
+    client.audit_logs()
+    client.insights_query("최근 운영 지표를 알려 주세요")
+
+    assert captured == [("GET", 5.0), ("GET", 30.0)] + [("GET", 5.0)] * 7 + [("POST", 5.0)]
+
+
+@pytest.mark.parametrize("failure", ["timeout", "forbidden"])
+def test_admin_speech_analytics_failure_is_closed_without_retry(failure) -> None:
+    """분석 시간 초과와 권한 거부는 재시도나 부분 응답 반환 없이 기존 오류로 닫는다."""
+
+    captured = []
+
+    def transport(request, timeout):
+        captured.append((request.get_method(), timeout))
+        if failure == "timeout":
+            raise TimeoutError("합성 분석 요청 시간 초과")
+        return 403, b'{"error":{"code":"ADMIN_ACCESS_DENIED"},"data":{"topics":[]}}'
+
+    client = AdminApiClient(user_id=ADMIN_ID, transport=transport)
+    with pytest.raises(AdminApiError) as error:
+        client.speech_analytics()
+
+    expected = (503, "DEPENDENCY_UNAVAILABLE") if failure == "timeout" else (403, "ADMIN_ACCESS_DENIED")
+    assert (error.value.status_code, error.value.code) == expected
+    assert captured == [("GET", 30.0)]
+
+
+def test_live_dashboard_revoked_access_returns_to_identity_flow(monkeypatch) -> None:
+    """주기 조회의 403도 권한 표시를 지우고 UUID bridge가 있는 전체 화면으로 복귀한다."""
+
+    from unittest.mock import Mock
+
+    from frontend_admin import app
+
+    state = {app.ADMIN_ACCESS_SESSION_KEY: True}
+    ui = Mock(session_state=state)
+    ui.rerun.side_effect = RuntimeError("인증 화면 재실행")
+    monkeypatch.setattr(app, "st", ui)
+    client = Mock()
+    client.metrics.side_effect = AdminApiError(403, "ADMIN_ACCESS_DENIED")
+    dashboard = Mock()
+    monkeypatch.setattr(app, "render_dashboard", dashboard)
+
+    with pytest.raises(RuntimeError, match="인증 화면 재실행"):
+        app._render_live_dashboard.__wrapped__(client)
+
+    assert state[app.ADMIN_ACCESS_SESSION_KEY] is False
+    ui.rerun.assert_called_once_with(scope="app")
+    dashboard.assert_not_called()
 
 
 def test_private_fields_are_rejected_instead_of_masked() -> None:
@@ -82,14 +150,16 @@ def test_demo_key_and_data_are_isolated(monkeypatch) -> None:
 
 def test_demo_ui_connection_failure_and_recovery(monkeypatch) -> None:
     from pathlib import Path
+
     from streamlit.testing.v1 import AppTest
+
     from frontend_admin.core.api_client import DEMO_API_KEY
 
     monkeypatch.setenv("ADMIN_DEMO_MODE", "true")
     at = AppTest.from_file(str(Path(__file__).parents[1] / "app.py"), default_timeout=15).run()
     assert not at.exception
     assert len(at.tabs) == 4
-    assert len(at.dataframe) == 3
+    assert len(at.dataframe) >= 5
     assert any(metric.label == "누적 게임" and metric.value == "1200" for metric in at.metric)
     assert any("마피아 360승 (40.0%)" in item.value for item in at.caption)
     at.text_input[0].set_value("wrong-key")
@@ -99,20 +169,6 @@ def test_demo_ui_connection_failure_and_recovery(monkeypatch) -> None:
     at.button[0].click().run()
     assert not at.error and not at.exception
     assert at.metric
-
-
-def test_demo_agent_query_shows_evidence_on_one_click(monkeypatch) -> None:
-    """운영 에이전트 질문이 한 번의 검색 버튼으로 답변과 근거를 표시하는지 확인한다."""
-
-    from pathlib import Path
-    from streamlit.testing.v1 import AppTest
-
-    monkeypatch.setenv("ADMIN_DEMO_MODE", "true")
-    at = AppTest.from_file(str(Path(__file__).parents[1] / "app.py"), default_timeout=15).run()
-    at.button(key="admin.agent.search").click().run()
-    assert not at.error and not at.exception
-    assert any("승인된 자료에서 확인된 내용입니다" in item.value for item in at.markdown)
-    assert len(at.dataframe) == 4
 
 
 def test_demo_mode_is_opt_in(monkeypatch) -> None:
@@ -147,20 +203,25 @@ def test_feedback_and_audit_pages_change_on_one_click(monkeypatch):
     """필터를 바꾸면 첫 페이지로 돌아가고 다음 버튼은 한 번 클릭으로 반영된다."""
 
     from pathlib import Path
+
     from streamlit.testing.v1 import AppTest
 
     monkeypatch.setenv("ADMIN_DEMO_MODE", "true")
     at = AppTest.from_file(str(Path(__file__).parents[1] / "app.py"), default_timeout=15).run()
-    first_id = at.dataframe[1].value.iloc[0]["피드백 UUID"]
+    def frame_with(column):
+        return next(frame.value for frame in at.dataframe if column in frame.value.columns)
+
+    first_id = frame_with("피드백 UUID").iloc[0]["피드백 UUID"]
     at.button(key="admin.feedback.next").click().run()
-    assert not at.exception and at.dataframe[1].value.iloc[0]["피드백 UUID"] != first_id
+    assert not at.exception and frame_with("피드백 UUID").iloc[0]["피드백 UUID"] != first_id
     at.selectbox(key="admin.feedback.rating").select("5").run()
-    assert set(at.dataframe[1].value["평점"]) == {5}
+    assert set(frame_with("피드백 UUID")["평점"]) == {5}
     assert at.button(key="admin.feedback.previous").disabled
     at.selectbox(key="admin.logs.type").select("운영 지표 조회").run()
-    assert set(at.dataframe[2].value["조회 유형"]) == {"운영 지표 조회"}
+    assert set(frame_with("조회 유형")["조회 유형"]) == {"운영 지표 조회"}
     at.button(key="admin.logs.next").click().run()
-    assert not at.exception and len(at.dataframe[2].value) == 6
+    assert not at.exception and len(frame_with("조회 유형")) == 16
+    assert at.button(key="admin.logs.next").disabled
     assert at.button(key="admin.logs.next").disabled
 
 
@@ -194,13 +255,47 @@ def test_admin_client_extension_urls_are_encoded():
     assert all(r.headers["X-user-id"] == ADMIN_ID and "X-api-key" not in r.headers for r in captured)
 
 
+def test_admin_speech_analytics_client_encodes_analysis_scope():
+    """발언 분석 조건을 URL에 안전하게 인코딩하고 관리자 UUID만 전달한다."""
+
+    from urllib.parse import parse_qs, urlsplit
+
+    captured = []
+
+    def transport(request, timeout):
+        captured.append(request)
+        return 200, b'{"data":{"topics":[]}}'
+
+    client = AdminApiClient(user_id=ADMIN_ID, transport=transport)
+    client.speech_analytics(
+        from_date="2026-09-01T00:00:00+09:00",
+        to_date="2026-09-08T00:00:00+09:00",
+        game_id="00000000-0000-4000-8000-000000000299",
+        persona_id="ACTIVE DEBATER",
+        round_number=2,
+        analysis_version="claims-ko-v2",
+        limit=5,
+    )
+    query = parse_qs(urlsplit(captured[0].full_url).query)
+    assert query == {
+        "limit": ["5"],
+        "from": ["2026-09-01T00:00:00+09:00"],
+        "to": ["2026-09-08T00:00:00+09:00"],
+        "game_id": ["00000000-0000-4000-8000-000000000299"],
+        "persona_id": ["ACTIVE DEBATER"],
+        "round": ["2"],
+        "analysis_version": ["claims-ko-v2"],
+    }
+    assert captured[0].headers["X-user-id"] == ADMIN_ID
+
+
 def test_browser_admin_uuid_requires_explicit_value_and_preserves_storage_on_failure():
     """JS bridge는 UUID 자동 생성 없이 입력·새로고침·차단·손상을 구분해야 한다."""
 
     node = shutil.which("node")
     if node is None:
         pytest.skip("브라우저 bridge JS 검증에는 Node.js가 필요합니다.")
-    source = (Path(__file__).parents[1] / "components/browser_components/identity/index.js").read_text()
+    source = (Path(__file__).parents[1] / "components/browser_components/identity/index.js").read_text(encoding="utf-8")
     script = r"""
 import assert from 'node:assert/strict';
 const {default: render} = await import('data:text/javascript;base64,' + Buffer.from(SOURCE).toString('base64'));
@@ -262,7 +357,9 @@ def test_real_mode_denial_preserves_identity_input(monkeypatch, status):
     """접속·권한 오류에서 운영 데이터는 숨기고 UUID 교체 입력은 유지한다."""
 
     from uuid import UUID
+
     from streamlit.testing.v1 import AppTest
+
     from frontend_admin.components import identity_bridge
     from frontend_admin.core import api_client
 

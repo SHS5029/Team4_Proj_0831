@@ -148,6 +148,118 @@ def test_b5_delete_failure_rolls_back_game_and_children() -> None:
     assert len(restored["players"]) == 6
 
 
+def test_b5_stale_save_preserves_committed_state_and_rejects_late_ai_result() -> None:
+    """오래된 화면에서도 확정 발언을 보존해 저장하고 늦은 AI 응답·중복 저장은 반영하지 않는다."""
+
+    from backend.app.core.errors import ApiError
+
+    client = _client()
+    game_id, _ = _create(client)
+    route = f"/api/v1/games/{game_id}"
+    assert client.post(route + "/commands", headers=_headers(uuid4()), json={
+        "type": "BEGIN_GAME", "expected_state_version": 1,
+    }).status_code == 200
+    before = client.get(route, headers=_headers()).json()["data"]
+    assert client.post(route + "/commands", headers=_headers(uuid4()), json={
+        "type": "SPEAK", "expected_state_version": before["game"]["state_version"],
+        "window_id": before["action_window"]["window_id"], "message": "저장 전에 확정된 합성 발언",
+    }).status_code == 200
+    committed = client.get(route, headers=_headers()).json()["data"]
+    version = committed["game"]["state_version"]
+    key = uuid4()
+    payload = {"type": "SAVE_AND_EXIT", "expected_state_version": 1}
+    response = client.post(route + "/commands", headers=_headers(key), json=payload)
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["accepted_state_version"] == version
+    assert response.json()["data"]["result_state_version"] == version + 1
+    saved = client.get(route, headers=_headers()).json()["data"]
+    assert saved["game"]["status"] == "SAVED"
+    assert saved["game"]["phase"] == committed["game"]["phase"]
+    assert saved["players"] == committed["players"]
+    assert saved["public_events"][:len(committed["public_events"])] == committed["public_events"]
+    assert saved["action_window"]["window_id"] == committed["action_window"]["window_id"]
+    assert saved["action_window"]["paused"] is True
+    assert saved["action_window"]["deadline_at"] is None
+    assert 0 <= saved["action_window"]["remaining_ms"] <= committed["action_window"]["remaining_ms"]
+    runtime = client.app.state.game_runtime
+    with pytest.raises(ApiError):
+        runtime._agent_discussion.submit_speak(
+            USER_ID, game_id, UUID(committed["action_window"]["turn_player_id"]),
+            "저장 뒤 도착한 미확정 합성 응답", expected_state_version=version,
+            window_id=UUID(committed["action_window"]["window_id"]),
+        )
+    replay = client.post(route + "/commands", headers=_headers(key), json=payload)
+    assert replay.status_code == 200
+    assert replay.json()["meta"]["replayed"] is True
+    assert replay.json()["data"] == response.json()["data"]
+    replayed = client.get(route, headers=_headers()).json()["data"]
+    assert replayed["game"] == saved["game"]
+    assert replayed["public_events"] == saved["public_events"]
+    assert {key: value for key, value in replayed["action_window"].items() if key != "server_time"} == {
+        key: value for key, value in saved["action_window"].items() if key != "server_time"
+    }
+    conflict = client.post(route + "/commands", headers=_headers(key), json={**payload, "expected_state_version": version})
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED"
+    stale_resume = client.post(route + "/commands", headers=_headers(uuid4()), json={"type": "RESUME", "expected_state_version": 1})
+    assert stale_resume.status_code == 409
+    assert stale_resume.json()["error"]["code"] == "STALE_STATE_VERSION"
+    resumed = client.post(route + "/commands", headers=_headers(uuid4()), json={"type": "RESUME", "expected_state_version": version + 1})
+    assert resumed.status_code == 200
+    restored = client.get(route, headers=_headers()).json()["data"]
+    assert restored["game"]["phase"] == saved["game"]["phase"]
+    assert restored["public_events"][:len(saved["public_events"])] == saved["public_events"]
+
+
+def test_b5_stale_save_preserves_owner_and_status_validation() -> None:
+    """버전 예외가 타인 게임이나 이미 멈춘 게임의 새 저장까지 허용하지 않는지 확인한다."""
+
+    client = _client()
+    game_id, _ = _create(client)
+    route = f"/api/v1/games/{game_id}"
+    payload = {"type": "SAVE_AND_EXIT", "expected_state_version": 99}
+    assert client.post(route + "/commands", headers=_headers(uuid4(), user=uuid4()), json=payload).status_code == 404
+    assert client.get(route, headers=_headers()).json()["data"]["game"]["state_version"] == 1
+    assert client.post(route + "/commands", headers=_headers(uuid4()), json=payload).status_code == 200
+    assert client.post(route + "/commands", headers=_headers(uuid4()), json=payload).status_code == 409
+    saved = client.get(route, headers=_headers()).json()["data"]
+    assert saved["game"]["status"] == "SAVED"
+    assert saved["game"]["state_version"] == 2
+    assert saved["action_window"] is None
+
+
+def test_b5_stale_save_uses_version_committed_while_waiting_for_lock() -> None:
+    """선행 transaction을 기다린 저장은 잠금 전에 본 버전이 아닌 commit된 버전을 사용한다."""
+
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from unittest.mock import patch
+    from backend.app.schemas.command_schema import GameCommandRequest
+
+    client = _client()
+    game_id, _ = _create(client)
+    service = client.app.state.game_runtime._save
+    entered = Event()
+    original_lock = service._games.lock_game
+
+    def observed_lock(cursor, target):
+        entered.set()
+        return original_lock(cursor, target)
+
+    with ThreadPoolExecutor(max_workers=1) as pool, patch.object(service._games, "lock_game", side_effect=observed_lock):
+        with psycopg.connect(get_settings().effective_database_url) as connection:
+            connection.execute("SELECT id FROM public.games WHERE id = %s FOR UPDATE", (game_id,))
+            future = pool.submit(service.save, USER_ID, game_id, GameCommandRequest(type="SAVE_AND_EXIT", expected_state_version=1), uuid4())
+            assert entered.wait(2)
+            assert not future.done()
+            connection.execute("UPDATE public.games SET state_version = 2 WHERE id = %s", (game_id,))
+        result, replayed = future.result(timeout=3)
+    assert not replayed
+    assert result["accepted_state_version"] == 2
+    assert result["result_state_version"] == 3
+    assert client.get(f"/api/v1/games/{game_id}", headers=_headers()).json()["data"]["game"]["status"] == "SAVED"
+
+
 def test_b5_create_snapshot_command_and_sync() -> None:
     """생성부터 첫 발언과 delta sync까지의 PostgreSQL 흐름을 검증한다."""
 

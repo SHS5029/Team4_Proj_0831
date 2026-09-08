@@ -171,7 +171,15 @@ Backend까지 전달하고, Front에는 proxy origin만 Backend URL로 제공한
 - 같은 key와 다른 request hash는 `409 IDEMPOTENCY_KEY_REUSED`다.
 - game command body는 `expected_state_version`을 필수로 가진다.
 - version 불일치 command를 자동 재적용하지 않는다. Front가 sync한 뒤 사용자의
-  의도를 다시 확인한다.
+  의도를 다시 확인한다. 단, 사용자 요청으로 예약한 자유 토론 `SPEAK`는 동일
+  사용자·게임·생존자·단계·회차·마감 범위와 최신 `legal_actions`를 검증한 뒤,
+  확정된 `409 STALE_STATE_VERSION` 또는 같은 토론의 AI 창 교체로 인한
+  `409 WINDOW_CLOSED`에 한해 최신 버전/창과 새 key로 순서대로 자동 재시도할 수 있다.
+  `429 SPEECH_RATE_LIMITED`는 순서를 유지하며 대기하고, 응답 불명 요청은 최초
+  body/key로만 확인한다. 다른 단계로 예약을 옮기지 않는다. Backend의 버전·마감
+  검사와 멱등성 계약은 그대로 유지한다. `SAVE_AND_EXIT`은 화면 버전과의 일치 검사를 하지 않고
+  게임 행 잠금 뒤 서버의 마지막 확정 상태를 저장한다. 해당 요청의 양의 정수
+  `expected_state_version`은 요청 hash에 남겨 동일 요청 재전송을 구분하는 데만 사용한다.
 - 다른 AI의 미해소 private submission과 Agent reservation은 Front projection을
   바꾸지 않으므로 공개 `state_version`을 올리지 않는다. phase 해소·공개 event 또는
   인간 본인 private 상태가 바뀔 때 version을 올린다.
@@ -682,7 +690,10 @@ Front는 `sync_url` 또는 game GET으로 현재 상태를 확인한다.
 }
 ```
 
-현재 인간 발언 차례에만 허용한다.
+첫날 낮(`DAY_DISCUSSION`, `day_number=1`)에는 인간·AI 모두 금지하며 새 요청은
+`409 ACTION_NOT_ALLOWED`로 거부한다. 이후 토론에는 기존 발언 권한을 적용한다.
+첫날 snapshot의 `legal_actions`에는 `PASS`를 넣지 않는다. 이미 확정된 receipt의
+멱등 재응답은 보존하며 거부된 새 요청은 상태·발언 원장·이벤트를 변경하지 않는다.
 
 #### `SUBMIT_NIGHT_ACTION`
 
@@ -722,8 +733,14 @@ role이나 action subtype을 보내지 않는다. 시민, 사망자와 이미 �
 ```
 
 게임이 `IN_PROGRESS`이고 window가 `RESOLVING`이 아닌 안정 상태에서 허용한다. 열린
-timed window가 있으면 남은 서버 시간을 snapshot에 저장한다. 진행 중 Agent 결과는
-state/version 재검증 뒤 stale 처리하고 저장 결과를 바꾸지 않는다.
+timed window가 있으면 게임 행·window 잠금 획득 뒤 계산한 남은 서버 시간을 저장한다.
+화면의 `expected_state_version`이 서버 버전과 달라도 저장을 거부하지 않으며,
+`accepted_state_version`은 실제 저장 직전의 서버 버전이다. 예를 들어 화면이 27이고
+서버가 29이면 확정 상태 29를 저장해 결과 버전 30을 반환한다. 과거 버전으로 원장을
+되돌리거나 확정된 event·submission을 버리지 않는다. 아직 확정되지 않은 Agent 응답은
+기다리지 않고 저장 후 state/window 재검증으로 거부한다. 같은 body·Idempotency-Key의
+재전송은 최초 저장 결과를 replay하며 다시 저장하거나 저장 시간을 갱신하지 않는다.
+소유권·안정 상태 검증과 `RESUME` 등 다른 command의 버전 일치 요구는 유지한다.
 
 #### `RESUME`
 
@@ -1056,8 +1073,8 @@ LLM token·비용·timeout·예산 metric은 제공하지 않는다.
 ### 7.4 관리자 센터 확장 계약 (2026-09-07)
 
 현재 관리자 센터의 통합 운영 분석·사용자 피드백·관리자 로그 화면에 맞춘 WU-B8 확장이다.
-`운영 에이전트 계획` 탭과 질문 API는 WU-B10에서 추가한 read-only 검색 기능이며,
-자료 경계와 도입 원칙은 [AI_MAFIA_ADMIN_AGENT_PLAN.md](AI_MAFIA_ADMIN_AGENT_PLAN.md)에서 함께 관리한다.
+질문 API는 WU-B10에서 추가한 read-only 검색 기능이며, 관리자 화면과 분리된
+Backend 계약으로 유지한다.
 7.1~7.3의 기존 필드와 UUID allowlist 인증을 유지한다. 공개 데모 키는 HTTP 인증에
 사용하지 않는다. 성공 응답은 기존 `data`, `meta.request_id`, `meta.server_time` 형식이다.
 각 조회는 성공한 뒤 감사 기록을 저장하며, 조회 또는 감사 저장 실패는
@@ -1147,7 +1164,7 @@ Query: `event_type` (아래 감사 분류), `cursor` (양의 bigint ID를 표현
 
 DB action을 응답에서는 `event_type`으로 투영한다. 분류는 ADMIN_LIST_GAMES,
 ADMIN_GET_GAME, ADMIN_GET_METRICS, ADMIN_GET_ROLE_WIN_RATES, ADMIN_GET_PERSONA_WIN_RATES,
-ADMIN_LIST_FEEDBACK, ADMIN_LIST_AUDIT_LOGS, ADMIN_QUERY_INSIGHTS이다. 조회 자체의 감사 기록은 조회 후 추가되어 다음 새로고침에서
+ADMIN_LIST_FEEDBACK, ADMIN_LIST_AUDIT_LOGS, ADMIN_QUERY_INSIGHTS, ADMIN_GET_SPEECH_ANALYTICS이다. 조회 자체의 감사 기록은 조회 후 추가되어 다음 새로고침에서
 확인할 수 있다. 이 API는 관리자 조회 감사 기록이며 서버 원문 로그·INFO/WARN 등급은
 제공하지 않는다. 신규 목록의 잘못된 cursor/enum/limit/rating은 422 INVALID_REQUEST다.
 
@@ -1201,6 +1218,68 @@ cosine 검색으로 함께 조회한다. 이 endpoint는 질문을 위한 POST�
 반환한다. 응답에는 원문 사용자 식별자, 역할·개별 행동·투표·seed, prompt·token·비용을
 포함하지 않는다. 질문 원문은 audit payload에 저장하지 않고 action·request ID·결과 상태만
 기록한다.
+
+### 7.10 `GET /api/v1/admin/speech-analytics`
+
+공개 발언 분석이 활성화된 게임에서 `speech_analysis`의 완료 임베딩과 주장 결과를
+관리자용 집계로 투영한다. query는 선택적인 `from`, `to`(최대 31일), `game_id`,
+`persona_id`, `round`(0~5), `analysis_version`, `limit`(주제 수, 기본 12·최대 20)다.
+기간은 발언 원본 event의 `created_at`으로 제한한다. `game_players.kind=AI`인
+발언만 포함하며 사람 발언·역할·진영·비공개 context는 조회하지 않는다.
+
+같은 `analysis_version`의 임베딩만 비교하고, 버전을 생략하면
+`speech_analysis_versions.activated_at`이 가장 최근인 버전을 선택한다. Backend는
+조회 범위에서 최대 500건을 결정적으로 표본화하고 저장된 벡터의 앞 96차원 투영을
+사용해 cosine 유사도 0.78 이상의 greedy 묶음을 계산한다. 이 묶음은 설명 가능한
+화면용 주제 후보이며 새로운 LLM 호출이나 DB
+저장을 시작하지 않는다. 주제별 `keywords`는 원문에서 정규화한 2글자 이상 표현의
+빈도이고, `related_terms`는 같은 주제 안에서 함께 나타난 표현이다. 동의어 판정이나
+사실 판정으로 해석하지 않는다.
+
+성공 응답의 `coverage`는 대상 공개 AI 발언, 분석 행, 임베딩·주장 완료 수를 각각
+보여준다. 표본 상한을 넘으면 `sample_limited=true`로 표시한다. `topics`에는 주제별
+에이전트 분포·주장 stance 분포·대표 공개 발언·최대 5개의 근거 발언이 들어가고,
+`agents`에는 에이전트별 발언 수·상위 주제·상위 표현이 들어간다. `keywords`는 전체
+범위의 상위 표현이다. 모든 공개 원문은 관리자 화면에서 근거를 확인할 수 있도록
+그대로 반환하되 HTML로 실행하지 않는다.
+
+```json
+{
+  "data": {
+    "analysis_version": "v1",
+    "generated_at": "2026-09-08T02:00:00Z",
+    "coverage": {
+      "eligible_speeches": 48,
+      "analyzed_speeches": 46,
+      "embedding_ready": 44,
+      "claims_ready": 42,
+      "embedding_coverage": 0.9167,
+      "claims_coverage": 0.875,
+      "sampled_speeches": 44,
+      "sample_limited": false
+    },
+    "topics": [{
+      "topic_id": "topic-001",
+      "label": "근거 · 투표",
+      "speech_count": 12,
+      "agent_count": 4,
+      "agent_breakdown": [{"persona_id": "CAUTIOUS_ANALYST", "persona_name": "신중한 분석가", "speech_count": 5, "share": 0.4167}],
+      "stance_breakdown": [{"stance": "SUSPICION", "count": 6, "share": 0.5}],
+      "keywords": [{"term": "근거", "speech_count": 8, "occurrence_count": 10}],
+      "related_terms": ["투표", "수상"],
+      "representative": {"event_id": "<uuid>", "game_id": "<uuid>", "persona_id": "<id>", "persona_name": "신중한 분석가", "round": 2, "phase": "DAY_DISCUSSION", "message": "...", "created_at": "2026-09-08T01:59:00Z"},
+      "evidence": []
+    }],
+    "agents": [{"persona_id": "CAUTIOUS_ANALYST", "persona_name": "신중한 분석가", "speech_count": 10, "share": 0.2273, "top_topics": [{"topic_id": "topic-001", "label": "근거 · 투표", "speech_count": 5}], "top_keywords": [{"term": "근거", "speech_count": 7, "occurrence_count": 9}], "stance_breakdown": [{"stance": "SUSPICION", "count": 4, "share": 0.4}]}],
+    "keywords": [{"term": "근거", "speech_count": 20, "occurrence_count": 27, "agent_count": 5}]
+  }
+}
+```
+
+조회 성공 뒤 `ADMIN_GET_SPEECH_ANALYTICS` 감사 action을 저장한다. DB·감사 저장 실패는
+`503 DEPENDENCY_UNAVAILABLE`, 비허용 UUID는 데이터 조회 없이 `403 ADMIN_ACCESS_DENIED`,
+잘못된 기간·UUID·버전·limit은 `422 INVALID_REQUEST`다. 응답에는 벡터 배열, claims 원문,
+role·faction·개별 행동·투표·seed·prompt·비용을 넣지 않는다.
 
 ## 8. Backend 내부 Engine API
 
@@ -1416,14 +1495,16 @@ target에만 자기 자신을 허용한다.
 
 | `window_kind` | `allowed_tools` | `valid_targets` |
 |---|---|---|
-| `SPEECH` | `propose_speech`, `propose_pass` | 빈 배열 |
+| `SPEECH` | 첫날 낮은 `propose_speech`만, 이후 토론은 `propose_speech`, `propose_pass` | 빈 배열 |
 | `NIGHT` | `propose_night_action` | Backend가 role·생존 상태로 확정한 대상 |
 | `VOTE`, `REVOTE`, `FINAL_VOTE` | `propose_vote` | Backend가 해당 투표에 확정한 후보 |
 
 `phase`와 `window_kind` 조합은 각각 `DAY_DISCUSSION|FINAL_DISCUSSION`→`SPEECH`,
 `NIGHT_ACTION`→`NIGHT`, `DAY_VOTE`→`VOTE`, `REVOTE`→`REVOTE`,
 `FINAL_ACCUSATION`→`FINAL_VOTE`만 허용한다. `allowed_tools`는 표의 순서로 중복 없이
-직렬화한다. `SPEECH`의 `valid_targets`는 비어 있고 나머지 window는 1~8개다.
+직렬화한다. 첫날 판정은 Backend의 `DAY_DISCUSSION`, `day_number=1`을 사용한다.
+MCP는 `SPEECH`의 두 허용 배열을 검증하며 최종 PASS 거부는 Backend가 담당한다.
+`SPEECH`의 `valid_targets`는 비어 있고 나머지 window는 1~8개다.
 `opened_state_version`은 envelope `state_version` 이하이고 timed window의
 `deadline_at`은 성공 응답의 `server_time`보다 뒤여야 한다.
 
@@ -1447,8 +1528,9 @@ MCP는 이 값을 근거로 게임 규칙을 다시 계산하지 않는다. capa
 `parameters`는 `sociability`, `assertiveness`, `suspicion`, `deception`,
 `risk_tolerance`, `memory_recall`, `reasoning_skill`, `emotionality`,
 `cooperativeness`, `verbosity`를 정확히 한 번씩 포함한다. 모든 값은 0.0~1.0의
-유한 number이고, `reasoning_skill`은 `mystery-v1`의 모든 preset에서 같은 승인 값이다.
-persona는 말투와 표현 성향만 바꾸며 규칙·정보 권한·추론 능력을 바꾸지 않는다.
+유한 number이다. `reasoning_skill`도 같은 범위를 허용하며 preset 간 동일 값 제약은 없다.
+현재 등록 목표는 0.60~0.80이고 기존 0.5도 호환을 위해 유효하다. persona는 말투·표현·
+추론 성향 데이터이며 규칙·정보 권한이나 Provider의 모델·추론 effort를 바꾸지 않는다.
 
 #### 8.2.5 `scope=gm-guide` data
 
@@ -1800,10 +1882,12 @@ LLM adapter가 AI player의 구조화 결과를 Agent Manager에 반환하는 �
 - schema 오류에는 교정을 한 번만 요청하고 이후 fallback한다.
 - 모델·추론·출력 계약은 Backend 배포 설정, 역할 전략·말투 지침은 MCP 코드에서 관리하며 사용자·관리자 API로 변경하지 않는다.
 - timeout, token 상한, token·비용 반환 field와 관련 endpoint는 MVP에 없다.
-- Agent Manager는 외부 호출과 별도로 reservation부터 최대 15초인 고정 worker
+- Agent Manager는 외부 호출과 별도로 reservation부터 최대 40초인 고정 worker
   lease와 fencing token을 사용한다. timed window의 남은 시간이 더 짧으면 그 시각을
   쓴다. lease 만료 뒤 결과는 버리고 scheduler가 `PASS`, 자동 선택 또는 고정 GM
   문구를 확정한다. 이 lease는 조정 가능한 LLM timeout API나 metric이 아니다.
+  Backend 배포의 `LLM_TIMEOUT_SECONDS`는 기본 30초이며, MCP·모델 최초/교정 호출은
+  lease와 window 마감에서 완료·제출 여유 3초를 뺀 예산 안에서만 진행한다.
 
 ### 10.2 AI GM 직접 반환 결과
 
@@ -1902,14 +1986,32 @@ window와 `state_version`을 다시 확인한 뒤에만 `PUBLIC` event로 저장
 
 현재 운영 `mafia://context/current/...`, `mafia://context/scoped/...` 등록부는 Backend 응답 후 모델 입력을 축약한다. Backend 내부 API와 인증 Resource의 8.2 schema는 그대로 유지한다. 운영 FastMCP 응답의 public.data.scenario는 scenario_id·title만 보존하고 public.data.rules는 고정 한국어 규칙 문자열 배열을 추가한다. me.data는 alibi·observation을 제외하며 그 밖의 필드는 보존한다. 공개 사건·발언·본인 private_events·turn·persona·gm-guide는 보존한다. rules는 마스터플랜 3절 규칙 설명이며 상태 판정이나 추가 비공개 정보가 아니다.
 
+### 2026-09-08 Backend 모델 입력의 최근 대화 발췌 (WU-B6)
+
+Backend는 토론 SPEECH의 모델 user 데이터에만 `dialogue_focus`를 추가한다.
+이는 MCP 응답이나 공개 API 필드가 아니며 8.2절 Resource 스키마는 유지한다.
+`recent_speeches`와 `addressed_speeches`는 현재 토론의 최근 공개 발언과 본인을
+이름·좌석으로 언급한 타인 발언 후보를 각각 최대 6개 담는다. 항목은 기존 공개
+event의 `event_id`, `event_type`, `created_at`, 허용된 `data`만 복사한다.
+`own_last_speech`는 현재 토론의 마지막 본인 발언 또는 null이고,
+`other_speech_count_since_own_last`는 그 뒤 타인 발언 수 또는 본인 발언이 없으면 null이다.
+round 0의 GAME_BEGAN 또는 현재 round와 일치하는 NIGHT_RESOLVED를 토론 경계로
+사용하며 경계가 없거나 다르면 발췌만 생략한다. 이전 이력은 원본 context에 남긴다.
+동명이인은 이름 단독 언급을 제외하고 좌석 호칭으로 구분한다.
+언급 후보는 질문·미답·회피 여부를 확정하지 않는다. 자유 문자열은 user
+데이터로만 전달하며 파생 입력을 읽는 고정 안내만 Backend 출력 계약에 더한다.
+역할별 전략·말투는 기존 MCP 지침을 그대로 사용하고 투표·밤·GM 요청에는 이
+발췌를 추가하지 않는다. 공개 이력·본인 조사 기록을 자르거나 추가 조회하지 않는다.
+
 ## 2026-09-08 운영 MCP 역할별 프롬프트 계약 (WU-M6)
 
 기존 운영 `mafia://context/scoped/...`의 `me.data`와 `persona.data`에 MCP가 생성한
 `agent_instruction` 문자열을 추가한다. me는 본인 역할·phase에 맞는 승리/행동 지침,
 persona는 토론 단계의 고정 말투 지침만 전달하며 토론 외에는 빈 문자열이다. 역할은
 `MAFIA|DETECTIVE|DOCTOR|CITIZEN` 중 하나여야 한다. 사용자 발언·이름·backstory를 지침에
-삽입하지 않는다. 성향은 유한한 0~1 수치만 고정 표현으로 변환하며 deception 증폭은
-마피아 전용 조건문으로 전달한다. 기존 public.data.rules의 게임 규칙과 공개 이력은 보존한다.
+삽입하지 않는다. persona 지침은 배정된 원문·수치를 따르라는 공통 안내만 담는다.
+성향의 구간별 정형 문구 변환과 deception 증폭은 하지 않으며, 검증된 0~1 수치는
+기존 persona.data.parameters로 보존한다. 기존 public.data.rules의 게임 규칙과 공개 이력은 보존한다.
 인증 Resource와 Backend 내부 API의 8.2 data schema는 변경하지 않는다.
 
 Backend 운영 MCP client는 me 지침의 비어 있지 않음과 두 지침의 최대 2400자·문자열
@@ -2007,3 +2109,156 @@ GET은 외부 모델·색인·DB 쓰기·게임 version/event cursor 갱신을 �
 revision은 generated_at을 제외한 공개 응답에서 계산하므로 private 변경이나 같은
 결과의 반복 조회로 변하지 않는다. 앱별 `app.state.vote_insight_service`를 주입할 수
 있으며 기본 router는 `app.state.settings`로 service/repository를 지연 생성한다.
+
+
+### 2026-09-08 실시간 공개 대화 요약 확장
+
+기존 vote-insights endpoint·인수·오류 envelope를 유지한다. 이번 절은 앞선 AI 전용
+및 투표 phase 전용 조회 제한보다 우선한다. HUMAN·AI의 PUBLIC PLAYER_SPOKE를 집계하며
+공개 전 원문·다른 게임·private는 계속 제외한다.
+
+DAY_DISCUSSION·FINAL_DISCUSSION의 현재 OPEN SPEECH window도 조회할 수 있다.
+토론 deadline이 지났어도 투표 준비 중인 같은 OPEN SPEECH는 허용한다. 저장·종료·
+다른 window와 불일치 phase/round는 기존 stale 오류다. 토론에서는 생존 투표권 검사를
+요구하지 않고 소유권과 공개 roster 소속을 검사하며 후보·순위·유사주장 배열은 비운다.
+투표·재투표·최종 지목의 생존·마감·후보 검증은 유지한다.
+
+토론 cutoff_sequence는 동일 repeatable-read snapshot의 최대 공개 원장 sequence+1이다.
+private 이벤트만 추가되어서는 공개 cutoff나 revision이 달라지지 않는다.
+current_discussion 구간은 현재 SPEECH 창의 phase:round이며, game은 cutoff 이전의
+게임 전체 공개 발언이다. 투표 cutoff와 구간 산출은 종전 최초 개설 원장을 유지한다.
+
+응답에 conversation_summary object를 항상 추가한다:
+`{items: [{summary: string, evidence: [PublicSpeechEvidence]}], total: integer, omitted: integer}`.
+원문·분석 바인딩과 claims 검증을 통과한 발언에서 공백만 아닌 서로 다른 proposition
+최대 3개를 ` · `로 연결한다. 주장이 없는 완료 발언은 요약 항목을 만들지 않는다.
+items는 최신 최대 20발언을 sequence 오름차순으로 반환하고 evidence는 해당 공개
+발언 하나의 기존 5필드(event_id/player_id/message/created_at/sequence)다.
+total은 요약 가능한 전체 발언 수, omitted는 total-items 길이다. 임베딩이 아직 없어도
+완료된 주장 요약은 PARTIAL로 노출할 수 있다. coverage는 범위 내 HUMAN·AI 전체 기준이고
+revision에 요약을 포함한다. GET은 모델 호출·DB 쓰기·게임 변경을 하지 않는다.
+
+## 2026-09-08 CUSTOM_ROLE 공개 API 계약 (CP-0)
+
+### 생성과 catalog
+
+`POST /api/v1/games` body는 다음 additive 필드를 허용한다. `mode` 생략은
+`STANDARD`이며 이때 `custom_role`은 없어야 하고 기존 요청·응답 의미가 변하지 않는다.
+
+```json
+{
+  "player_count": 6,
+  "ruleset_version": "mystery-v1",
+  "scenario_version": "scenario-v1",
+  "mode": "CUSTOM_ROLE",
+  "custom_role": {
+    "name": "기록 감식관",
+    "faction": "CITIZEN",
+    "catalog_version": "custom-role-v1",
+    "ability_ids": ["night.investigate.v1", "night.protect.v1"]
+  }
+}
+```
+
+`CUSTOM_ROLE`에서는 `custom_role`이 필수다. `name`은 Unicode NFC 적용, 앞뒤 공백
+제거와 연속 Unicode 공백의 한 칸 축약 뒤 1~40자다. 이는 plain untrusted text이며
+prompt나 명령으로 해석하지 않는다. `ability_ids`는 중복 없는 1~3개 배열이다.
+`CITIZEN`은 공격 외 네 ID 중 1~3개를 허용하며 낮/조회 능력만 선택해도 된다. `MAFIA`는
+`night.attack.v1`을 반드시 포함하며 나머지 네 ID 중에서 추가하여 총 1~3개를 선택한다. 알 수 없는 mode,
+catalog version, ability ID, 중복, 팀 제약 위반은 `422 VALIDATION_ERROR`로 fail-closed한다.
+
+`GET /api/v1/game-config/custom-role-abilities`는 인증된 사용자에게 다음 서버 catalog를
+반환하며 DB나 MCP를 호출하지 않는 versioned 공개 설정이다.
+
+```json
+{
+  "catalog_version": "custom-role-v1",
+  "abilities": [
+    {"id": "night.attack.v1", "label": "공격", "factions": ["MAFIA"]},
+    {"id": "night.investigate.v1", "label": "조사", "factions": ["CITIZEN", "MAFIA"]},
+    {"id": "night.protect.v1", "label": "보호", "factions": ["CITIZEN", "MAFIA"]},
+    {"id": "vote.triple.v1", "label": "투표 조작", "factions": ["CITIZEN", "MAFIA"]},
+    {"id": "intel.special_roles.v1", "label": "특수 직업 열람", "factions": ["CITIZEN", "MAFIA"]}
+  ]
+}
+```
+
+descriptor의 내부 실행 참조는 MCP 설계 정본에만 두며 공개 catalog와 생성 body에는 raw
+MCP Tool명, action subtype, prompt를 포함하지 않는다.
+
+### Snapshot과 밤 행동
+
+게임 snapshot의 `game.mode`는 항상 `STANDARD` 또는 `CUSTOM_ROLE`이다. CUSTOM_ROLE
+본인 projection에는 `me.role_name`, `me.faction`, `me.ability_ids`,
+`me.ability_options`를 반환한다. `ability_options`의 각 항목은
+`{ability_id, label, valid_targets}`이며 현재 밤에 선택 가능한 본인 능력만 포함한다.
+이 네 필드는 소유자 본인에게만 반환하고 다른 audience의 Resource·sync·관리자 공개
+projection으로 전달하지 않는다.
+
+공개 player에는 nullable additive `revealed_role_name`을 둔다. 해당 player가 처형됐거나
+게임이 종료된 뒤에만 정규화된 자유 직업명을 제공하며 밤 사망을 포함한 그 이전에는
+`null`이다. 기존 `revealed_role` 의미는 보존한다.
+
+CUSTOM_ROLE의 `SUBMIT_NIGHT_ACTION` body에는 catalog의 `ability_id`가 필수이며
+`target_player_id`와 함께 보낸다. 현재 본인의 저장 ability, faction, phase, 생존,
+target 규칙을 다시 검증하고 한 밤의 첫 유효 능력 하나만 받는다. STANDARD 요청에서는
+`ability_id`를 받지 않으며 Backend가 기존 role에서 action을 결정한다. 복수 actor의
+INVESTIGATE·PROTECT는 각각 유효하고 밤 해소는 모든 보호 대상 집합을 적용한다.
+
+### 2026-09-08 WU-M10 추가 능력 계약
+
+초기 세 능력 한정 규칙을 확장한 위 catalog에 `vote.triple.v1`(투표 조작),
+`intel.special_roles.v1`(특수 직업 열람)을 추가한다. 두 항목의 factions는
+`[CITIZEN, MAFIA]`이며 기존 catalog version·생성 형식·1~3개 제한은 유지한다.
+`ability_options`는 계속 현재 밤 능력만 반환한다. 낮/조회 능력은 밤에 선택하거나
+자동 사용하지 않으며 밤 능력 없는 커스텀 직업은 밤 제출 대상에서 제외한다.
+
+`SUBMIT_VOTE`는 선택적 `ability_id=vote.triple.v1`을 허용한다. 생존 HUMAN의
+CUSTOM_ROLE 저장 능력을 검증하고 DAY_VOTE·REVOTE의 해당 표에만 가중치 3을 부여한다.
+다른 phase·AI·STANDARD·미보유·밤 ID는 거부한다. 생략·자동 제출은 1표이며 최종 지목은
+이 능력을 받지 않는다. 기존 window·deadline·대상·멱등성·중복 제출 검증은 동일하다.
+공개 결과 counts는 가중 합계이고 개별 표·능력 사용 여부는 종료 전 공개하지 않는다.
+종료 결과의 `ballots`는 능력을 사용한 표에만 additive `ability_id=vote.triple.v1`을
+포함한다. 구형·일반 표의 필드 생략은 1표다. 숫자 `weight` 입력·저장은 허용하지 않고
+actor의 저장 능력과 당시 phase로 가중치를 재계산한다. AUTO ballot의 능력 ID는 거부한다.
+
+MCP `manipulate_vote(user_id, game_id, expected_state_version, window_id,
+idempotency_key, target_player_id)`는 `/internal/mcp/actions`에
+`action=VOTE, ability_id=vote.triple.v1`을 고정 전달한다. Tool은 player_id·weight를 받지
+않으며 Backend가 게임 소유자의 HUMAN을 결정한다. 기존 submit_action은 기존 서명을 유지한다.
+
+MCP `inspect_special_roles(user_id, game_id)`는
+`GET /internal/mcp/special-roles?user_id=...&game_id=...`로 위임한다. Backend는 소유권,
+CUSTOM_ROLE, HUMAN, 생존, `IN_PROGRESS`, 능력 보유 및 `day_number >= 2`를 검증한다.
+소유권 불일치는 404 GAME_NOT_FOUND, 능력/actor 불일치는 403 ABILITY_NOT_ALLOWED,
+상태·첫 밤 미해금은 409 ABILITY_NOT_AVAILABLE이다. 성공 응답은 폐쇄형 object
+`{game_id, player_id, ability_id, state_version, roles}`이고 roles는 좌석순
+`[{player_id, display_name, role, alive}]`이다. 다른 플레이어의 DETECTIVE·DOCTOR만
+포함하고 MAFIA·CITIZEN·본인은 제외하며 사망자도 포함한다. 원본 상태·faction·알리바이·
+밤 행동·투표는 포함하지 않는다. 응답은 Cache-Control: no-store이며 이벤트·공개 Resource·
+AI context에는 추가하지 않는다. 이 조회는 읽기 전용이고 밤 행동 횟수를 소모하지 않는다.
+
+
+### 2026-09-08 CP-0.1 공개 특수 직업 조회 adapter (WU-B17)
+
+사용자 Front는 raw MCP Tool을 직접 호출하지 않고 인증된 사용자 흐름에서
+`GET /api/v1/games/{game_id}/special-roles`를 `X-User-Id`로 호출한다. 기존 1.2~1.3절의
+UUID 식별·접근 통제 경계를 유지하며 헤더 자체를 새로운 인증 증명으로 해석하지 않는다.
+URL·body의 user_id 또는 임의 player_id 입력은 받지 않는다. Backend 공개 adapter는
+기존 `read_special_roles`를 재사용해 같은 읽기 snapshot에서 소유권·CUSTOM_ROLE·HUMAN·
+생존·IN_PROGRESS·`intel.special_roles.v1` 보유·`day_number >= 2`를 검증한다.
+
+HTTP 200은 1.4절 API success envelope의 `data`에
+`{game_id, player_id, ability_id, state_version, roles}`를 담고 `meta`는 공통 계약을 따른다.
+`ability_id`는 `intel.special_roles.v1`이며 roles의 폐쇄형 schema·좌석순·대상 포함/제외
+규칙은 위 WU-M10 계약과 동일하다. 성공·오류 응답에 `Cache-Control: no-store`를 적용한다.
+소유권 불일치/미존재는 `404 GAME_NOT_FOUND`, mode·actor·능력 불일치는
+`403 ABILITY_NOT_ALLOWED`, 사망·진행 중 아님·첫 밤 미해금은
+`409 ABILITY_NOT_AVAILABLE`을 공통 오류 envelope로 유지한다.
+`/internal/mcp/special-roles`는 MCP Tool 전용이며 공개 adapter가 MCP runtime을 경유하지 않는다.
+
+Front는 위 catalog의 정확한 다섯 descriptor(ID·label·factions)를 검증한다. 누락·미지 ID·
+중복 ID·미지 필드·잘못된 타입·진영 배열 불일치 또는 중복 진영은 fail-closed로 거부하고,
+두 신규 ID는 정상 수용한다. 진영 배열은 위 명시된 배열과 일치해야 한다.
+종료 결과에서는 본인의 custom `role_name`·`faction`을 표준 역할 표시보다 우선하며,
+직업명과 표시 이름을 평문 escape한다. private 조회 결과는 공개 결과에 합치지 않는다.

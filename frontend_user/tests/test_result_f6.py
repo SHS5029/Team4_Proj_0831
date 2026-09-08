@@ -100,9 +100,9 @@ def test_round_count_uses_only_confirmed_result_rounds() -> None:
 
 
 @pytest.mark.parametrize("timestamp, expected", [
-    ("2026-09-07T01:02:03.123Z", "2026-09-07 10:02:03 KST"),
-    ("2026-09-07T10:02:03+09:00", "2026-09-07 10:02:03 KST"),
-    ("2026-09-07T23:02:03-04:00", "2026-09-08 12:02:03 KST"),
+    ("2026-09-07T01:02:03.123Z", "2026-09-07 10:02:03"),
+    ("2026-09-07T10:02:03+09:00", "2026-09-07 10:02:03"),
+    ("2026-09-07T23:02:03-04:00", "2026-09-08 12:02:03"),
 ])
 def test_finished_timestamp_converts_to_seoul_without_fraction(timestamp, expected):
     assert _display_timestamp(timestamp) == expected
@@ -121,7 +121,7 @@ def test_result_replays_named_choices_investigations_ballots_and_public_speech()
     app = AppTest.from_function(_result_app, args=(_snapshot(),)).run()
     assert not app.exception
     rendered = _text(app)
-    for expected in ("2026-09-07 10:02:03 KST", "마피아 선택: 바다 → 하늘", "조사: 하늘 → 바다",
+    for expected in ("2026-09-07 10:02:03", "마피아 선택: 바다 → 하늘", "조사: 하늘 → 바다",
                      "마피아", "자동 선택", "투표: 하늘 → 바다", "바다: 1표", "공개 발언 기록입니다."):
         assert expected in rendered
     assert PLAYER not in rendered and TARGET not in rendered
@@ -139,7 +139,9 @@ def test_empty_records_are_not_invented_from_events_or_alive_players():
     assert "확정된 투표 기록이 없습니다." in rendered
     assert "표시할 공개 사건·발언 기록이 없습니다." in rendered
     assert "사망자: 없음" not in rendered and "공격:" not in rendered
-    assert next(metric.value for metric in app.metric if metric.label == "🗳️ 마지막 투표") == "기록 없음"
+    assert next(item.value for item in app.markdown if 'class="result-last-vote"' in item.value) == (
+        '<div class="result-last-vote">기록 없음</div>'
+    )
 
 
 def test_last_vote_summary_does_not_claim_the_game_ended_at_that_vote():
@@ -150,7 +152,10 @@ def test_last_vote_summary_does_not_claim_the_game_ended_at_that_vote():
     snapshot["result"]["votes"].append({"round": 3, "phase": "REVOTE"})
     app = AppTest.from_function(_result_app, args=(snapshot,)).run()
     assert not app.exception
-    assert next(metric.value for metric in app.metric if metric.label == "🗳️ 마지막 투표") == "라운드 3 · 재투표"
+    assert next(item.value for item in app.markdown if 'class="result-last-vote"' in item.value) == (
+        '<div class="result-last-vote">라운드 3</div>'
+    )
+    assert "재투표 · 라운드 3" in _text(app)
     assert not any("결정 단계" in metric.label for metric in app.metric)
     assert "종료 이유: 마피아와 시민 수 동률" in _text(app)
 
@@ -296,13 +301,35 @@ def test_public_chat_distinguishes_speech_and_actions_and_escapes_html():
     def chat_app():
         from frontend_user.app_pages.game_page import _render_public_chat_event
         names = {"speaker": "<b>합성 이름</b>"}
+        presentations = {"speaker": ("🔵", "#2563eb")}
         _render_public_chat_event(event={"event_type": "PLAYER_SPOKE", "data": {
-            "player_id": "speaker", "message": "<script>합성 발언</script>"}}, player_names=names)
+            "player_id": "speaker", "message": "<script>합성 발언</script>"}},
+            player_names=names, presentations=presentations)
         _render_public_chat_event(event={"event_type": "PLAYER_PASSED", "data": {
-            "player_id": "speaker"}}, player_names=names)
+            "player_id": "speaker"}}, player_names=names, presentations=presentations)
     app = AppTest.from_function(chat_app).run()
     assert not app.exception
     assert len(app.get("chat_message")) == 1
     rendered = _text(app)
     assert "&lt;script&gt;합성 발언&lt;/script&gt;" in rendered
-    assert "◈ 행동" in rendered and "발언을 넘겼습니다" in rendered
+    assert "<script>" not in rendered
+    # PASS는 HTML을 허용하지 않는 caption이고 발언은 HTML 카드이므로, 두 렌더
+    # 경로를 섞어 비교하면 안전한 일반 텍스트까지 escape 누락으로 잘못 판정한다.
+    html = "\n".join(item.value for item in app.markdown)
+    assert "&lt;b&gt;합성 이름&lt;/b&gt;" in html and "<b>합성 이름</b>" not in html
+    assert "PASS했습니다" in rendered
+
+
+def test_custom_result_prefers_plain_role_name_and_faction_and_discards_intel():
+    snapshot = _snapshot()
+    custom = {"player_id": PLAYER, "role": "DETECTIVE", "role_name": "<b>기록관</b>", "faction": "MAFIA"}
+    snapshot["me"] = custom
+    snapshot["result"]["players"][0].update(custom)
+    app = AppTest.from_function(_result_app, args=(snapshot,))
+    app.session_state["game.special_roles"] = {"roles": [{"secret": "유출 금지"}]}
+    app.run()
+    assert not app.exception
+    assert any("내 역할 · <b>기록관</b> · 마피아 진영" == item.value for item in app.text)
+    assert "<b>기록관</b>" not in "\n".join(item.value for item in app.markdown)
+    assert "유출 금지" not in _text(app)
+    assert "game.special_roles" not in app.session_state

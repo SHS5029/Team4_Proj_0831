@@ -1,4 +1,4 @@
-"""공개 AI 발언 분석을 게임 진행 transaction과 분리해 저장한다."""
+"""사람·AI의 확정 공개 발언 분석을 게임 진행 transaction과 분리해 저장한다."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ _PUBLIC_SPEECH_SOURCE_SQL = """
                 FROM public.game_events e
                 JOIN public.games g ON g.id = e.game_id
                 JOIN public.game_players p ON p.game_id = e.game_id
-                    AND p.id::text = e.payload->>'player_id' AND p.kind = 'AI'
+                    AND p.id::text = e.payload->>'player_id' AND p.kind IN ('HUMAN', 'AI')
                 JOIN LATERAL (
                     SELECT se.payload FROM public.game_events se
                     WHERE se.game_id = e.game_id AND se.sequence < e.sequence
@@ -149,7 +149,12 @@ class PostgresSpeechAnalysisRepository:
 
     def claim_next(self, *, analysis_version: str, lease_seconds: int = 60,
                    max_attempts: int = 3, game_id: UUID | None = None) -> dict[str, Any] | None:
-        """하나의 단계만 선점하고 Provider에는 원문과 공개 player만 반환한다."""
+        """진행 게임의 확정 발언을 현재 행동 창과 무관하게 한 단계씩 선점한다.
+
+        원문의 토론 소속은 등록 시 검증하므로 밤·투표로 넘어가도 누적 작업을 처리한다.
+        저장·종료 상태에서는 새 선점을 멈추되 이미 선점한 결과의 저장은 유효 lease로
+        판정한다. 게임 행을 잠그거나 원장을 쓰지 않고 Provider에는 공개 입력만 준다.
+        """
         if type(lease_seconds) is not int or not 1 <= lease_seconds <= 600:
             raise ValueError("선점 시간이 올바르지 않습니다.")
         if type(max_attempts) is not int or not 1 <= max_attempts <= 20:
@@ -166,14 +171,7 @@ class PostgresSpeechAnalysisRepository:
                       AND (%s::uuid IS NULL OR game_id = %s)
                       AND EXISTS (
                           SELECT 1 FROM public.games g
-                          JOIN public.action_windows current_window ON current_window.game_id = g.id
                           WHERE g.id = speech_analysis.game_id AND g.status = 'IN_PROGRESS'
-                            AND current_window.status = 'OPEN'
-                            AND current_window.window_kind = 'SPEECH'
-                            AND current_window.phase = g.phase AND current_window.round = g.round
-                            AND current_window.deadline_at <= clock_timestamp()
-                            AND (g.phase = 'FINAL_DISCUSSION'
-                                 OR (g.phase = 'DAY_DISCUSSION' AND g.day_number >= 2))
                       )
                       AND lease_token IS NULL
                       AND ((embedding_status <> 'READY' AND embedding_attempts < %s

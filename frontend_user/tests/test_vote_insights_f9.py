@@ -1,4 +1,4 @@
-"""실제 모델·Backend 호출 없이 보조 조회와 투표 화면의 분리 경계를 검증한다."""
+"""합성 공개 발언으로 실시간 요약 조회와 게임 입력·타이머의 분리 경계를 검증한다."""
 
 import json
 from copy import deepcopy
@@ -27,6 +27,9 @@ def payload(status="READY"):
                      "status": status, "cutoff_sequence": 4, "analysis_version": "v1",
                      "revision": "r1", "generated_at": "2026-09-07T00:00:01Z",
                      "coverage": {"total": 2, "embedding_ready": 2, "claims_ready": 1, "failed": 1},
+                     "conversation_summary": {
+                         "items": [{"summary": "<b>핵심 주장</b> · 두 번째 주장 · 세 번째 주장",
+                                    "evidence": [evidence]}], "total": 1, "omitted": 0},
                      "similar_claims": [{"player_ids": [PLAYER], "target_player_id": PLAYER,
                                          "claim": f"주장 {i}", "evidence": [evidence]} for i in range(5)],
                      "suspicion_ranking": [{"target_player_id": PLAYER, "rank": i + 1,
@@ -38,7 +41,9 @@ def payload(status="READY"):
 
 def snapshot(phase="DAY_VOTE"):
     return {"game": {"game_id": GAME, "phase": phase, "status": "IN_PROGRESS"},
-            "action_window": {"window_id": WINDOW},
+            "action_window": {"window_id": WINDOW,
+                              "kind": "SPEECH" if phase in {"DAY_DISCUSSION", "FINAL_DISCUSSION"}
+                              else "VOTE"},
             "players": [{"player_id": PLAYER, "display_name": "합성 AI"}]}
 
 
@@ -71,6 +76,7 @@ def app_body(client, current):
                                 "00000000-0000-4000-8000-000000000203")
     st.session_state.setdefault("game.command_pending", {"status": "IN_FLIGHT"})
     st.session_state.setdefault("game.action_clock", {"remaining_ms": 25000})
+    st.session_state.setdefault("form.message." + current["game"]["game_id"], "작성 중인 발언")
     vote_insights.render(client=client, game_id=current["game"]["game_id"], snapshot=current)
 
 
@@ -96,17 +102,69 @@ def test_plain_text_evidence_names_and_three_summary_limit(phase):
     assert "<script>alert('원문')</script>" in texts
     assert any("실패 1개" in value for value in texts)
     assert any("사실 판정이 아닙니다" in entry.value for entry in app.caption)
+    assert "<b>핵심 주장</b> · 두 번째 주장 · 세 번째 주장" in texts
+    assert any("공개 발언 2개" in value for value in texts)
+    assert any("지목 플레이어 1명" in value for value in texts)
+    assert app.expander[0].label == "대화 요약과 발언 분석"
     assert not app.markdown
 
 
-def test_scope_change_does_not_reuse_other_scope_or_change_vote():
+@pytest.mark.parametrize("phase", ["DAY_VOTE", "DAY_DISCUSSION", "FINAL_DISCUSSION"])
+def test_scope_change_does_not_reuse_other_scope_or_change_vote(phase):
     client = FakeClient()
-    app = AppTest.from_function(app_body, args=(client, snapshot())).run()
+    app = AppTest.from_function(app_body, args=(client, snapshot(phase))).run()
     app.radio[0].set_value("game").run()
     assert not app.exception
     assert [call["scope"] for call in client.calls] == ["current_discussion", "game"]
-    assert any("게임 누적 · AI 발언" in entry.value for entry in app.text)
+    assert any("게임 누적 · 공개 발언" in entry.value for entry in app.text)
     assert app.session_state[f"form.vote_target.{GAME}.{WINDOW}"] == PLAYER
+    assert app.session_state[f"form.message.{GAME}"] == "작성 중인 발언"
+
+
+@pytest.mark.parametrize("phase", ["DAY_DISCUSSION", "FINAL_DISCUSSION"])
+def test_discussion_scope_survives_speech_window_change(phase):
+    """새 공개 발언의 창으로 갱신해도 선택한 범위로 최신 요약을 다시 요청해야 한다."""
+
+    client = FakeClient()
+    current = snapshot(phase)
+    current["game"]["round"] = 2
+    app = AppTest.from_function(app_body, args=(client, current)).run()
+    app.radio[0].set_value("game").run()
+    next_window = "00000000-0000-4000-8000-000000000206"
+    app.session_state["test.snapshot"]["action_window"]["window_id"] = next_window
+    client.response["data"]["window_id"] = next_window
+    app.run()
+    assert not app.exception
+    assert app.radio[0].value == "game"
+    assert client.calls[-1] == {"game_id": GAME, "window_id": next_window, "scope": "game"}
+    assert any("게임 누적 · 공개 발언" in entry.value for entry in app.text)
+    assert app.session_state[f"form.message.{GAME}"] == "작성 중인 발언"
+    assert app.session_state["game.command_pending"] == {"status": "IN_FLIGHT"}
+    assert app.session_state["game.action_clock"] == {"remaining_ms": 25000}
+
+
+@pytest.mark.parametrize("phase", ["DAY_DISCUSSION", "DAY_VOTE"])
+def test_each_summary_shows_speaker_before_text_with_unknown_speaker_fallback(phase):
+    """화자는 원문을 펼치지 않아도 보이며 공개 이름과 요약에 마크업을 적용하지 않는다."""
+
+    response = payload()
+    original = response["data"]["conversation_summary"]["items"][0]
+    response["data"]["conversation_summary"] = {
+        "items": [original, {"summary": "알 수 없는 화자의 핵심 주장", "evidence": [
+            {**original["evidence"][0], "player_id": "unknown-public-player", "event_id": "unknown-event"}]}],
+        "total": 2, "omitted": 0,
+    }
+    current = snapshot(phase)
+    current["players"][0]["display_name"] = "<b>공개 화자</b>"
+    app = AppTest.from_function(app_body, args=(FakeClient(response), current)).run()
+    assert not app.exception
+    texts = [entry.value for entry in app.text]
+    assert texts[texts.index(original["summary"]) - 1] == "<b>공개 화자</b>"
+    assert texts[texts.index("알 수 없는 화자의 핵심 주장") - 1] == "플레이어"
+    assert "event ID: synthetic-event" in texts
+    assert "event ID: unknown-event" in texts
+    assert "<script>alert('원문')</script>" in texts
+    assert not app.markdown
 
 
 @pytest.mark.parametrize("field,value", [("window_id", "old-window"), ("game_id", "other-game")])
@@ -128,8 +186,9 @@ def test_stale_scope_is_discarded(monkeypatch):
 
 @pytest.mark.parametrize("client", [object(), FakeClient(error=ApiUnavailableError(status_code=503, code="SYNTHETIC")),
                                      FakeClient(error=ValueError("synthetic"))])
-def test_missing_optional_method_and_failure_leave_game_state_intact(client):
-    app = AppTest.from_function(app_body, args=(client, snapshot())).run().run()
+@pytest.mark.parametrize("phase", ["DAY_VOTE", "DAY_DISCUSSION", "FINAL_DISCUSSION"])
+def test_missing_optional_method_and_failure_leave_game_state_intact(client, phase):
+    app = AppTest.from_function(app_body, args=(client, snapshot(phase))).run().run()
     assert not app.exception
     assert "사용할 수 없어요" in app.info[0].value
     assert app.session_state["game.command_pending"] == {"status": "IN_FLIGHT"}
@@ -200,9 +259,10 @@ def test_legacy_dynamic_fake_does_not_invent_optional_api(monkeypatch):
     assert client.mock_calls == []
 
 
-def test_nonvote_phase_never_queries():
+@pytest.mark.parametrize("phase", ["ROLE_REVEAL", "NIGHT_ACTION", "DAWN", "COMPLETED"])
+def test_unrelated_phase_never_queries(phase):
     client = FakeClient()
-    app = AppTest.from_function(app_body, args=(client, snapshot("DAY_DISCUSSION"))).run()
+    app = AppTest.from_function(app_body, args=(client, snapshot(phase))).run()
     assert not app.exception
     assert client.calls == []
     assert not app.expander
@@ -231,3 +291,139 @@ def test_evidence_candidate_control_does_not_submit_or_change_vote():
     assert "선택 후보: 다른 AI" in [entry.value for entry in app.text]
     assert app.session_state[f"form.vote_target.{GAME}.{WINDOW}"] == PLAYER
     assert len(client.calls) == 1
+
+
+@pytest.mark.parametrize("phase", ["DAY_DISCUSSION", "FINAL_DISCUSSION"])
+@pytest.mark.parametrize("status", ["READY", "PENDING", "PARTIAL", "UNAVAILABLE"])
+def test_discussion_always_refreshes_without_vote_cards_or_game_state_changes(phase, status):
+    client = FakeClient(payload(status))
+    current = snapshot(phase)
+    original = deepcopy(current)
+    app = AppTest.from_function(app_body, args=(client, current)).run().run()
+    assert not app.exception
+    assert len(client.calls) == 2
+    assert not app.selectbox
+    assert not any("지목 순위" in entry.value or "유사 주장" in entry.value for entry in app.text)
+    assert app.session_state[f"form.message.{GAME}"] == "작성 중인 발언"
+    assert app.session_state[f"form.vote_target.{GAME}.{WINDOW}"] == PLAYER
+    assert app.session_state["game.command_pending"] == {"status": "IN_FLIGHT"}
+    assert app.session_state["game.action_clock"] == {"remaining_ms": 25000}
+    assert app.session_state["test.snapshot"] == original
+
+
+@pytest.mark.parametrize("error", [ApiUnavailableError(status_code=503, code="SYNTHETIC"),
+                                  ValueError("synthetic")])
+def test_discussion_retries_failed_read_and_displays_new_ready_summary(error):
+    client = FakeClient(error=error)
+    app = AppTest.from_function(app_body, args=(client, snapshot("DAY_DISCUSSION"))).run()
+    assert "사용할 수 없어요" in app.info[0].value
+    client.error = None
+    app.run()
+    assert not app.exception
+    assert len(client.calls) == 2
+    assert "<b>핵심 주장</b> · 두 번째 주장 · 세 번째 주장" in [entry.value for entry in app.text]
+    client.response["data"]["conversation_summary"]["items"][0]["summary"] = "새 공개 발언의 주장"
+    app.run()
+    assert len(client.calls) == 3
+    assert "새 공개 발언의 주장" in [entry.value for entry in app.text]
+
+
+@pytest.mark.parametrize("paused", [False, True])
+@pytest.mark.parametrize("phase", ["DAY_DISCUSSION", "FINAL_DISCUSSION", "DAY_VOTE"])
+def test_saved_or_paused_skips_queries_then_resume_refreshes(phase, paused):
+    client = FakeClient()
+    current = snapshot(phase)
+    app = AppTest.from_function(app_body, args=(client, current)).run()
+    current = app.session_state["test.snapshot"]
+    current["action_window"]["paused"] = paused
+    current["game"]["status"] = "IN_PROGRESS" if paused else "SAVED"
+    app.run().run()
+    assert len(client.calls) == 1
+    current["action_window"]["paused"] = False
+    current["game"]["status"] = "IN_PROGRESS"
+    app.run()
+    assert not app.exception
+    assert len(client.calls) == 2
+
+
+def test_discussion_allows_expired_speech_window_and_spectator():
+    client = FakeClient()
+    current = snapshot("DAY_DISCUSSION")
+    current["action_window"].update(deadline_at="2026-09-01T00:00:00Z", remaining_ms=0)
+    current["me"] = {"player_id": PLAYER, "alive": False}
+    current["legal_actions"] = []
+    app = AppTest.from_function(app_body, args=(client, current)).run()
+    assert not app.exception
+    assert len(client.calls) == 1
+    assert "<b>핵심 주장</b> · 두 번째 주장 · 세 번째 주장" in [entry.value for entry in app.text]
+
+
+def test_summary_shows_latest_twenty_public_speeches_and_omitted_count():
+    response = payload("PARTIAL")
+    source = response["data"]["conversation_summary"]["items"][0]["evidence"][0]
+    other = "00000000-0000-4000-8000-000000000205"
+    response["data"]["conversation_summary"] = {
+        "items": [{"summary": f"요약 {index}", "evidence": [
+            {**source, "event_id": f"speech-{index}", "sequence": index,
+             "player_id": PLAYER if index % 2 else other}]} for index in range(3, 23)],
+        "total": 23, "omitted": 3,
+    }
+    response["data"]["coverage"] = {"total": 25, "claims_ready": 23, "embedding_ready": 0}
+    current = snapshot("DAY_DISCUSSION")
+    current["players"].append({"player_id": other, "display_name": "<i>합성 사용자</i>"})
+    app = AppTest.from_function(app_body, args=(FakeClient(response), current)).run()
+    assert not app.exception
+    texts = [entry.value for entry in app.text]
+    assert [value for value in texts if value.startswith("요약 ")] == [f"요약 {i}" for i in range(3, 23)]
+    assert any("생략 3개" in value and "23개" in value for value in texts)
+    assert any("최신 20" in entry.value for entry in app.caption)
+    assert any("<i>합성 사용자</i>" in value for value in texts)
+    assert any("합성 AI" in value for value in texts)
+    assert "event ID: speech-22" in texts
+    assert "<script>alert('원문')</script>" in texts
+    assert not app.markdown
+    assert "부분 결과" in app.info[0].value
+
+
+@pytest.mark.parametrize("phase", ["DAY_DISCUSSION", "DAY_VOTE"])
+@pytest.mark.parametrize("summary", [None, [], {"items": [None, {"summary": []}, {"summary": "  "}],
+                                            "total": True, "omitted": -1}])
+def test_missing_or_malformed_summary_keeps_existing_game_usable(phase, summary):
+    response = payload()
+    response["data"].pop("conversation_summary")
+    if summary is not None:
+        response["data"]["conversation_summary"] = summary
+    app = AppTest.from_function(app_body, args=(FakeClient(response), snapshot(phase))).run()
+    assert not app.exception
+    assert app.session_state[f"form.message.{GAME}"] == "작성 중인 발언"
+    assert bool(app.selectbox) == (phase == "DAY_VOTE")
+
+
+def test_action_countdown_fragment_does_not_query_insights(monkeypatch):
+    """시계 callback을 반복해도 입력·보조 조회가 다시 실행되지 않는지 확인한다."""
+
+    from frontend_user.components import action_panel
+
+    callbacks = []
+
+    def fragment(**kwargs):
+        def decorate(callback):
+            callbacks.append(callback)
+            return callback
+        return decorate
+
+    monkeypatch.setattr(action_panel.st, "markdown", lambda *args, **kwargs: None)
+    monkeypatch.setattr(action_panel.st, "session_state", {})
+    monkeypatch.setattr(action_panel.st, "fragment", fragment)
+    monkeypatch.setattr(action_panel, "_process_pending", lambda **kwargs: None)
+    monkeypatch.setattr(action_panel, "_countdown_remaining_ms", lambda **kwargs: 25000)
+    monkeypatch.setattr(action_panel, "_timer_is_running", lambda snapshot: True)
+    monkeypatch.setattr(action_panel, "_render_action_status", lambda **kwargs: None)
+    monkeypatch.setattr(action_panel, "_mount_action_attention", lambda **kwargs: None)
+    with patch.object(vote_insights, "render") as read, patch.object(action_panel, "_render_actions") as inputs:
+        current = snapshot("DAY_DISCUSSION")
+        action_panel.render_status_bar(game_id=GAME, snapshot=current)
+        for _ in range(3):
+            callbacks[0](game_id=GAME, snapshot=current, running=True)
+        read.assert_not_called()
+        inputs.assert_not_called()

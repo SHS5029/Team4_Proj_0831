@@ -3,12 +3,13 @@
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Query, Request
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from fastapi import APIRouter, Query, Request, Response
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from backend.app.core.errors import ApiError
 from backend.app.schemas.command_schema import GameCommandRequest
 from backend.app.services.game.actor_context import read_actor_context
+from backend.app.services.game.game_read_service import read_special_roles
 
 router = APIRouter(prefix="/internal/mcp", tags=["mcp"])
 
@@ -27,6 +28,34 @@ class McpActionRequest(BaseModel):
     target_player_id: UUID | None = None
     message: str | None = Field(default=None, max_length=200)
     idempotency_key: UUID
+    ability_id: Literal["vote.triple.v1"] | None = None
+
+    @model_validator(mode="after")
+    def validate_custom_vote(self) -> "McpActionRequest":
+        """새 능력은 소유 HUMAN의 투표에만 전달하고 기존 AI 경로와 분리한다."""
+
+        if self.ability_id is not None and (
+            self.action != "VOTE" or self.player_id is not None or self.message is not None
+        ):
+            raise ValueError("투표 능력은 사용자 본인의 투표에만 사용할 수 있습니다.")
+        return self
+
+
+@router.get("/special-roles")
+def inspect_special_roles(
+    request: Request,
+    response: Response,
+    game_id: UUID = Query(...),
+    user_id: UUID = Query(...),
+) -> dict[str, Any]:
+    """사용자 소유 게임의 해금된 특수 직업 정보만 캐시 없이 반환한다."""
+
+    if set(request.query_params) - {"game_id", "user_id"}:
+        raise ApiError(status_code=422, code="INVALID_REQUEST", message="조회 형식이 올바르지 않습니다.")
+    response.headers["Cache-Control"] = "no-store"
+    return read_special_roles(
+        request.app.state.game_runtime._read, owner_user_id=user_id, game_id=game_id,
+    )
 
 
 @router.get("/context")
@@ -120,6 +149,7 @@ def submit_action(request: Request, payload: McpActionRequest) -> dict[str, Any]
             window_id=payload.window_id,
             target_player_id=payload.target_player_id,
             message=payload.message,
+            ability_id=payload.ability_id,
         )
     except ValidationError as error:
         raise ApiError(

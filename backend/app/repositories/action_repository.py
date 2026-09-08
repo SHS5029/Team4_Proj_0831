@@ -37,6 +37,7 @@ class ActionSubmissionInsert:
     message: str | None
     source: str
     observed_state_version: int
+    ability_id: str | None = None
 
 
 class PostgresActionRepository:
@@ -291,7 +292,7 @@ class PostgresActionRepository:
 
         cursor.execute(
             """
-            SELECT actor_player_id, action_type, target_player_id, source
+            SELECT actor_player_id, action_type, target_player_id, source, ability_id
             FROM public.action_submissions
             WHERE window_id = %s
             ORDER BY submitted_at, id
@@ -523,10 +524,10 @@ class PostgresActionRepository:
             """
             INSERT INTO public.action_submissions (
                 game_id, window_id, actor_player_id, action_type, target_player_id,
-                message, source, observed_state_version
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                message, source, observed_state_version, ability_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id, game_id, window_id, actor_player_id, action_type,
-                      target_player_id, message, source, observed_state_version,
+                      target_player_id, message, source, observed_state_version, ability_id,
                       submitted_at
             """,
             (
@@ -538,6 +539,7 @@ class PostgresActionRepository:
                 submission.message,
                 submission.source,
                 submission.observed_state_version,
+                submission.ability_id,
             ),
         )
         row = cursor.fetchone()
@@ -564,6 +566,17 @@ def _validate_window(window: ActionWindowInsert) -> None:
 def _validate_submission(submission: ActionSubmissionInsert) -> None:
     """행동 종류별 target·message 조합을 DB INSERT 전에 명확히 검사한다."""
 
+    if submission.ability_id is not None:
+        from backend.app.game_engine.rules.night_rules import ABILITY_ACTIONS
+
+        if submission.ability_id == "vote.triple.v1":
+            # 투표 능력은 인간의 명시적 VOTE만 허용하며 자동·Agent 제출로 확장하지 않는다.
+            if submission.action_type != "VOTE" or submission.source != "HUMAN":
+                raise ValueError("저장할 투표 능력의 행동 종류 또는 제출 출처가 다릅니다.")
+        else:
+            action = ABILITY_ACTIONS.get(submission.ability_id)
+            if action is None or action.value != submission.action_type:
+                raise ValueError("저장할 능력 ID와 행동 종류가 다릅니다.")
     if submission.source not in {"HUMAN", "AGENT", "AUTO"}:
         raise ValueError("Action submission source is invalid")
     if submission.observed_state_version < 1:

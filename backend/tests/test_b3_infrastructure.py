@@ -1372,7 +1372,8 @@ def test_begin_game_transaction_persists_state_window_events_outbox_and_receipt(
         assert table_name in statements
 
 
-def test_save_game_transaction_pauses_window_and_persists_result() -> None:
+@pytest.mark.parametrize("observed_version", [1, 2, 99])
+def test_save_game_transaction_pauses_window_and_persists_result(observed_version, monkeypatch) -> None:
     """SAVE_AND_EXIT은 열린 window를 멈추고 저장 결과 전체를 한 commit에 남긴다.
 
     실제 공용 DB를 변경하지 않기 위해 SQL 반환 순서만 재현한다. 이 검증은 게임
@@ -1448,12 +1449,33 @@ def test_save_game_transaction_pauses_window_and_persists_result() -> None:
         keyring=keyring,
     )
 
+    from backend.app.services.game import lifecycle_service
+
+    window_read = False
+    original_current_window = service._actions.current_window
+
+    def read_window(*args, **kwargs):
+        nonlocal window_read
+        window = original_current_window(*args, **kwargs)
+        window_read = True
+        return window
+
+    class SaveClock(datetime):
+        """게임과 window 잠금 뒤에만 저장 시각을 읽는지 검증하는 합성 시계다."""
+
+        @classmethod
+        def now(cls, tz=None):
+            assert window_read
+            return now
+
+    monkeypatch.setattr(service._actions, "current_window", read_window)
+    monkeypatch.setattr(lifecycle_service, "datetime", SaveClock)
+
     result, replayed = service.save(
         USER_ID,
         GAME_ID,
-        GameCommandRequest(type="SAVE_AND_EXIT", expected_state_version=2),
+        GameCommandRequest(type="SAVE_AND_EXIT", expected_state_version=observed_version),
         IDEMPOTENCY_KEY,
-        now=now,
     )
 
     assert not replayed

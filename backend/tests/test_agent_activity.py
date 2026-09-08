@@ -11,7 +11,7 @@ from uuid import uuid4
 import pytest
 
 from backend.app.agent.activity import AgentActivity
-from backend.app.agent.orchestrator import AgentRunResult
+from backend.app.agent.orchestrator import AgentOrchestrator, AgentRunResult
 from backend.app.llm_provider.schemas import NormalizedAgentProposal
 from backend.app.services.game.postgres_runtime import PostgresGameRuntime
 from backend.app.services.game.ai_progress_worker import AiProgressWorker, _log_worker_error
@@ -90,7 +90,12 @@ def runtime_fixture():
     activity, stream = collector()
     runtime._activity = activity
     runtime._mutation_lock = RLock()
-    game = {"phase": "DAY_DISCUSSION", "state_version": 2, "status": "IN_PROGRESS"}
+    runtime._ai_worker = SimpleNamespace(wake_votes=lambda: None)
+    runtime._settings = SimpleNamespace(
+        mcp_server_url="http://synthetic.invalid", llm_max_output_tokens=8192,
+        llm_timeout_seconds=30,
+    )
+    game = {"phase": "DAY_DISCUSSION", "day_number": 2, "state_version": 2, "status": "IN_PROGRESS"}
     runtime._read = SimpleNamespace(snapshot=lambda *args: {"game": dict(game)})
     return runtime, game, stream
 
@@ -171,14 +176,79 @@ def test_worker_vote_expiry_and_fast_forward_advance_after_saved_result():
     assert worker._fast_forward_progressed is True
 
 
-def test_logging_configuration_is_idempotent_and_file_has_rotation():
-    from backend.app.core.logging import progress_logger
+@pytest.fixture
+def isolated_logging(tmp_path, monkeypatch):
+    """실제 설정 함수를 사용하되 운영 logger와 로그 파일에는 영향을 주지 않는다."""
+
+    from backend.app.core import logging as configuration
+
+    names = ("backend.game_progress", "uvicorn.access", "httpx", "httpcore", "mcp")
+    loggers = {name: logging.Logger(name) for name in names}
+    original_get_logger = logging.getLogger
+
+    def get_logger(name=None):
+        return loggers[name] if name in loggers else original_get_logger(name)
+
+    monkeypatch.setattr(logging, "getLogger", get_logger)
+    monkeypatch.setattr(configuration, "__file__", str(tmp_path / "app" / "core" / "logging.py"))
+    try:
+        yield configuration, loggers
+    finally:
+        for logger in loggers.values():
+            for handler in logger.handlers:
+                handler.close()
+
+
+def test_logging_configuration_is_idempotent_and_file_has_rotation(isolated_logging):
+    """반복 설정이 필터·출력을 중복시키거나 상세 파일 기록을 선별하지 않는다."""
+
+    configuration, loggers = isolated_logging
     from logging.handlers import RotatingFileHandler
-    logger = progress_logger()
+
+    configuration.configure_logging()
+    logger = configuration.progress_logger()
     handlers = list(logger.handlers)
-    assert progress_logger().handlers == handlers
+    configuration.configure_logging()
+    assert configuration.progress_logger().handlers == handlers
     files = [handler for handler in handlers if isinstance(handler, RotatingFileHandler)]
+    terminals = [handler for handler in handlers if not isinstance(handler, RotatingFileHandler)]
     assert len(files) == 1 and files[0].maxBytes == 5 * 1024 * 1024 and files[0].backupCount == 3
+    assert len(terminals) == 1
+    assert sum(isinstance(item, configuration._ImportantProgressFilter) for item in terminals[0].filters) == 1
+    assert not any(isinstance(item, configuration._ImportantProgressFilter)
+                   for item in logger.filters + files[0].filters)
+    assert sum(isinstance(item, configuration._FailedAccessFilter)
+               for item in loggers["uvicorn.access"].filters) == 1
+    for name in ("httpx", "httpcore", "mcp"):
+        assert loggers[name].getEffectiveLevel() == logging.WARNING
+
+
+def test_access_status_filter_and_dependency_warnings_are_preserved(isolated_logging):
+    """접근 INFO는 실패 상태만 표시하며 상태와 무관한 WARNING 이상은 보존한다."""
+
+    configuration, loggers = isolated_logging
+    configuration.configure_logging()
+    stream = io.StringIO()
+    access = loggers["uvicorn.access"]
+    access.setLevel(logging.INFO)
+    access.addHandler(logging.StreamHandler(stream))
+    statuses = (200, 204, 301, 304, 399, 400, 404, 499, 500, 599, 600, "500", None)
+    for status in statuses:
+        access.info('%s - "%s %s HTTP/%s" %s', "synthetic-client", "GET", "/synthetic", "1.1", status)
+    for level in (logging.WARNING, logging.ERROR, logging.CRITICAL):
+        access.log(level, "synthetic access %s", logging.getLevelName(level))
+    assert stream.getvalue().splitlines() == [
+        f'synthetic-client - "GET /synthetic HTTP/1.1" {status}'
+        for status in (400, 404, 499, 500, 599)
+    ] + ["synthetic access WARNING", "synthetic access ERROR", "synthetic access CRITICAL"]
+
+    for name in ("httpx", "httpcore", "mcp"):
+        stream = io.StringIO()
+        loggers[name].addHandler(logging.StreamHandler(stream))
+        loggers[name].info("synthetic dependency INFO")
+        loggers[name].warning("synthetic dependency WARNING")
+        loggers[name].error("synthetic dependency ERROR")
+        assert stream.getvalue().splitlines() == ["synthetic dependency WARNING", "synthetic dependency ERROR"]
 
 
 @pytest.mark.asyncio
@@ -186,7 +256,6 @@ def test_logging_configuration_is_idempotent_and_file_has_rotation():
 async def test_speech_applied_only_after_tool_or_fallback_success(monkeypatch, status):
     runtime, game, stream = runtime_fixture()
     owner, game_id, actor, window = uuid4(), uuid4(), uuid4(), uuid4()
-    runtime._settings = SimpleNamespace(mcp_server_url="http://synthetic.invalid")
     runtime._agent_repository = object()
     runtime._read.snapshot = lambda *args: {"game": dict(game), "action_window": {"window_id": str(window), "turn_player_id": str(actor)}}
     calls = []
@@ -202,6 +271,8 @@ async def test_speech_applied_only_after_tool_or_fallback_success(monkeypatch, s
             return {"result": {"result_state_version": 3}, "replayed": False}
 
     class Orchestrator:
+        _fallback_proposal = staticmethod(AgentOrchestrator._fallback_proposal)
+
         def __init__(self, **kwargs):
             assert kwargs["close_context"] is False
         async def run(self, spec):
@@ -245,13 +316,19 @@ async def test_private_batch_rollback_has_no_applied_activity():
 
 
 @pytest.mark.asyncio
-async def test_tool_response_loss_fallback_cannot_apply_to_new_window(monkeypatch):
+@pytest.mark.parametrize("day_number, action_type", [(1, "SPEAK"), (2, "SPEAK"), (2, "PASS")])
+async def test_tool_response_loss_fallback_cannot_apply_to_new_window(monkeypatch, day_number, action_type):
+    """MCP가 저장 후 응답을 잃어도 같은 행동을 새 window로 옮겨 적용하지 않는다."""
+
     runtime, game, stream = runtime_fixture()
+    game["day_number"] = day_number
     owner, game_id, actor, window = uuid4(), uuid4(), uuid4(), uuid4()
-    runtime._settings = SimpleNamespace(mcp_server_url="http://synthetic.invalid")
     runtime._agent_repository = object()
-    runtime._read.snapshot = lambda *args: {"game": dict(game), "action_window": {"window_id": str(window), "turn_player_id": str(actor)}}
+    active_window = {"window_id": str(window), "turn_player_id": str(actor)}
+    runtime._read.snapshot = lambda *args: {"game": dict(game), "action_window": dict(active_window)}
+    proposal = NormalizedAgentProposal(type=action_type, message="저장한 합성 발언" if action_type == "SPEAK" else None)
     seen = []
+    committed = []
 
     class Context:
         def __init__(self, *args, **kwargs):
@@ -259,49 +336,113 @@ async def test_tool_response_loss_fallback_cannot_apply_to_new_window(monkeypatc
         async def close(self):
             pass
         async def submit_action(self, **kwargs):
+            committed.append(kwargs["action"])
             game["state_version"] = 3
+            active_window["window_id"] = str(uuid4())
             raise RuntimeError("synthetic response loss after commit")
 
     class Orchestrator:
+        _fallback_proposal = staticmethod(AgentOrchestrator._fallback_proposal)
+
         def __init__(self, **kwargs):
             pass
         async def run(self, spec):
-            return AgentRunResult(status="SUCCEEDED", proposal=NormalizedAgentProposal(type="PASS"))
+            return AgentRunResult(status="SUCCEEDED", proposal=proposal)
 
-    def fenced_pass(*args, **kwargs):
-        seen.append(kwargs)
+    def fenced_submission(*args, **kwargs):
+        seen.append((args[3] if len(args) == 4 else None, kwargs))
         assert kwargs["expected_state_version"] != game["state_version"]
+        assert str(kwargs["window_id"]) != active_window["window_id"]
         raise RuntimeError("synthetic stale rejection")
 
-    runtime.agent_pass = fenced_pass
+    runtime.agent_pass = fenced_submission
+    runtime.agent_speak = fenced_submission
     module = "backend.app.services.game.postgres_runtime"
     monkeypatch.setattr(module + ".FastMcpGameContextClient", Context)
     monkeypatch.setattr(module + ".AgentOrchestrator", Orchestrator)
     monkeypatch.setattr(module + ".get_llm_provider", lambda settings: object())
     with pytest.raises(RuntimeError):
         await runtime.run_agent_turn(owner, game_id, actor)
-    assert seen == [{"expected_state_version": 2, "window_id": window}]
+    assert seen == [(proposal.message, {"expected_state_version": 2, "window_id": window})]
+    assert committed == [proposal.model_dump(mode="json")]
     stages = [item["stage"] for item in runtime._activity.recent(owner, game_id)]
     assert stages == ["FALLBACK", "FAILED"]
 
 
-def test_terminal_and_file_order_are_identical_and_file_failure_is_quiet(tmp_path):
-    from backend.app.core.logging import _QuietRotatingFileHandler
+def test_terminal_selection_preserves_file_order_history_and_quiet_file_failure(
+    isolated_logging, tmp_path, capsys, monkeypatch,
+):
+    """터미널의 중요 기록 선별이 상세 파일·UI 이력·파일 실패 격리를 바꾸지 않는다."""
+
+    from logging.handlers import RotatingFileHandler
+
+    configuration, _ = isolated_logging
+    logger = configuration.progress_logger()
     terminal = io.StringIO()
-    logger = logging.Logger("synthetic-dual-output")
-    logger.addHandler(logging.StreamHandler(terminal))
-    path = tmp_path / "progress.log"
-    handler = _QuietRotatingFileHandler(path, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")
-    logger.addHandler(handler)
+    handler = next(item for item in logger.handlers if isinstance(item, RotatingFileHandler))
+    next(item for item in logger.handlers if not isinstance(item, RotatingFileHandler)).setStream(terminal)
     activity = AgentActivity(logger=logger)
-    for _ in range(3):
-        record(activity, uuid4(), uuid4(), uuid4())
-    handler.close()
-    assert path.read_text() == terminal.getvalue()
-    broken = _QuietRotatingFileHandler(tmp_path / "missing" / "log", delay=True)
-    logger.handlers = [broken]
-    activity.record(stage="WORKER_FAILED")
-    broken.close()
+    owner, game, actor = uuid4(), uuid4(), uuid4()
+    events = [
+        ("CREATED", None, "ROLE_REVEAL", True, False),
+        ("BEGIN_GAME", None, "DAY_DISCUSSION", True, False),
+        ("STARTED", None, "DAY_DISCUSSION", False, True),
+        ("CONTEXT_READY", None, "DAY_DISCUSSION", False, True),
+        ("DECIDING", None, "DAY_DISCUSSION", False, True),
+        ("DECIDED", "SPEAK", "DAY_DISCUSSION", False, True),
+        ("APPLIED", "SPEAK", "DAY_DISCUSSION", True, True),
+        ("COMMAND_APPLIED", None, "DAY_DISCUSSION", False, False),
+        ("APPLIED", "PASS", "DAY_DISCUSSION", False, True),
+        ("SKIPPED", None, "DAY_DISCUSSION", False, True),
+        ("SAVE_AND_EXIT", None, "DAY_DISCUSSION", True, False),
+        ("RESUME", None, "DAY_DISCUSSION", True, False),
+        ("PHASE_CHANGED", None, "NIGHT_ACTION", True, False),
+        ("APPLIED", "NIGHT_ACTION", "NIGHT_ACTION", False, False),
+        ("APPLIED", "SPEAK", "DAY_VOTE", False, False),
+        ("FALLBACK", "PASS", "FINAL_DISCUSSION", True, True),
+        ("FAILED", "SPEAK", "FINAL_DISCUSSION", True, True),
+        ("WORKER_FAILED", None, "FINAL_DISCUSSION", True, False),
+        ("APPLIED", "SPEAK", "FINAL_DISCUSSION", True, True),
+        ("COMPLETED", None, "ENDED", True, False),
+    ]
+    emitted, selected, history = [], [], []
+    for stage, action, phase, visible, remembered in events:
+        row = activity.record(owner_user_id=owner, game_id=game, player_id=actor,
+                              phase=phase, state_version=2, stage=stage, action=action)
+        entry = {**row, "game_id": str(game)}
+        emitted.append(entry)
+        if visible:
+            selected.append(entry)
+        if remembered:
+            history.append(row)
+    handler.flush()
+    file_path = tmp_path / "logs" / "game-progress.log"
+    file_rows = [json.loads(line) for line in file_path.read_text(encoding="utf-8").splitlines()]
+    assert file_rows == emitted
+    assert [row["sequence"] for row in file_rows] == list(range(1, len(events) + 1))
+    assert [json.loads(line) for line in terminal.getvalue().splitlines()] == selected
+    assert activity.recent(owner, game) == history
+
+    for level, message in (
+        (logging.WARNING, json.dumps({"stage": "DECIDING"})),
+        (logging.ERROR, "synthetic progress ERROR"),
+        (logging.CRITICAL, "synthetic progress CRITICAL"),
+    ):
+        logger.log(level, message)
+    handler.flush()
+    assert terminal.getvalue().splitlines()[-3:] == file_path.read_text(encoding="utf-8").splitlines()[-3:]
+    assert terminal.getvalue().splitlines()[-3:] == [
+        json.dumps({"stage": "DECIDING"}), "synthetic progress ERROR", "synthetic progress CRITICAL"]
+
+    monkeypatch.setattr(logging, "raiseExceptions", True)
+    broken = configuration._QuietRotatingFileHandler(tmp_path / "missing" / "log", delay=True)
+    logger.addHandler(broken)
+    try:
+        activity.record(stage="WORKER_FAILED")
+    finally:
+        logger.removeHandler(broken)
+        broken.close()
+    assert capsys.readouterr().err == ""
 
 
 def test_fallback_target_uses_ai_actor_scope_and_rejects_changed_window(monkeypatch):
@@ -331,7 +472,6 @@ async def test_recovered_speech_rollback_releases_token_and_replays_same_speak(m
     runtime, game, stream = runtime_fixture()
     owner, game_id, actor, window = uuid4(), uuid4(), uuid4(), uuid4()
     reservation = AgentReservation(uuid4(), game_id, actor, window, "SPEECH", 2, uuid4(), datetime.now(UTC) + timedelta(seconds=15))
-    runtime._settings = SimpleNamespace(mcp_server_url="http://synthetic.invalid")
     released = []
     runtime._agent_repository = SimpleNamespace(release_unapplied_job=lambda item: released.append(item))
     runtime._read.snapshot = lambda *args: {"game": dict(game), "action_window": {"window_id": str(window), "turn_player_id": str(actor)}}
@@ -346,6 +486,8 @@ async def test_recovered_speech_rollback_releases_token_and_replays_same_speak(m
             raise AssertionError("복구 결과에는 새 MCP 선택을 요청하지 않습니다.")
 
     class Orchestrator:
+        _fallback_proposal = staticmethod(AgentOrchestrator._fallback_proposal)
+
         def __init__(self, **kwargs):
             pass
         async def run(self, spec):
@@ -403,15 +545,17 @@ def test_activity_rejects_untrusted_diagnostic_strings(value):
 
 
 @pytest.mark.asyncio
-async def test_model_speech_reaches_tool_and_activity_with_public_basis(monkeypatch):
-    """실제 orchestrator부터 Tool 제출까지 연결해 발언이 PASS로 바뀌지 않음을 검증한다."""
+@pytest.mark.parametrize("day_number", [1, 2])
+@pytest.mark.parametrize("submission_fails", [False, True])
+async def test_model_speech_reaches_tool_and_activity_with_public_basis(monkeypatch, day_number, submission_fails):
+    """정상 생성한 첫날·이후 발언은 MCP 제출 장애에도 원문과 최초 제출 범위를 유지한다."""
 
     from datetime import UTC, datetime, timedelta
     from backend.app.repositories.agent_repository import AgentReservation, CapabilityGrant
     from backend.app.llm_provider.base import LLMResponse
-    runtime, game, _ = runtime_fixture()
+    runtime, game, stream = runtime_fixture()
+    game["day_number"] = day_number
     owner, game_id, actor, window = uuid4(), uuid4(), uuid4(), uuid4()
-    runtime._settings = SimpleNamespace(mcp_server_url="http://synthetic.invalid")
     reservation = AgentReservation(uuid4(), game_id, actor, window, "SPEECH", 2, uuid4(), datetime.now(UTC) + timedelta(seconds=15))
     runtime._agent_repository = SimpleNamespace(
         reserve_job=lambda **kw: reservation,
@@ -420,6 +564,7 @@ async def test_model_speech_reaches_tool_and_activity_with_public_basis(monkeypa
     )
     runtime._read.snapshot = lambda *a: {"game": dict(game), "action_window": {"window_id": str(window), "turn_player_id": str(actor)}}
     submitted = []
+    direct_submissions = []
     class Context:
         def __init__(self, *args, **kwargs):
             pass
@@ -429,6 +574,8 @@ async def test_model_speech_reaches_tool_and_activity_with_public_basis(monkeypa
             return {"data": {}}
         async def submit_action(self, **kwargs):
             submitted.append(kwargs["action"])
+            if submission_fails:
+                raise RuntimeError("합성 MCP 제출 연결 장애")
             return {"result": {"result_state_version": 3}, "replayed": False}
     class Provider:
         async def generate(self, request):
@@ -436,13 +583,27 @@ async def test_model_speech_reaches_tool_and_activity_with_public_basis(monkeypa
                 "type": "SPEAK", "message": "사건 당시 어디에 계셨나요?", "public_rationale": "ASK_FOR_CLARIFICATION"})
     def unexpected_pass(*args, **kwargs):
         pytest.fail("정상 발언에 PASS fallback이 실행되었습니다.")
+    def direct_speak(owner_id, identifier, player, message, **kwargs):
+        assert "APPLIED" not in stream.getvalue()
+        direct_submissions.append((owner_id, identifier, player, message, kwargs))
+        return {"result_state_version": 3}, False
     runtime.agent_pass = unexpected_pass
+    runtime.agent_speak = direct_speak
     module = "backend.app.services.game.postgres_runtime"
     monkeypatch.setattr(module + ".FastMcpGameContextClient", Context)
     monkeypatch.setattr(module + ".get_llm_provider", lambda settings: Provider())
     await runtime.run_agent_turn(owner, game_id, actor)
-    assert submitted[0]["type"] == "SPEAK"
+    assert len(submitted) == 1 and submitted[0]["type"] == "SPEAK"
+    if submission_fails:
+        assert direct_submissions == [(owner, game_id, actor, submitted[0]["message"],
+                                       {"expected_state_version": 2, "window_id": window})]
+    else:
+        assert direct_submissions == []
     latest = runtime._activity.recent(owner, game_id)[-1]
     assert latest["stage"] == "APPLIED" and latest["action"] == "SPEAK"
-    assert latest["decision_basis"] == "ASK_FOR_CLARIFICATION"
-    assert latest["decision_source"] == "MODEL"
+    if submission_fails:
+        assert latest["reason_code"] == "MCP_SUBMISSION_FAILED"
+        assert latest["decision_source"] == "FALLBACK"
+    else:
+        assert latest["decision_basis"] == "ASK_FOR_CLARIFICATION"
+        assert latest["decision_source"] == "MODEL"

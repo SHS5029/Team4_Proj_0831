@@ -151,6 +151,7 @@ class ReaderFixture:
         self.private_rows = []
         self.submissions = []
         self.fact_calls = []
+        self.public_history_cache_calls = []
         self.personas = [{
             "id": f"preset-{i}", "version": "test-v1", "display_name": f"성향 {i}",
             "speech_style": "차분하게 말한다.", "backstory": f"합성 배경 {i}",
@@ -194,6 +195,22 @@ class ReaderFixture:
     def list_snapshot_public_events(self, cursor, **kwargs):
         return deepcopy(self.public_rows)
 
+    def cache_public_history(self, record, *, through_sequence, events) -> bool:
+        """공개 projection과 snapshot 상한을 기록하고 cache 미설정의 False를 반환한다.
+
+        운영 읽기 서비스처럼 cache 저장 여부는 context 반환 성공과 독립적이다.
+        전달 자료를 복사해 응답 변경이 cache 호출 검증에 영향을 주지 않게 한다.
+        """
+
+        self.public_history_cache_calls.append({
+            "game_id": str(record.state.game_id),
+            "state_version": record.state.state_version,
+            "through_sequence": through_sequence,
+            "front_sequence": record.front_sequence,
+            "events": deepcopy(events),
+        })
+        return False
+
     def list_snapshot_private_events(self, cursor, **kwargs):
         return deepcopy(self.private_rows)
 
@@ -207,6 +224,213 @@ class ReaderFixture:
 
 def _reader():
     return ReaderFixture()
+
+
+def _special_role_reader():
+    """능력 보유자의 소유권·첫 밤 경계를 검사할 합성 저장 행을 만든다."""
+
+    reader = _reader()
+    reader.game["mode"] = "CUSTOM_ROLE"
+    reader.players[0].update(
+        role="CITIZEN", faction="CITIZEN", custom_role_name="직업 기록관",
+        custom_role_catalog_version="custom-role-v1",
+        custom_ability_ids=["intel.special_roles.v1"],
+    )
+    reader.players[-1]["role"] = "MAFIA"
+    return reader
+
+
+def _special_roles(reader, **params):
+    """운영 route가 저장 snapshot에서 직접 최소 응답을 만드는지 확인한다."""
+
+    runtime = FakeMcpRuntime()
+    runtime._read = reader
+    application = create_app(enable_background_worker=False)
+    application.state.game_runtime = runtime
+    return TestClient(application).get(
+        "/internal/mcp/special-roles",
+        params={"game_id": GAME_ID, "user_id": USER_ID, **params},
+    )
+
+
+def test_special_roles_returns_only_special_roster_after_first_night():
+    reader = _special_role_reader()
+    reader.players[2].update(alive=False, eliminated_phase="NIGHT_ACTION", eliminated_round=1)
+    before = deepcopy((reader.game, reader.players))
+    response = _special_roles(reader)
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {
+        "game_id": GAME_ID, "player_id": str(reader.players[0]["id"]),
+        "ability_id": "intel.special_roles.v1", "state_version": 7,
+        "roles": [
+            {"player_id": str(row["id"]), "display_name": row["display_name"],
+             "role": row["role"], "alive": row["alive"]}
+            for row in reader.players[1:3]
+        ],
+    }
+    assert reader.connection.read_only is True
+    assert reader.fact_calls == []
+    assert (reader.game, reader.players) == before
+    assert _special_roles(reader).json() == response.json()
+
+
+@pytest.mark.parametrize("phase,round_number,day_number,expected", [
+    ("ROLE_REVEAL", 0, 1, 409), ("DAY_DISCUSSION", 0, 1, 409),
+    ("NIGHT_ACTION", 1, 1, 409), ("DAY_DISCUSSION", 1, 2, 200),
+    ("NIGHT_ACTION", 2, 2, 200),
+])
+def test_special_roles_unlocks_only_when_first_night_has_finished(
+    phase, round_number, day_number, expected,
+):
+    reader = _special_role_reader()
+    reader.game.update(phase=phase, round=round_number, day_number=day_number)
+    response = _special_roles(reader)
+    assert response.status_code == expected
+    if expected != 200:
+        assert response.json()["error"]["code"] == "ABILITY_NOT_AVAILABLE"
+
+
+@pytest.mark.parametrize("change,expected,code", [
+    ("unowned", 404, "GAME_NOT_FOUND"),
+    ("standard", 403, "ABILITY_NOT_ALLOWED"),
+    ("unowned_ability", 403, "ABILITY_NOT_ALLOWED"),
+    ("dead", 409, "ABILITY_NOT_AVAILABLE"),
+    ("saved", 409, "ABILITY_NOT_AVAILABLE"),
+    ("completed", 409, "ABILITY_NOT_AVAILABLE"),
+    ("failed", 409, "ABILITY_NOT_AVAILABLE"),
+    ("foreign_human", 403, "ABILITY_NOT_ALLOWED"),
+    ("ai", 403, "ABILITY_NOT_ALLOWED"),
+])
+def test_special_roles_fails_closed_without_private_output(change, expected, code):
+    reader = _special_role_reader()
+    params = {}
+    if change == "unowned":
+        params["user_id"] = str(UUID(int=999))
+    elif change == "standard":
+        reader.game["mode"] = "STANDARD"
+        for key in ("custom_role_name", "custom_role_catalog_version", "custom_ability_ids"):
+            reader.players[0][key] = None
+    elif change == "unowned_ability":
+        reader.players[0]["custom_ability_ids"] = ["night.protect.v1"]
+    elif change == "dead":
+        reader.players[0].update(alive=False, eliminated_phase="NIGHT_ACTION", eliminated_round=1)
+    elif change in {"saved", "completed", "failed"}:
+        reader.game["status"] = change.upper()
+    elif change == "foreign_human":
+        reader.players[0]["user_id"] = UUID(int=999)
+    elif change == "ai":
+        reader.players[0]["kind"] = "AI"
+    response = _special_roles(reader, **params)
+    assert response.status_code == expected
+    assert response.json()["error"]["code"] == code
+    assert "roles" not in response.json()
+    assert "DETECTIVE" not in response.text
+    assert "DOCTOR" not in response.text
+    assert reader.fact_calls == []
+
+
+def test_special_roles_rejects_arbitrary_actor_query():
+    response = _special_roles(_special_role_reader(), player_id=str(ACTOR_ID))
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("action,player_id", [("VOTE", str(ACTOR_ID)), ("PASS", None),
+                                               ("NIGHT_ACTION", None)])
+def test_triple_vote_mcp_input_rejects_ai_and_unrelated_actions(action, player_id):
+    response = _client().post("/internal/mcp/actions", json={
+        "action": action, "player_id": player_id, "user_id": USER_ID, "game_id": GAME_ID,
+        "window_id": WINDOW_ID, "expected_state_version": 7,
+        "idempotency_key": str(UUID(int=90)), "target_player_id": str(OTHER_ID),
+        "ability_id": "vote.triple.v1",
+    })
+    assert response.status_code == 422
+
+
+def test_triple_vote_mcp_forwards_fixed_ability_to_human_command():
+    from unittest.mock import MagicMock
+
+    client = _client()
+    command = MagicMock(return_value=({"command_type": "SUBMIT_VOTE"}, False))
+    client.app.state.game_runtime.command = command
+    response = client.post("/internal/mcp/actions", json={
+        "action": "VOTE", "user_id": USER_ID, "game_id": GAME_ID,
+        "window_id": WINDOW_ID, "expected_state_version": 7,
+        "idempotency_key": str(UUID(int=90)), "target_player_id": str(OTHER_ID),
+        "ability_id": "vote.triple.v1",
+    })
+    assert response.status_code == 200
+    args = command.call_args.args
+    assert args[:2] == (UUID(USER_ID), UUID(GAME_ID))
+    assert args[2].type == "SUBMIT_VOTE"
+    assert args[2].ability_id == "vote.triple.v1"
+    assert args[2].target_player_id == OTHER_ID
+
+
+@pytest.mark.parametrize("command,ability", [
+    ("PASS", "vote.triple.v1"), ("SAVE_AND_EXIT", "vote.triple.v1"),
+    ("SUBMIT_NIGHT_ACTION", "vote.triple.v1"), ("SUBMIT_VOTE", "night.protect.v1"),
+])
+def test_custom_ability_cannot_be_ignored_by_an_unrelated_command(command, ability):
+    from pydantic import ValidationError
+
+    from backend.app.schemas.command_schema import GameCommandRequest
+
+    with pytest.raises(ValidationError):
+        GameCommandRequest(type=command, expected_state_version=7, ability_id=ability)
+
+
+@pytest.mark.parametrize("change", ["unknown_ability", "unknown_catalog", "foreign_player", "invalid_alive"])
+def test_special_roles_rejects_corrupt_storage_without_leaking_roles(change):
+    reader = _special_role_reader()
+    if change == "unknown_ability":
+        reader.players[0]["custom_ability_ids"].append("intel.unknown.v1")
+    elif change == "unknown_catalog":
+        reader.players[0]["custom_role_catalog_version"] = "unknown"
+    elif change == "foreign_player":
+        reader.players[2]["game_id"] = UUID(int=999)
+    else:
+        reader.players[2]["alive"] = "false"
+    response = _special_roles(reader)
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "DEPENDENCY_UNAVAILABLE"
+    assert "DETECTIVE" not in response.text
+    assert "DOCTOR" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_custom_tools_cross_real_mcp_adapter_and_backend_routes():
+    """MCP 등록·HTTP 직렬화·실제 Backend 검증을 함께 통과시키며 외부 서버는 쓰지 않는다."""
+
+    import json
+    from unittest.mock import MagicMock
+
+    import httpx
+    from mcp.server.fastmcp.exceptions import ToolError
+
+    from mafia_game.integrations.engine_http import MinimalBackendContextClient
+    from mafia_game.main import create_fastmcp_server
+
+    reader = _special_role_reader()
+    application = create_app(enable_background_worker=False)
+    runtime = FakeMcpRuntime()
+    runtime._read = reader
+    runtime.command = MagicMock(return_value=({"command_type": "SUBMIT_VOTE"}, False))
+    application.state.game_runtime = runtime
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=application)) as http:
+        server = create_fastmcp_server(MinimalBackendContextClient("http://127.0.0.1:8000", client=http))
+        result = await server.call_tool("inspect_special_roles", {"user_id": USER_ID, "game_id": GAME_ID})
+        payload = json.loads(result[0][0].text)
+        assert [entry["role"] for entry in payload["roles"]] == ["DETECTIVE", "DOCTOR"]
+        reader.game.update(day_number=1, phase="NIGHT_ACTION")
+        with pytest.raises(ToolError, match="MCP_BACKEND_HTTP_409"):
+            await server.call_tool("inspect_special_roles", {"user_id": USER_ID, "game_id": GAME_ID})
+        await server.call_tool("manipulate_vote", {
+            "user_id": USER_ID, "game_id": GAME_ID, "expected_state_version": 7,
+            "window_id": WINDOW_ID, "idempotency_key": str(UUID(int=90)),
+            "target_player_id": str(OTHER_ID),
+        })
+        assert runtime.command.call_args.args[2].ability_id == "vote.triple.v1"
 
 
 def _context(reader, scope="public", actor=ACTOR_ID, **changes):
@@ -235,6 +459,7 @@ def test_actor_context_keeps_subject_facts_and_persona_separate():
     assert _context(reader, "persona", OTHER_ID).json()["data"]["persona_id"] == "preset-2"
     assert first["window_id"] == WINDOW_ID
     assert first["state_version"] == 7
+    assert reader.public_history_cache_calls == []
 
 
 @pytest.mark.parametrize("actor,scope", [
@@ -374,11 +599,18 @@ def test_public_context_strips_unapproved_event_payload_and_reveals_only_execute
     assert data["players"][2]["revealed_role"] is None
     assert data["players"][3]["revealed_role"] == "CITIZEN"
     assert data["players"][2]["eliminated_round"] == 1
+    assert reader.public_history_cache_calls == [{
+        "game_id": GAME_ID, "state_version": 7, "through_sequence": 4,
+        "front_sequence": 3, "events": data["public_events"],
+    }]
 
 
 @pytest.mark.parametrize("change", [
     {"parameters": {**PARAMETERS, "hidden": 0.5}},
-    {"parameters": {**PARAMETERS, "reasoning_skill": 0.9}},
+    {"parameters": {**PARAMETERS, "reasoning_skill": 1.1}},
+    {"parameters": {**PARAMETERS, "reasoning_skill": -0.1}},
+    {"parameters": {**PARAMETERS, "reasoning_skill": float("inf")}},
+    {"parameters": {**PARAMETERS, "reasoning_skill": True}},
     {"parameters": {**PARAMETERS, "suspicion": float("nan")}},
     {"parameters": {**PARAMETERS, "verbosity": True}},
     {"speech_style": ""},
@@ -387,6 +619,22 @@ def test_persona_rejects_unapproved_parameters_and_missing_content(change):
     reader = _reader()
     reader.personas[0].update(change)
     assert _context(reader, "persona").status_code == 403
+
+
+@pytest.mark.parametrize("reasoning_skill", [0.5, 0.6, 0.7, 0.75, 0.8])
+def test_persona_preserves_legacy_and_distinct_reasoning_values(reasoning_skill):
+    """기존 게임의 0.5와 새 성향을 허용하되 타인의 배정값과 원문을 바꾸지 않는다."""
+
+    reader = _reader()
+    reader.personas[0]["parameters"] = {**PARAMETERS, "reasoning_skill": reasoning_skill}
+    original = deepcopy(reader.personas)
+
+    response = _context(reader, "persona")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["parameters"] == {**PARAMETERS, "reasoning_skill": reasoning_skill}
+    assert _context(reader, "persona", OTHER_ID).json()["data"]["parameters"] == PARAMETERS
+    assert reader.personas == original
 
 
 @pytest.mark.parametrize("phase,kind,action", [
@@ -601,3 +849,187 @@ def test_turn_projection_preserves_service_candidate_subset_and_public_fields():
     context = build_context(record.state, subject_type="AI_PLAYER", subject_id=ACTOR_ID, scope="turn",
                             window_id=UUID(WINDOW_ID), window=reader.window, now=NOW, valid_target_ids=(OTHER_ID,))
     assert context["data"]["valid_targets"] == [{"player_id": str(OTHER_ID), "display_name": "좌석 3"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runtime_method,http_method,path,payload", [
+    ("snapshot", "GET", f"/api/v1/games/{GAME_ID}", None),
+    ("command", "POST", f"/api/v1/games/{GAME_ID}/commands",
+     {"type": "BEGIN_GAME", "expected_state_version": 1}),
+    ("sync", "GET", f"/api/v1/games/{GAME_ID}/sync?after_state_version=0&after_sequence=0", None),
+    ("create", "POST", "/api/v1/games",
+     {"player_count": 6, "ruleset_version": "mystery-v1", "scenario_version": "scenario-v1"}),
+    ("list_games", "GET", "/api/v1/games", None),
+    ("feedback", "POST", "/api/v1/feedback", {"feedback_type": "GENERAL", "rating": 3}),
+], ids=["snapshot", "command", "sync", "create", "list", "feedback"])
+async def test_public_game_storage_does_not_delay_mcp_context(
+    monkeypatch, runtime_method, http_method, path, payload,
+):
+    """사용자 요청의 저장소 대기 중에도 같은 앱의 MCP 조회가 먼저 완료되어야 한다."""
+
+    import asyncio
+    from threading import Event
+
+    import httpx
+    from fastapi import FastAPI
+
+    from backend.app.routers.game_router import feedback_router, router as game_router
+    from backend.app.routers.mcp_registry_router import router as mcp_router
+
+    entered, release, finished = Event(), Event(), Event()
+
+    def blocked_storage(*args, **kwargs):
+        """실제 DB 없이 대기 경계를 만들며 회귀가 있어도 제한 시간 뒤 스레드를 해제한다."""
+
+        entered.set()
+        try:
+            release.wait(timeout=2)
+            if runtime_method == "list_games":
+                return []
+            result = {"game_id": GAME_ID}
+            return (result, False) if runtime_method in {"create", "command", "feedback"} else result
+        finally:
+            finished.set()
+
+    context = {"scope": "public", "data": {"game": {"game_id": GAME_ID}, "public_events": []}}
+    # 이번 검증은 HTTP 동시성 경계만 다룬다. 실제 projection·DB fixture와 분리해
+    # 사용자 저장소가 대기하는 동안 내부 MCP 응답을 전달할 수 있는지 확인한다.
+    monkeypatch.setattr("backend.app.routers.mcp_registry_router.read_actor_context",
+                        lambda *args, **kwargs: context)
+    application = FastAPI()
+    application.state.game_runtime = SimpleNamespace(
+        _read=object(), _agent_repository=object(), **{runtime_method: blocked_storage},
+    )
+    application.include_router(game_router)
+    application.include_router(feedback_router)
+    application.include_router(mcp_router)
+    headers = {"X-User-Id": USER_ID, "Idempotency-Key": "00000000-0000-4000-8000-000000000004"}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=application),
+                                base_url="http://synthetic.invalid") as client:
+        slow_request = asyncio.create_task(client.request(http_method, path, headers=headers, json=payload))
+        try:
+            assert await asyncio.to_thread(entered.wait, 1), "합성 저장소 호출이 시작되지 않았습니다."
+            response = await asyncio.wait_for(client.get(
+                "/internal/mcp/context", params={"game_id": GAME_ID, "user_id": USER_ID},
+            ), timeout=1)
+            assert response.status_code == 200 and response.json() == context
+            assert not finished.is_set(), "사용자 저장소 대기가 끝날 때까지 MCP 응답이 막혔습니다."
+        finally:
+            release.set()
+            slow_response = await asyncio.wait_for(slow_request, timeout=3)
+        assert slow_response.status_code == (201 if runtime_method in {"create", "feedback"} else 200)
+
+
+def _public_special_roles(reader, *, game_id=GAME_ID, user_id=USER_ID, params=None, content=None):
+    """실제 공개 facade와 권위 조회를 합성 저장소로 연결해 외부 서비스 없이 검증한다."""
+
+    from backend.app.services.game.postgres_runtime import PostgresGameRuntime
+
+    runtime = object.__new__(PostgresGameRuntime)
+    runtime._read = reader
+    application = create_app(enable_background_worker=False)
+    application.state.game_runtime = runtime
+    return TestClient(application).request(
+        "GET", f"/api/v1/games/{game_id}/special-roles",
+        headers={} if user_id is None else {"X-User-Id": user_id},
+        params=params, content=content,
+    )
+
+
+def test_public_special_roles_envelope_matches_internal_read_only_projection():
+    """공개 응답은 같은 최소 정보만 감싸며 쓰기·사건·cache·AI 경로를 호출하지 않는다."""
+
+    from psycopg import IsolationLevel
+    from unittest.mock import Mock
+
+    reader = _special_role_reader()
+    reader.players[2].update(alive=False, eliminated_phase="NIGHT_ACTION", eliminated_round=1)
+    reader.players.reverse()
+    before = deepcopy((reader.game, reader.players, reader.public_rows, reader.private_rows, reader.submissions))
+    forbidden = Mock(side_effect=AssertionError("조회는 쓰기 또는 다른 projection을 호출하면 안 됩니다."))
+    reader.execute = forbidden
+    reader._events = reader._actions = reader._agents = reader._conversation_history = forbidden
+    response = _public_special_roles(reader)
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    payload = response.json()
+    assert set(payload) == {"data", "meta"}
+    assert set(payload["meta"]) == {"request_id", "server_time", "replayed"}
+    assert payload["meta"]["replayed"] is False
+    assert payload["meta"]["request_id"] == response.headers["x-request-id"]
+    assert set(payload["data"]) == {"game_id", "player_id", "ability_id", "state_version", "roles"}
+    assert payload["data"] == _special_roles(reader).json()
+    assert [row["role"] for row in payload["data"]["roles"]] == ["DETECTIVE", "DOCTOR"]
+    assert payload["data"]["roles"][1]["alive"] is False
+    assert all(set(row) == {"player_id", "display_name", "role", "alive"} for row in payload["data"]["roles"])
+    assert reader.connection.read_only is True
+    assert reader.connection.isolation_level is IsolationLevel.REPEATABLE_READ
+    assert (reader.game, reader.players, reader.public_rows, reader.private_rows, reader.submissions) == before
+    assert reader.fact_calls == []
+    assert forbidden.mock_calls == []
+
+
+@pytest.mark.parametrize("change,status,code", [
+    ("other_user", 404, "GAME_NOT_FOUND"), ("missing", 404, "GAME_NOT_FOUND"),
+    ("standard", 403, "ABILITY_NOT_ALLOWED"), ("unowned_ability", 403, "ABILITY_NOT_ALLOWED"),
+    ("foreign_human", 403, "ABILITY_NOT_ALLOWED"), ("ai", 403, "ABILITY_NOT_ALLOWED"),
+    ("dead", 409, "ABILITY_NOT_AVAILABLE"), ("day1", 409, "ABILITY_NOT_AVAILABLE"),
+    ("SAVED", 409, "ABILITY_NOT_AVAILABLE"), ("COMPLETED", 409, "ABILITY_NOT_AVAILABLE"),
+    ("FAILED", 409, "ABILITY_NOT_AVAILABLE"), ("storage", 503, "DEPENDENCY_UNAVAILABLE"),
+])
+def test_public_special_roles_denials_are_private_and_not_cached(change, status, code):
+    """권한·상태·저장소 거부 의미를 유지하고 오류에서 비공개 정보와 원문을 제거한다."""
+
+    reader = _special_role_reader()
+    kwargs = {}
+    if change == "other_user":
+        kwargs["user_id"] = "00000000-0000-4000-8000-000000000999"
+    elif change == "missing":
+        reader.game = None
+    elif change == "standard":
+        reader.game["mode"] = "STANDARD"
+    elif change == "unowned_ability":
+        reader.players[0]["custom_ability_ids"] = ["night.protect.v1"]
+    elif change == "foreign_human":
+        reader.players[0]["user_id"] = UUID(int=999)
+    elif change == "ai":
+        reader.players[0]["kind"] = "AI"
+    elif change == "dead":
+        reader.players[0].update(alive=False, eliminated_phase="NIGHT_ACTION", eliminated_round=1)
+    elif change == "day1":
+        reader.game["day_number"] = 1
+    elif change == "storage":
+        from unittest.mock import Mock
+        reader.get_owned_game = Mock(side_effect=RuntimeError("synthetic-private-storage-error"))
+    else:
+        reader.game["status"] = change
+    response = _public_special_roles(reader, **kwargs)
+    assert response.status_code == status
+    assert response.headers["cache-control"] == "no-store"
+    assert set(response.json()) == {"error"}
+    assert response.json()["error"]["code"] == code
+    assert all(value not in response.text for value in ("roles", "DETECTIVE", "DOCTOR", "synthetic-private-storage-error"))
+
+
+@pytest.mark.parametrize("kwargs,status,code", [
+    ({"user_id": None}, 400, "MISSING_USER_ID"),
+    ({"user_id": "invalid"}, 400, "INVALID_REQUEST"),
+    ({"user_id": str(UUID(int=999))}, 400, "INVALID_REQUEST"),
+    ({"game_id": "invalid"}, 422, "INVALID_REQUEST"),
+    ({"params": {"user_id": USER_ID}}, 422, "INVALID_REQUEST"),
+    ({"params": {"player_id": str(ACTOR_ID)}}, 422, "INVALID_REQUEST"),
+    ({"params": {"unexpected": ""}}, 422, "INVALID_REQUEST"),
+    ({"content": '{"user_id":"synthetic"}'}, 422, "INVALID_REQUEST"),
+])
+def test_public_special_roles_invalid_input_never_reads_storage(kwargs, status, code):
+    """식별자·추가 입력은 저장소 접근 전에 거부하고 validation 응답도 캐시하지 않는다."""
+
+    from unittest.mock import Mock
+
+    reader = _special_role_reader()
+    reader._transactions = Mock(side_effect=AssertionError("입력 검증 실패는 DB에 접근하면 안 됩니다."))
+    response = _public_special_roles(reader, **kwargs)
+    assert response.status_code == status
+    assert response.json()["error"]["code"] == code
+    assert response.headers["cache-control"] == "no-store"
+    assert reader._transactions.mock_calls == []

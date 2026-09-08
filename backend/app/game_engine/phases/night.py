@@ -9,7 +9,7 @@ from backend.app.game_engine.errors import RuleViolation
 from backend.app.game_engine.fallback import auto_night_target
 from backend.app.game_engine.phases.transition import after_night, touch
 from backend.app.game_engine.rng import DeterministicRng
-from backend.app.game_engine.rules.night_rules import required_actors, role_action
+from backend.app.game_engine.rules.night_rules import ABILITY_ACTIONS, required_actors, role_action
 from backend.app.game_engine.rules.player_rules import eliminate_player, find_player, require_alive_player
 from backend.app.models.enums import NightActionType
 from backend.app.models.enums import GamePhase, PlayerRole
@@ -30,7 +30,11 @@ def submit_action(
     if state.phase is not GamePhase.NIGHT_ACTION:
         raise RuleViolation("INVALID_PHASE")
     actor = require_alive_player(state, actor_id)
-    if role_action(state, actor.player_id) is not action_type:
+    allowed_actions = (
+        {ABILITY_ACTIONS[item] for item in actor.custom_ability_ids if item in ABILITY_ACTIONS}
+        if actor.custom_ability_ids else {role_action(state, actor.player_id)}
+    )
+    if action_type not in allowed_actions:
         raise RuleViolation("ROLE_ACTION_INVALID")
     if actor.player_id in state.night_actions:
         raise RuleViolation("DUPLICATE_ACTION")
@@ -61,7 +65,7 @@ def resolve(state: GameState, *, force: bool = False) -> GameState:
         action_type = role_action(state, actor.player_id)
         # 마피아 일부가 응답했다면 미응답자의 선택을 새로 만들지 않는다. 전원
         # 무응답일 때만 좌석순 대표 한 명에 진영 단위 자동 선택을 한 번 기록한다.
-        if action_type is NightActionType.ATTACK and attack_submitted:
+        if action_type is NightActionType.ATTACK and attack_submitted and not actor.custom_ability_ids:
             continue
         target = auto_night_target(state, actor, action_type)
         state.night_actions[actor.player_id] = NightAction(actor.player_id, action_type, target.player_id)
@@ -78,13 +82,16 @@ def resolve(state: GameState, *, force: bool = False) -> GameState:
         DeterministicRng(state.seed).choice(attack_targets, f"night-attack:{state.round}")
         if attack_targets else None
     )
-    protection = next((action for action in state.night_actions.values() if action.action_type is NightActionType.PROTECT), None)
-    if attack_target and (not protection or protection.target_id != attack_target):
+    protected_targets = {
+        action.target_id for action in state.night_actions.values()
+        if action.action_type is NightActionType.PROTECT
+    }
+    if attack_target and attack_target not in protected_targets:
         eliminate_player(state, attack_target)
     for action in state.night_actions.values():
         if action.action_type is NightActionType.INVESTIGATE:
             target = find_player(state, action.target_id)
-            state.last_detective_result[action.actor_id] = target.role is PlayerRole.MAFIA
+            state.last_detective_result[action.actor_id] = target.faction.value == "MAFIA"
     state.night_actions.clear()
     touch(state)
     after_night(state)

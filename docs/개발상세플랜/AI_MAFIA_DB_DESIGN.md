@@ -148,8 +148,10 @@ seed loader와 테스트에서 검증한다.
 | `content_hash` | `char(64)` | NOT NULL |
 | `created_at` | `timestamptz` | NOT NULL |
 
-수치 field는 모두 0.0~1.0이며 `reasoning_skill`은 `mystery-v1` preset 전체에서 같은
-값이어야 한다. seed loader와 테스트가 key 누락·추가 및 범위를 검증한다.
+수치 field는 모두 0.0~1.0이며 key 누락·추가와 유한 수치 범위를 검증한다.
+`reasoning_skill`의 전원 동일 값 제약은 해제한다. 현재 등록 목표는 마스터플랜의
+WU-B6 추론 수치 표에 따른 0.60~0.80이다. 기존 004 seed의 0.5는 009 migration에서
+갱신하며, 다른 parameters는 보존하고 바뀐 내용에 맞춰 content_hash를 다시 계산한다.
 
 ### 4.5 `games`
 
@@ -475,8 +477,10 @@ normalized table과 event로 재구성하고 새 snapshot을 쓴다. 공개 API�
   때만 AI player proposal을 submission으로, GM narration을 `PUBLIC` event로 반영한다.
   GM 결과는 action submission이나 MCP Tool proposal로 저장하지 않는다. 검증에
   실패하거나 fencing 조건이 바뀌었으면 `STALE` 또는 정의된 fallback으로 끝낸다.
-- lease는 reservation 시각부터 15초 또는 action window deadline 중 이른 시각까지다.
+- lease는 reservation 시각부터 40초 또는 action window deadline 중 이른 시각까지다.
   이 값은 코드의 고정 안전 상수이며 환경 변수나 관리자 설정이 아니다.
+  Agent는 완료 저장·행동 제출에 3초를 남기고 MCP·모델·교정 호출에 남은 시간을
+  공유한다. 이는 schema 변경 없이 Backend 실행 상수와 호출 예산으로 적용한다.
 - scheduler는 만료된 lease 하나를 조건부 UPDATE로 인수해 fallback을 확정한다. 늦게
   돌아온 이전 worker는 fencing token이 달라 결과를 반영할 수 없다. lease는 고정된
   장애 복구 장치이며 환경에서 조정하는 LLM timeout이나 측정 KPI가 아니다.
@@ -676,6 +680,13 @@ deadline을 넣지 않고 성공 뒤 sync로 현재 상태를 읽는다.
 보장한다.
 request hash의 concrete path에는 command 대상 `game_id`가 들어간다. 따라서 같은 key와
 같은 body를 다른 game에 보내도 receipt replay가 아니라 `IDEMPOTENCY_KEY_REUSED`다.
+
+`SAVE_AND_EXIT`만 요청의 화면 버전 일치 검증을 생략한다. 소유권과 receipt를 검증하고
+게임 행 잠금 뒤 읽은 마지막 확정 상태를 복원해 저장한다. UPDATE의 기대 버전은 요청
+값이 아니라 잠긴 게임의 실제 버전을 사용하며 event·window·receipt를 한 번에 commit한다.
+잠금 대기 중 흐른 시간을 저장 잔여 시간에 더하지 않도록 시각은 게임·window 잠금 뒤
+계산한다. 확정된 제출·결과는 보존하고 아직 진행 중인 외부 응답을 기다리지 않는다.
+저장 후 도착한 이전 Agent 결과는 기존 상태·버전·window 검증으로 거부한다.
 
 ### 5.3 action window 해소
 
@@ -1028,3 +1039,83 @@ FINAL_DISCUSSION인 투표 준비 경계에서만 허용한다. 첫날·토론 �
 범위를 정한다. round·cycle을 재사용한 과거 날짜의 제출과 미래 버전은 제외하고 같은
 토론의 여러 창·현재 cycle 제출은 유지한다. 진입 이벤트가 없는 불완전 원장은 과거
 기록을 임의로 섞지 않고 빈 발언 이력으로 복원한다.
+
+
+### 2026-09-08 WU-B11 실시간 공개 발언 계약
+
+이번 절은 위의 투표 준비 전용 선점 및 AI 전용 source 제한을 대체한다.
+`008_allow_public_human_speech_analysis.sql`은 기존 006을 수정하지 않고 검증 함수를
+교체하여 같은 게임의 PUBLIC HUMAN·AI PLAYER_SPOKE를 허용한다. private·PASS·GM·
+미확정 입력은 제외하며 원문·구간·hash·claim·벡터·불변 참조 검증은 유지한다.
+새 테이블·열·권한은 필요 없다. 006 적용 뒤 008을 적용한다.
+
+`discover`와 `prepare_for_vote`는 동일한 공개 HUMAN·AI source를 사용한다.
+`claim_next`는 IN_PROGRESS 게임의 미완료 단계를 현재 phase·day·window deadline과
+무관하게 선점한다. 첫날과 열린 토론에서도 확정 발언부터 처리한다. 저장·종료·실패
+게임은 신규 선점하지 않고 재개하면 보존한 PENDING·시도 수를 이어간다. 저장·종료
+직전 이미 선점한 요청은 유효 lease일 때 결과만 저장할 수 있다. 삭제된 행은 늦은
+완료 CAS가 false이며 게임 원장이나 state_version을 갱신하지 않는다.
+
+요약은 검증된 claims.proposition을 읽기 projection으로 누적하며 별도 결과 열이나
+모델 호출·쓰기 transaction을 추가하지 않는다. 기존 READY와 분석 버전을 재사용한다.
+
+
+2026-09-08 사용자 승인 WU-M9 적용 기록: Team 4team_db에 008 함수 교체를
+적용·commit했다. 원본/분석 6개 테이블의 동일 snapshot 행 수·내용 hash와 기존
+함수 OID·소유권·ACL·실행 설정·트리거·relation 메타데이터가 보존됐다.
+독립 연결에서 008 본문과 활성 트리거·health를 재확인했다. 실제 데이터 보정·권한
+변경·서비스 재시작·유료 모델 호출은 없으며 집계와 검증 재사용 근거는 README를 따른다.
+
+## 2026-09-08 CUSTOM_ROLE additive 저장 계약 (CP-0)
+
+WU-B16 migration은 기존 migration을 수정하지 않고 다음 nullable/additive 열을 추가한다.
+
+| 테이블 | 열 | 타입·기본값 | 제약·의미 |
+|---|---|---|---|
+| `games` | `mode` | `varchar(16) NOT NULL DEFAULT 'STANDARD'` | `STANDARD` 또는 `CUSTOM_ROLE`; 기존 행은 `STANDARD` |
+| `game_players` | `custom_role_name` | `varchar(40) NULL` | HUMAN CUSTOM_ROLE 좌석의 NFC·공백 정규화 표시 문자열 |
+| `game_players` | `custom_ability_ids` | `jsonb NULL` | HUMAN CUSTOM_ROLE 좌석의 순서가 보존된 중복 없는 versioned ID 배열 1~3개 |
+| `game_players` | `custom_role_catalog_version` | `varchar(32) NULL` | v1에서는 `custom-role-v1` |
+
+`STANDARD`와 모든 AI 행의 세 custom 열은 NULL이다. `CUSTOM_ROLE` 게임에서는 정확히 한 HUMAN 행에 세 값이 모두 존재해야 하며, 기존 `role_id` 또는 동등한 표준 역할 열과 별개로 저장된 `faction`이 권위 있는 승패 값이다. DB check만으로 진영별 조합을 느슨하게 허용하지 않고 Backend가 catalog allowlist·중복·팀 제약을 transaction 안에서 fail-closed로 검증한 결과만 기록한다. 직업명은 평문 비신뢰 데이터이므로 prompt·SQL·로그 제어 문자열로 해석하지 않으며 출력 경계에서 escape한다.
+
+`custom_ability_ids`의 v1 allowlist는 `night.attack.v1`, `night.investigate.v1`,
+`night.protect.v1`, `vote.triple.v1`, `intel.special_roles.v1`이다. `CITIZEN`은 공격 외
+네 능력 중 1~3개(낮/조회 능력만도 가능), `MAFIA`는 공격 필수와 나머지 추가로 총 1~3개를
+허용하며 배열 중복이나 알 수 없는 ID는 저장하지 않는다.
+
+역할 배정 시 기존 `games.mafia_count`를 유지한다. CUSTOM_ROLE 인간의 저장 faction이 `MAFIA`이면 mafia 슬롯 하나, `CITIZEN`이면 citizen 슬롯 하나를 선점한다. 나머지 AI에는 표준 mafia 총수와 detective·doctor 각 한 명 구성을 보존한다. 밤 원장은 actor별 `ability_id`와 대상을 구분할 수 있어야 하며 복수 INVESTIGATE·PROTECT 제출을 허용하고, 해소 시 유효 PROTECT actor의 모든 대상 집합을 공격 대상과 비교한다. migration upgrade 검증은 기존 행이 `mode=STANDARD`, custom 열 NULL로 읽히며 기존 게임 결과가 변하지 않는지 포함한다.
+
+### 2026-09-08 WU-M10 능력 저장 확장
+
+catalog allowlist에 `vote.triple.v1`, `intel.special_roles.v1`을 두 진영 공통으로 추가한다.
+1~3개 제한과 MAFIA 공격 필수는 유지한다. 신규 migration
+`011_add_custom_role_tool_abilities.sql`은 010 뒤에 실행하며 기존 행을 변경하지 않고
+`action_submissions_ability_id_check`에 `vote.triple.v1` + `action_type=VOTE` 조합만 추가한다.
+이 신규 조합은 `source=HUMAN`도 필수로 검증한다.
+능력 투표는 기존 immutable 제출 행의 ability_id에 기록하고 복원 시 게임 mode·HUMAN·
+보유 능력·phase와 대상을 재검증해 3표를 재현한다. NULL은 기존 1표이며 가중치를 외부
+숫자로 저장/수용하지 않는다. 공개 counts와 순수 엔진은 같은 가중 합계를 사용한다.
+확정 해소 원장과 종료 결과의 ballots도 능력 사용 표에만 `ability_id`를 추가한다.
+구형/일반 ballot의 생략은 1표이고 숫자 weight와 AUTO 능력 ballot은 거부한다.
+특수 직업 열람은 현재 소유 게임 snapshot에서 검증·최소 projection만 만들고 저장,
+event, Redis cache를 추가하지 않는다. 첫 밤 완료는 저장된 day_number >= 2로 판정한다.
+
+
+### 2026-09-08 CP-0.1 공개 조회 저장 경계
+
+WU-B17의 공개 `GET /api/v1/games/{game_id}/special-roles`는 기존 `read_special_roles`의
+동일 읽기 snapshot과 소유권·능력·생존·진행 상태·day>=2 검증을 재사용한다. 별도 테이블·
+migration·이벤트·Redis cache를 만들지 않으며 내부 MCP 전용 조회 계약도 유지한다.
+Front의 결과는 identity/game/state 범위의 본인 UI에만 두고 범위 변경 시 폐기하며,
+공개 명부·timeline·analytics 또는 종료 결과 저장에 복제하지 않는다.
+응답 envelope·no-store·오류의 정본은 [API 명세](AI_MAFIA_API_SPEC.md)의 CP-0.1 절이다.
+
+### 2026-09-08 CP-7 팀 DB 적용 검증
+
+사용자가 설정한 `DATABASE_MIGRATION_URL`로 팀 DB 대상과 DDL 권한을 확인한 뒤,
+Backend·MCP·사용자 Front를 중지하고 010 다음 011을 적용했다. 두 SQL만 담은
+임시 migration 디렉터리를 사용했으며 기존 001~009는 재실행하지 않았다.
+같은 순서의 재실행도 성공했고, 새 열 5개·검증된 CHECK 3개·기존 세 테이블 행 수와
+기존 게임의 STANDARD/default 및 custom/ability NULL 보존을 확인했다.
+URL·자격 증명은 출력하지 않았으며 실제 서비스 검증 결과는 루트 README에 기록한다.

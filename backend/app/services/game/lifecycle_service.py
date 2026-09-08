@@ -97,7 +97,7 @@ def begin_game(service: Any, owner_user_id: UUID, game_id: UUID, payload: GameCo
 
     if payload.type != "BEGIN_GAME":
         raise ValueError("PostgresBeginGameService only accepts BEGIN_GAME")
-    request_hash = _request_hash(payload.model_dump(mode="json"))
+    request_hash = _request_hash(payload.receipt_body())
     route_scope = _route_scope(game_id)
     try:
         with service._transactions.transaction() as connection:
@@ -136,13 +136,17 @@ def begin_game(service: Any, owner_user_id: UUID, game_id: UUID, payload: GameCo
 
 
 def save_game(service: Any, owner_user_id: UUID, game_id: UUID, payload: GameCommandRequest, idempotency_key: UUID, *, now: datetime | None = None) -> tuple[dict[str, Any], bool]:
-    """SAVE_AND_EXIT의 상태·window·event·receipt를 하나의 transaction으로 저장한다."""
+    """화면 버전과 무관하게 마지막 확정 상태·window·event·receipt를 한 번에 저장한다.
+
+    화면이 갱신되는 동안 AI가 진행해도 저장 의도는 유효하다. 요청 버전은 멱등
+    hash에만 유지하고, 잠금 뒤 복원한 실제 버전으로 UPDATE해 확정된 기록을 보존한다.
+    아직 확정되지 않은 외부 응답은 기다리지 않으며 저장 뒤 기존 상태 검증에 맡긴다.
+    """
 
     if payload.type != "SAVE_AND_EXIT":
         raise ValueError("PostgresGameSaveService only accepts SAVE_AND_EXIT")
-    request_hash = _request_hash(payload.model_dump(mode="json"))
+    request_hash = _request_hash(payload.receipt_body())
     route_scope = _route_scope(game_id)
-    current_time = now or datetime.now(UTC)
     try:
         with service._transactions.transaction() as connection:
             with connection.cursor(row_factory=dict_row) as cursor:
@@ -155,11 +159,11 @@ def save_game(service: Any, owner_user_id: UUID, game_id: UUID, payload: GameCom
                     return replay, True
                 state, _ = restore_locked_game(service, cursor, game_row)
                 accepted_version = state.state_version
-                if payload.expected_state_version != accepted_version:
-                    raise ApiError(status_code=409, code="STALE_STATE_VERSION", message="게임 상태가 변경되었습니다. 최신 상태를 다시 확인하세요.", details={"current_state_version": accepted_version})
                 window = service._actions.current_window(cursor, game_id=game_id)
                 if window is not None and window["status"] == "RESOLVING":
                     raise ApiError(status_code=409, code="WINDOW_NOT_READY", message="현재 행동 window가 아직 정리되지 않았습니다.")
+                # 잠금을 기다리는 동안 흐른 시간까지 남은 시간으로 되돌리지 않는다.
+                current_time = now or datetime.now(UTC)
                 remaining_ms = _remaining_ms(window, current_time)
                 try:
                     GameEngine().save(state, remaining_ms)
@@ -186,7 +190,7 @@ def resume_game(service: Any, owner_user_id: UUID, game_id: UUID, payload: GameC
 
     if payload.type != "RESUME":
         raise ValueError("PostgresGameResumeService only accepts RESUME")
-    request_hash = _request_hash(payload.model_dump(mode="json"))
+    request_hash = _request_hash(payload.receipt_body())
     route_scope = _route_scope(game_id)
     current_time = now or datetime.now(UTC)
     try:

@@ -1,4 +1,8 @@
-"""read-only 관리자 API route."""
+"""관리자 조회의 권한·입력 검증과 공개 응답을 연결한다.
+
+저장소 호출은 동기식이므로 handler를 일반 함수로 두어 FastAPI의 작업 스레드에서
+실행한다. 관리자 집계가 지연돼도 MCP·게임 요청의 공용 이벤트 루프를 점유하지 않는다.
+"""
 
 from __future__ import annotations
 
@@ -12,8 +16,12 @@ from backend.app.core.errors import ApiError
 from backend.app.core.responses import api_success_response, request_trace_id
 from backend.app.routers.game_router import user_id_header
 from backend.app.schemas.admin_schema import (
-    AdminAuditQuery, AdminFeedbackQuery, AdminGameListQuery, AdminInsightQuery,
+    AdminAuditQuery,
+    AdminFeedbackQuery,
+    AdminGameListQuery,
+    AdminInsightQuery,
     AdminMetricsQuery,
+    AdminSpeechAnalyticsQuery,
 )
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
@@ -37,7 +45,7 @@ def _admin_service(request: Request):
 
 
 @router.get("/games", response_model=None)
-async def list_admin_games(
+def list_admin_games(
     request: Request,
     x_user_id: str | None = Header(default=None),
     status: str | None = Query(default=None),
@@ -63,7 +71,7 @@ async def list_admin_games(
 
 
 @router.get("/role-win-rates", response_model=None)
-async def get_role_win_rates(
+def get_role_win_rates(
     request: Request,
     x_user_id: str | None = Header(default=None),
     from_: str | None = Query(default=None, alias="from"),
@@ -85,7 +93,7 @@ async def get_role_win_rates(
 
 
 @router.get("/persona-win-rates", response_model=None)
-async def get_persona_win_rates(
+def get_persona_win_rates(
     request: Request,
     x_user_id: str | None = Header(default=None),
     from_: str | None = Query(default=None, alias="from"),
@@ -106,8 +114,50 @@ async def get_persona_win_rates(
     return api_success_response(request, data)
 
 
+@router.get("/speech-analytics", response_model=None)
+def get_speech_analytics(
+    request: Request,
+    x_user_id: str | None = Header(default=None),
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = Query(default=None),
+    game_id: str | None = Query(default=None),
+    persona_id: str | None = Query(default=None),
+    round: str | None = Query(default=None),
+    analysis_version: str | None = Query(default=None),
+    limit: str = Query(default="12"),
+) -> JSONResponse:
+    """공개 AI 발언의 임베딩·claims 집계를 관리자에게 read-only로 반환한다."""
+
+    admin_id = user_id_header(x_user_id)
+    _admin_service(request).require_admin(admin_id)
+    try:
+        query = AdminSpeechAnalyticsQuery.model_validate({
+            "from": from_,
+            "to": to,
+            "game_id": game_id,
+            "persona_id": persona_id,
+            "round": round,
+            "analysis_version": analysis_version,
+            "limit": limit,
+        })
+    except ValidationError as error:
+        raise _validation_error(error) from error
+    data = _admin_service(request).speech_analytics(
+        admin_id,
+        from_time=query.from_,
+        to_time=query.to,
+        game_id=query.game_id,
+        persona_id=query.persona_id,
+        round_number=query.round,
+        analysis_version=query.analysis_version,
+        topic_limit=query.limit,
+        request_id=UUID(request_trace_id(request)),
+    )
+    return api_success_response(request, data)
+
+
 @router.get("/feedback", response_model=None)
-async def list_admin_feedback(
+def list_admin_feedback(
     request: Request,
     x_user_id: str | None = Header(default=None),
     feedback_type: str | None = Query(default=None),
@@ -131,7 +181,7 @@ async def list_admin_feedback(
 
 
 @router.get("/audit-logs", response_model=None)
-async def list_admin_audit_logs(
+def list_admin_audit_logs(
     request: Request,
     x_user_id: str | None = Header(default=None),
     event_type: str | None = Query(default=None),
@@ -153,7 +203,7 @@ async def list_admin_audit_logs(
 
 
 @router.post("/insights/query", response_model=None)
-async def query_admin_insights(
+def query_admin_insights(
     request: Request,
     query: AdminInsightQuery,
     x_user_id: str | None = Header(default=None),
@@ -175,7 +225,7 @@ async def query_admin_insights(
 
 
 @router.get("/games/{game_id}", response_model=None)
-async def get_admin_game(
+def get_admin_game(
     request: Request,
     game_id: UUID,
     x_user_id: str | None = Header(default=None),
@@ -189,7 +239,7 @@ async def get_admin_game(
 
 
 @router.get("/metrics", response_model=None)
-async def get_admin_metrics(
+def get_admin_metrics(
     request: Request,
     x_user_id: str | None = Header(default=None),
     from_: str | None = Query(default=None, alias="from"),

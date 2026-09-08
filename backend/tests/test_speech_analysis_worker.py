@@ -167,9 +167,145 @@ async def test_stop_wakes_poll_and_is_idempotent_start():
     worker.start()
     assert worker._task is first
     await asyncio.sleep(0.01)
+    assert [name for name, _ in repo.calls] == ["discover", "claim"]
     await asyncio.wait_for(worker.stop(), 0.5)
     assert not worker._active and not worker._db_tasks
     fake.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_background_discovers_new_speech_while_all_model_slots_are_busy(monkeypatch):
+    """모델 응답은 event로 붙잡고 다음 탐색이 새 발언을 등록하는 순서를 확인한다."""
+    repo, fake = Repository([job()]), provider()
+    entered, release, discovered, saved = [asyncio.Event() for _ in range(4)]
+    loop = asyncio.get_running_loop()
+    discover, complete = repo.discover, repo.complete_embedding
+
+    async def blocked(message):
+        entered.set()
+        await release.wait()
+        return [1.0] * 1536
+
+    def discover_new(**kwargs):
+        result = discover(**kwargs)
+        if entered.is_set() and len(repo.calls) == 3:
+            repo.jobs.append(job())
+            loop.call_soon_threadsafe(discovered.set)
+        return result
+
+    def record_saved(**kwargs):
+        accepted = complete(**kwargs)
+        if len(repo.saved) == 2:
+            loop.call_soon_threadsafe(saved.set)
+        return accepted
+
+    monkeypatch.setattr(repo, "discover", discover_new)
+    monkeypatch.setattr(repo, "complete_embedding", record_saved)
+    fake.embed.side_effect = blocked
+    worker = SpeechAnalysisWorker(
+        repo, fake, settings(speech_analysis_poll_seconds=0.05, speech_analysis_concurrency=1)
+    )
+    worker.start()
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        await asyncio.wait_for(discovered.wait(), 1)
+        assert fake.embed.await_count == 1 and not repo.saved
+        assert len(repo.jobs) == 1 and len(worker._active) == 1
+        assert sum(name == "claim" for name, _ in repo.calls) == 1
+        release.set()
+        await asyncio.wait_for(saved.wait(), 1)
+    finally:
+        release.set()
+        await worker.stop()
+    assert fake.embed.await_count == 2
+    assert not worker._active and not worker._db_tasks
+
+
+@pytest.mark.asyncio
+async def test_background_refills_only_free_slots_without_waiting_for_slow_peer(monkeypatch):
+    """느린 선점 하나가 남아도 다른 슬롯은 다음 poll에서 후속 발언을 처리한다."""
+    work = [job() | {"message": message} for message in ("느린 발언", "다음 발언", "새 발언")]
+    repo, fake = Repository(work), provider()
+    release, completed = asyncio.Event(), asyncio.Event()
+    loop = asyncio.get_running_loop()
+    complete = repo.complete_embedding
+    active = peak = 0
+
+    async def embed(message):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        try:
+            if message == "느린 발언":
+                await release.wait()
+            return [1.0] * 1536
+        finally:
+            active -= 1
+
+    def record_saved(**kwargs):
+        accepted = complete(**kwargs)
+        if len(repo.saved) == 2:
+            loop.call_soon_threadsafe(completed.set)
+        return accepted
+
+    monkeypatch.setattr(repo, "complete_embedding", record_saved)
+    fake.embed.side_effect = embed
+    worker = SpeechAnalysisWorker(
+        repo, fake, settings(speech_analysis_poll_seconds=0.05, speech_analysis_concurrency=2,
+                             speech_analysis_batch_size=2)
+    )
+    worker.start()
+    try:
+        await asyncio.wait_for(completed.wait(), 1)
+        assert len(repo.saved) == 2 and fake.embed.await_count == 3
+        assert peak == 2 and active == 1
+        assert sum(name == "discover" for name, _ in repo.calls) >= 2
+    finally:
+        release.set()
+        await worker.stop()
+    assert len(repo.saved) == 3 and not worker._active
+
+
+@pytest.mark.asyncio
+async def test_discovery_failure_keeps_active_lease_and_recovers_next_poll(monkeypatch, caplog):
+    """탐색 오류가 이미 호출한 모델을 취소하거나 성공 결과를 재과금하게 하지 않는다."""
+    repo, fake = Repository([job()]), provider()
+    entered, release, recovered = [asyncio.Event() for _ in range(3)]
+    loop = asyncio.get_running_loop()
+    discover = repo.discover
+    cycles = 0
+
+    async def blocked(message):
+        entered.set()
+        await release.wait()
+        return [1.0] * 1536
+
+    def interrupted_discovery(**kwargs):
+        nonlocal cycles
+        cycles += 1
+        if cycles == 2:
+            raise RuntimeError("SYNTHETIC_SECRET_DISCOVERY")
+        if cycles == 3:
+            loop.call_soon_threadsafe(recovered.set)
+        return discover(**kwargs)
+
+    monkeypatch.setattr(repo, "discover", interrupted_discovery)
+    fake.embed.side_effect = blocked
+    worker = SpeechAnalysisWorker(
+        repo, fake, settings(speech_analysis_poll_seconds=0.05, speech_analysis_concurrency=1)
+    )
+    worker.start()
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        await asyncio.wait_for(recovered.wait(), 1)
+        assert fake.embed.await_count == 1 and not repo.saved and not repo.failures
+        assert len(worker._active) == 1
+        assert "SPEECH_ANALYSIS_CYCLE_FAILED" in caplog.text
+        assert "SYNTHETIC_SECRET_DISCOVERY" not in caplog.text
+    finally:
+        release.set()
+        await worker.stop()
+    assert len(repo.saved) == 1 and not worker._active and not worker._db_tasks
 
 
 @pytest.mark.asyncio
@@ -192,6 +328,69 @@ async def test_shutdown_drains_inflight_model_and_stops_new_claims():
     await asyncio.wait_for(stopping, 1)
     assert fake.embed.await_count == 1
     assert len(repo.saved) == 1 and len(repo.jobs) == 1
+    assert not worker._active and not worker._db_tasks
+
+
+@pytest.mark.asyncio
+async def test_shutdown_during_database_claim_leaves_unstarted_lease_for_recovery(monkeypatch):
+    """종료 요청 뒤 DB가 돌려준 선점은 모델을 시작하지 않고 만료 복구에 맡긴다."""
+    repo, fake = Repository([job()]), provider()
+    entered, release = threading.Event(), threading.Event()
+    claim_next = repo.claim_next
+
+    def blocked_claim(**kwargs):
+        entered.set()
+        release.wait(timeout=2)
+        return claim_next(**kwargs)
+
+    monkeypatch.setattr(repo, "claim_next", blocked_claim)
+    worker = SpeechAnalysisWorker(repo, fake, settings())
+    worker.start()
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        stopping = asyncio.create_task(worker.stop())
+        await asyncio.wait_for(worker._stopping.wait(), 1)
+        release.set()
+        await asyncio.wait_for(stopping, 1)
+    finally:
+        release.set()
+        if worker._task is not None:
+            await worker.stop()
+    fake.embed.assert_not_awaited()
+    fake.extract_claims.assert_not_awaited()
+    fake.close.assert_awaited_once()
+    assert not repo.saved and not repo.failures and not repo.jobs
+    assert not worker._active and not worker._db_tasks
+
+
+@pytest.mark.asyncio
+async def test_background_retries_failed_claims_without_reembedding(monkeypatch):
+    """주기를 넘는 주장 재시도도 성공한 임베딩을 다시 실행하지 않는다."""
+    repo, fake = Repository([job()]), provider()
+    repo.requeue_claims = repo.retry_claims = True
+    fake.extract_claims.side_effect = [SpeechAnalysisError("PROVIDER_ERROR"), []]
+    completed = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    complete = repo.complete_claims
+
+    def record_saved(**kwargs):
+        accepted = complete(**kwargs)
+        loop.call_soon_threadsafe(completed.set)
+        return accepted
+
+    monkeypatch.setattr(repo, "complete_claims", record_saved)
+    worker = SpeechAnalysisWorker(
+        repo, fake, settings(speech_analysis_poll_seconds=0.05, speech_analysis_concurrency=1)
+    )
+    worker.start()
+    try:
+        await asyncio.wait_for(completed.wait(), 1)
+    finally:
+        await worker.stop()
+    assert fake.embed.await_count == 1 and fake.extract_claims.await_count == 2
+    assert [stage for stage, _ in repo.saved] == ["embedding", "claims"]
+    assert len(repo.failures) == 1 and repo.failures[0]["stage"] == "CLAIMS"
+    assert sum(name == "discover" for name, _ in repo.calls) >= 3
     assert not worker._active and not worker._db_tasks
 
 
@@ -335,19 +534,14 @@ async def test_shutdown_timeout_cancels_model_and_leaves_lease_for_recovery():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('changes', [
-    {'deadline': 1}, {'day': 1}, {'phase': 'NIGHT'},
-    {'phase': 'DAY_VOTE', 'window_kind': 'VOTE'}, {'game_status': 'SAVED'},
-    {'game_status': 'COMPLETED'},
-])
-async def test_repository_boundary_prevents_model_calls_for_old_pending(monkeypatch, changes):
+@pytest.mark.parametrize("game_status", ["SAVED", "COMPLETED", "FAILED"])
+async def test_repository_boundary_prevents_model_calls_for_inactive_game(monkeypatch, game_status):
     from backend.tests.test_speech_analysis_repository import LeaseTransactions
     from backend.app.repositories.speech_analysis_repository import PostgresSpeechAnalysisRepository
 
     tx, fake = LeaseTransactions(), provider()
     tx.version = settings().effective_speech_analysis_version
-    for name, value in changes.items():
-        setattr(tx, name, value)
+    tx.game_status = game_status
     repo = PostgresSpeechAnalysisRepository(tx)
     monkeypatch.setattr(repo, 'discover', Mock(return_value=1))
     worker = SpeechAnalysisWorker(repo, fake, settings())
@@ -358,19 +552,25 @@ async def test_repository_boundary_prevents_model_calls_for_old_pending(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_deadline_arrival_processes_both_stages_once(monkeypatch):
+@pytest.mark.parametrize("changes", [
+    {"day": 1, "deadline": 100},
+    {"phase": "FINAL_DISCUSSION", "day": 1, "deadline": 100},
+    {"phase": "NIGHT"},
+    {"phase": "DAY_VOTE", "window_kind": "VOTE"},
+    {"deadline": None},
+])
+async def test_active_game_processes_both_stages_without_waiting_for_vote(monkeypatch, changes):
     from backend.tests.test_speech_analysis_repository import LeaseTransactions
     from backend.app.repositories.speech_analysis_repository import PostgresSpeechAnalysisRepository
 
     tx, fake = LeaseTransactions(), provider()
     tx.version = settings().effective_speech_analysis_version
-    tx.deadline = 1
+    for name, value in changes.items():
+        setattr(tx, name, value)
     fake.embed.return_value = [1.0, 0.0]
     repo = PostgresSpeechAnalysisRepository(tx)
     monkeypatch.setattr(repo, 'discover', Mock(return_value=1))
     worker = SpeechAnalysisWorker(repo, fake, settings(speech_analysis_concurrency=1))
-    assert await worker.run_once() == 0
-    tx.now = 1
     assert await worker.run_once() == 2
     assert tx.status == {'EMBEDDING': 'READY', 'CLAIMS': 'READY'}
     assert await worker.run_once() == 0

@@ -437,6 +437,15 @@ projection provenance·cross-scope 의미 불변식의 최종 판정자다.
 
 ## 11. 오류·fallback·재접속
 
+운영 FastMCP HTTP adapter는 연결·timeout·Backend HTTP 상태·JSON 형식 실패를
+비밀값 없는 고정 오류 코드로 표현한다. Backend MCP client도 RPC·응답 계약 실패를
+구분하며 내부 진행 로그에 발생 scope와 작업 binding을 남긴다. 상세 진단은 내부
+로그 전용으로, 공개 `MCP_UNAVAILABLE`나 fallback 결과·권한 검증을 바꾸지 않는다.
+같은 게임·actor의 기대 phase·window·버전이 달라진 응답은 기존 `STALE` 결과로
+폐기한다. 이 경우 PASS proposal이나 `FALLBACK`을 기록하지 않고 `SKIPPED`로 끝낸다.
+구형 MCP의 역할 지침 누락과 구형 Backend의 persona 0.5 고정 검증은 정상 응답으로
+우회하지 않으며, 양쪽을 같은 계약 버전으로 갱신한 뒤 네 scope 왕복을 확인한다.
+
 | 상황 | MCP 처리 | Backend 처리 |
 |---|---|---|
 | 세션 개설 토큰 누락·변조·만료·replay | session 비활성, 고정 거부 | 새 job 자격 검토 또는 fallback |
@@ -726,8 +735,18 @@ no persistent spool과 fresh credential이다. Resource context no-cache는 이�
 
 ## 2026-09-08 역할별 프롬프트 이관 (WU-M6)
 
-사용자 승인에 따라 `api/prompts/instructions.py`가 네 역할의 승리 전략·단계별 행동·성향
-해석을 소유한다. 운영 Resource 등록부에서 동일 renderer를 사용하여 추가 HTTP 호출
+후속 사용자 요청으로 `instructions.py`의 토론 지침은 일률적 추궁보다 상대 답변에
+대한 반응·신뢰 조정·조건부 협력과 역할별 블러핑을 안내한다. 마피아는 사실과 필요한
+왜곡을 섞어 표를 모으고 시민 진영은 오처형 위험에 따라 미끼 주장을 거둔다. 게임 대사의
+전략일 뿐 실제 Resource 기록·Tool 인자·본인 역할·정보 scope는 바꾸지 않는다.
+페르소나 원문을 보간하거나 수치를 재매핑하지 않고, 모델 입력에서 제외한 알리바이·
+관찰을 첫 발언에 요구하지 않는다. 첫날 SPEAK 의무와 Prompt 등록명·서명·2400자 한도는
+유지한다. 기존 등록·소비 테스트와 비DB 회귀로 전달 계약을 검증하며 실제 모델의
+자연스러움·승률·반복률은 별도 평가 대상으로 남긴다.
+
+사용자 승인에 따라 `api/prompts/instructions.py`가 네 역할의 승리 전략·단계별 행동·페르소나
+적용 경계를 소유한다. 성향 수치의 구간별 문구 변환과 deception 증폭은 제거하고,
+기존 Backend 응답의 말투·배경·수치를 보존한다. 운영 Resource 등록부에서 동일 renderer를 사용하여 추가 HTTP 호출
 없이 본인 역할 지침과 말투 지침을 전달한다. 상세 응답 변경은 API 명세의 같은 날짜
 계약을 따른다. 공통 system·출력 검증·Provider 호출은 Backend가 유지하고, MCP Prompt는
 더 이상 Backend prompt endpoint에서 본문을 가져오지 않는다.
@@ -740,4 +759,64 @@ no persistent spool과 fresh credential이다. Resource context no-cache는 이�
 
 ## 2026-09-07 자유 토론 변경 (사용자 승인 WU-B4)
 
+2026-09-08 사용자 확인으로 같은 규칙 경계에 첫날 인간·AI PASS 금지를 적용한다.
+MCP 역할 지침·공개 규칙은 첫날 반드시 SPEAK하도록 안내하고, 허용 Tool 검증은
+API 명세 8.2.3의 첫날 배열을 수용한다. Backend가 최종 규칙과 실패 시 기본 발언을
+소유하며 MCP가 대체 발언을 생성하거나 DB에 접근하지 않는다.
+
 이번 단일 WU-B4는 1분 45초 자유 토론과 연결되는 Front·MCP 표현의 변경이다. 이 절이 기존 좌석당 한 번 발언·전원 PASS 추가 순환 규칙보다 우선한다. 새 일반·최종 토론은 Backend deadline 105초까지 열리며 인간은 AI 처리 순서와 무관하게 발언한다. 플레이어별 최근 60초 SPEAK는 최대 7회이며 서버 게임 행 잠금 안에서 원장으로 검증한다. PASS는 조기 마감하지 않는다. AI 작업은 기존 단일 예약 창을 재사용해 공정하게 배분하고, 발언마다 새 window를 열되 토론 deadline은 보존한다. turn_player_id는 AI 스케줄링 힌트이며 인간의 발언 권한 제한이 아니다. SPEECH에도 deadline·remaining_ms가 제공된다. 저장 시 잔여 시간을 보존한다. 마감 뒤 첫날은 밤, 이후 낮은 투표, 최종 토론은 최종 지목으로 진행한다. 과거 deadline 없는 발언 창은 기존 방식으로 처리한다. DB 구조와 idempotency·게임 상태 버전 검증은 보존한다.
+
+## 2026-09-08 CUSTOM_ROLE MCP 경계 (CP-0, WU-M10 예약)
+
+`custom-role-v1`은 HUMAN-only이므로 MCP runtime은 자유 직업명을 prompt로 소비하지 않고
+custom AI를 생성하지 않는다. 신규 MCP Tool을 등록하거나 PostgreSQL·Redis에 직접
+접근하지 않으며, 게임 규칙·allowlist·진영·밤 해소의 권위는 계속 Backend에 있다.
+custom AI 지원은 별도 후속 WU에서 계약부터 다시 승인한다.
+
+Backend의 catalog descriptor는 다음 세 ID가 모두 기존 logical MCP Tool
+`propose_night_action`을 참조한다고 정본화한다.
+
+| catalog version | ability ID | logical Tool 참조 |
+|---|---|---|
+| `custom-role-v1` | `night.attack.v1` | `propose_night_action` |
+| `custom-role-v1` | `night.investigate.v1` | `propose_night_action` |
+| `custom-role-v1` | `night.protect.v1` | `propose_night_action` |
+
+이 매핑은 공개 사용자가 raw MCP Tool명, action subtype 또는 prompt를 입력한다는 뜻이
+아니다. 공개 API는 오직 versioned `ability_id`만 받고 Backend가 저장된 HUMAN 능력과
+대조한 뒤 내부 logical action으로 변환한다. MCP에는 검증되지 않은 직업명을 system
+instruction으로 전달하지 않는다. WU-M10은 runtime mutation 없이 descriptor 참조,
+STANDARD 기존 호출, HUMAN-only custom 요청이 MCP 호출을 새로 만들지 않는다는 호환
+증거만 소유한다.
+
+### 2026-09-08 WU-M10 사용자 전용 Tool 확장
+
+이번 신규 Tool 요청은 위 M10 runtime 변경 금지를 두 능력에 한해 대체한다.
+기존 `api/tools/registry.py`에 `manipulate_vote`, `inspect_special_roles`를 등록하고
+`integrations/engine_http.py`에서 Backend 내부 API로만 위임한다. 실제 wire 이름은
+기존 `submit_action`과 두 새 Tool이며 logical `propose_night_action`은 기존 계약 참조다.
+
+| catalog version | ability ID | Tool 참조 |
+|---|---|---|
+| `custom-role-v1` | `vote.triple.v1` | `manipulate_vote` |
+| `custom-role-v1` | `intel.special_roles.v1` | `inspect_special_roles` |
+
+MCP는 actor·직업·가중치·첫 밤 완료를 인수로 신뢰하거나 자체 판정하지 않는다.
+user_id·game_id와 필요한 투표 낙관 잠금 인수만 받고 Backend가 소유 HUMAN을 결정한다.
+조회 Tool의 입력은 UUID로 제한하고 출력은 API 명세의 전용 최소 schema로 검증한다.
+Backend 오류 본문·비공개 응답을 로그·예외 원문에 복사하지 않는다. 기존 AI용
+Resource·Prompt·submit_action 및 AI Tool allowlist에는 새 권한을 부여하지 않는다.
+이전 최소 runtime의 UUID 소유권/loopback 신뢰 경계를 유지하므로 공개 인터넷에 직접
+노출하는 사용자 인증 서버로 해석하지 않는다. Front는 후속 공개 API 연결을 통해 사용한다.
+
+
+### 2026-09-08 CP-0.1 사용자 Front 연결 경계
+
+사용자 Front는 `manipulate_vote`·`inspect_special_roles` 등 raw MCP Tool을 직접 호출하지
+않는다. 투표는 공개 `SUBMIT_VOTE`에 선택한 `ability_id=vote.triple.v1`을 전달하고,
+특수 직업 조회는 인증된 사용자 흐름의 공개 `GET /api/v1/games/{game_id}/special-roles`에
+`X-User-Id`를 전달한다. WU-B17 공개 adapter는 Backend의 기존 `read_special_roles`를
+직접 재사용하며 `/internal/mcp/special-roles`는 `inspect_special_roles` 전용으로 유지한다.
+두 Tool 등록·내부 HTTP 위임·AI allowlist 비간섭 계약은 변경하지 않는다.
+공개 success envelope·no-store·404/403/409와 최소 projection은
+[API 명세](AI_MAFIA_API_SPEC.md)의 CP-0.1 절만 참조하며 Resource schema를 복제하지 않는다.

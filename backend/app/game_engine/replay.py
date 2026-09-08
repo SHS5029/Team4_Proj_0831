@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from backend.app.game_engine.errors import RuleViolation
+from backend.app.game_engine.rules.night_rules import ability_action
 from backend.app.models.game_state import EngineOperation, GameState
 
 
@@ -19,12 +20,17 @@ def apply_operation(engine, state: GameState, operation: EngineOperation) -> Non
     elif command == "SUBMIT_NIGHT_ACTION":
         if operation.target_id is None:
             raise RuleViolation("TARGET_REQUIRED")
-        action = engine._role_action(state, operation.actor_id)
+        # 구형 NULL 기록은 역할 기반 복원을 유지하고 새 능력 기록은 보유 여부까지 검증한다.
+        action = (
+            ability_action(state, operation.actor_id, operation.ability_id)
+            if operation.ability_id is not None
+            else engine._role_action(state, operation.actor_id)
+        )
         engine.submit_night_action(state, operation.actor_id, action, operation.target_id)
     elif command == "SUBMIT_VOTE":
         if operation.target_id is None:
             raise RuleViolation("TARGET_REQUIRED")
-        engine.submit_vote(state, operation.actor_id, operation.target_id)
+        engine.submit_vote(state, operation.actor_id, operation.target_id, ability_id=operation.ability_id)
     elif command == "RESOLVE_NIGHT":
         engine.resolve_night(state, force=True)
     elif command in {"RESOLVE_VOTE", "RESOLVE_REVOTE"}:
