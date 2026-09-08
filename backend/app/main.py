@@ -1,6 +1,7 @@
 """FastAPI Backend 생성, 공통 오류 처리, router 등록 진입점."""
 
 from contextlib import asynccontextmanager
+import logging
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, Request
@@ -17,7 +18,7 @@ from backend.app.routers.admin_router import router as admin_router
 from backend.app.routers.health_router import router as health_router
 from backend.app.routers.mcp_registry_router import router as minimal_mcp_router
 from backend.app.services.admin_service import AdminService
-from backend.app.services.game.runtime_factory import build_postgres_runtime
+from backend.app.services.game.runtime_factory import build_postgres_runtime, build_vote_insight_service
 
 
 def _trace_id_from_header(value: str | None) -> str:
@@ -47,16 +48,62 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
-        """앱별 game runtime의 중앙 worker를 한 번만 시작하고 종료한다."""
+        """앱별 게임·분석 worker를 독립 생성하고 역순으로 정리한다."""
 
         runtime = application.state.game_runtime
-        if enable_background_worker and hasattr(runtime, "start_background_worker"):
-            runtime.start_background_worker()
+        analysis_worker = None
         try:
+            if enable_background_worker and effective_settings.speech_analysis_enabled:
+                try:
+                    from functools import partial
+
+                    import psycopg
+
+                    from backend.app.infrastructure.transaction import TransactionManager
+                    from backend.app.llm_provider.speech_analysis_provider import SpeechAnalysisProvider
+                    from backend.app.repositories.speech_analysis_repository import (
+                        PostgresSpeechAnalysisRepository,
+                    )
+                    from backend.app.services.game.speech_analysis_worker import SpeechAnalysisWorker
+
+                    analysis_worker = SpeechAnalysisWorker(
+                        PostgresSpeechAnalysisRepository(
+                            TransactionManager(
+                                effective_settings.effective_database_url,
+                                # 게임용 연결과 분리하여 분석 DB 장애가 진행·종료를
+                                # 무기한 지연시키지 않도록 각 대기 시간을 제한한다.
+                                connection_factory=partial(
+                                    psycopg.connect, connect_timeout=5,
+                                    options="-c statement_timeout=5000 -c lock_timeout=1000",
+                                ),
+                            ),
+                        ),
+                        SpeechAnalysisProvider(effective_settings),
+                        effective_settings,
+                    )
+                    analysis_worker.start()
+                    application.state.speech_analysis_worker = analysis_worker
+                    if hasattr(runtime, "configure_speech_analysis"):
+                        runtime.configure_speech_analysis(analysis_worker.repository)
+                except Exception:
+                    # 선택적 분석 의존성의 초기화 오류는 게임 서버 전체 실패로
+                    # 전파하지 않는다. 예외 원문에는 secret이 포함될 수 있다.
+                    application.state.speech_analysis_start_failed = True
+                    logging.getLogger(__name__).warning("SPEECH_ANALYSIS_START_FAILED")
+            # 분석 준비 연결을 먼저 끝내야 기동 직후 마감된 토론이 대기를 건너뛰지 않는다.
+            if enable_background_worker and hasattr(runtime, "start_background_worker"):
+                runtime.start_background_worker()
             yield
         finally:
-            if enable_background_worker and hasattr(runtime, "stop_background_worker"):
-                await runtime.stop_background_worker()
+            try:
+                if analysis_worker is not None:
+                    try:
+                        await analysis_worker.stop()
+                    except Exception:
+                        logging.getLogger(__name__).warning("SPEECH_ANALYSIS_STOP_FAILED")
+            finally:
+                if enable_background_worker and hasattr(runtime, "stop_background_worker"):
+                    await runtime.stop_background_worker()
 
     application = FastAPI(
         title="Team4 Backend",
@@ -70,11 +117,14 @@ def create_app(
         CORSMiddleware,
         allow_origins=list(effective_settings.cors_allowed_origins),
         allow_credentials=False,
-        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
         allow_headers=["Accept", "Content-Type", "X-User-Id", "X-Request-Id", "Idempotency-Key", "Last-Event-ID"],
         expose_headers=["X-Request-Id"],
     )
     application.state.settings = effective_settings
+    application.state.speech_analysis_worker = None
+    application.state.speech_analysis_start_failed = False
+    application.state.vote_insight_service = build_vote_insight_service(effective_settings)
 
     @application.middleware("http")
     async def attach_trace_id(request: Request, call_next):

@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-from frontend_user.components.theme import render_page_navigation
+from frontend_user.components.theme import render_application_header, render_header_back_button
 
 RESULT_PAGE_CSS = """
 <style>
@@ -157,13 +157,10 @@ def render(snapshot: dict[str, Any]) -> None:
     game = snapshot.get("game") if isinstance(snapshot.get("game"), dict) else {}
     scenario = snapshot.get("scenario") if isinstance(snapshot.get("scenario"), dict) else {}
     st.markdown(RESULT_PAGE_CSS, unsafe_allow_html=True)
-    st.markdown(
-        '<header class="result-header"><div><span class="result-brand">게임 종료</span>'
-        '<span class="result-status">연결됨</span></div>'
-        '<span class="result-settings">⚙&nbsp; 설정</span></header>',
-        unsafe_allow_html=True,
+    render_application_header(
+        title="게임 종료",
+        action_renderer=lambda: render_header_back_button(current_page="game"),
     )
-    render_page_navigation(current_page="game")
 
     if game.get("status") != "COMPLETED":
         _render_failed(scenario=scenario)
@@ -450,36 +447,36 @@ def _record_target(record: dict[str, Any], field: str, player_names: dict[str, s
 
 
 def _render_actions(*, show_feedback: bool) -> None:
-    """결과를 변경하지 않는 피드백·새 게임·홈 이동 CTA를 제공한다."""
+    """완료 게임에는 피드백, 그 외에는 종료 후 이동 CTA만 제공한다."""
 
     with st.container(key="result-actions"):
-        columns = st.columns(3 if show_feedback else 2)
-        next_index = 0
         if show_feedback:
-            if columns[0].button(
-                "▣ 게임별 피드백",
+            feedback_column, home_column = st.columns(2)
+            if feedback_column.button(
+                "▣ 피드백 남기기",
                 key="result.feedback",
                 type="primary",
                 use_container_width=True,
             ):
                 st.session_state["navigation.page"] = "game_feedback"
                 st.rerun()
-            next_index = 1
-        if columns[next_index].button(
-            "새 게임",
-            key="result.new_game",
-            use_container_width=True,
-        ):
-            st.session_state["navigation.page"] = "create"
-            st.session_state.pop("game.game_id", None)
-            st.session_state.pop("game.latest_snapshot", None)
-            # 이전 생성 성공 receipt가 새 설정을 건너뛰지 않게 제거한다. 결과 불명
-            # 요청의 key와 body는 중복 생성 방지를 위해 F2 재시도 흐름에 그대로 넘긴다.
-            previous = st.session_state.get("game.create_pending")
-            if isinstance(previous, dict) and previous.get("status") == "SUCCEEDED":
-                st.session_state.pop("game.create_pending", None)
-            st.rerun()
-        if columns[next_index + 1].button(
+        else:
+            new_game_column, home_column = st.columns(2)
+            if new_game_column.button(
+                "새 게임",
+                key="result.new_game",
+                use_container_width=True,
+            ):
+                st.session_state["navigation.page"] = "create"
+                st.session_state.pop("game.game_id", None)
+                st.session_state.pop("game.latest_snapshot", None)
+                # 이전 생성 성공 receipt가 새 설정을 건너뛰지 않게 제거한다. 결과 불명
+                # 요청의 key와 body는 중복 생성 방지를 위해 F2 재시도 흐름에 그대로 넘긴다.
+                previous = st.session_state.get("game.create_pending")
+                if isinstance(previous, dict) and previous.get("status") == "SUCCEEDED":
+                    st.session_state.pop("game.create_pending", None)
+                st.rerun()
+        if home_column.button(
             "⌂ 홈으로",
             key="result.home",
             use_container_width=True,
@@ -487,7 +484,7 @@ def _render_actions(*, show_feedback: bool) -> None:
             st.session_state["navigation.page"] = "home"
             st.session_state.pop("game.game_id", None)
             st.rerun()
-        st.caption("게임 기록과 결과는 설정에서 다시 확인할 수 있습니다.")
+        st.caption("게임 기록과 결과는 홈의 완료 게임 목록에서 다시 확인할 수 있습니다.")
 
 
 def _render_failed(*, scenario: dict[str, Any]) -> None:

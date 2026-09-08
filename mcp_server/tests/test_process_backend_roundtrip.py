@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import os
 import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import psycopg
 from backend.app.core.config import get_settings
+from backend.app.agent.orchestrator import AgentOrchestrator
+from backend.app.mcp.client import FastMcpGameContextClient
+from mafia_game.api.prompts.instructions import role_instruction
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MCP_ROOT = PROJECT_ROOT / "mcp_server"
@@ -130,6 +134,30 @@ def test_real_backend_and_fastmcp_process_roundtrip() -> None:
             state_version = game_data["game"]["state_version"]
             window_id = game_data["action_window"]["window_id"]
             action_key = str(uuid4())
+            ai_id = next(player["player_id"] for player in game_data["players"] if player["kind"] == "AI")
+
+        async def read_agent_instructions():
+            """실제 두 서버를 거친 역할 지침이 Backend 소비 계약까지 통과하는지 확인한다."""
+
+            adapter = FastMcpGameContextClient(
+                f"http://127.0.0.1:{mcp_port}", user_id=user_id, game_id=UUID(game_id),
+                player_id=UUID(ai_id), phase="DAY_DISCUSSION", state_version=state_version,
+                window_id=UUID(window_id),
+            )
+            try:
+                return {scope: await adapter.get_context(capability="", scope=scope)
+                        for scope in ("me", "persona")}
+            finally:
+                await adapter.close()
+
+        context = asyncio.run(read_agent_instructions())
+        role = context["me"]["data"]["role"]
+        expected_instruction = role_instruction(role, "DAY_DISCUSSION")
+        assert context["me"]["data"]["agent_instruction"] == expected_instruction
+        request = AgentOrchestrator._request(context)
+        assert request.messages[1]["content"].count(expected_instruction) == 1
+        assert context["persona"]["data"]["agent_instruction"] in request.messages[1]["content"]
+        assert "agent_instruction" not in request.messages[2]["content"]
         initialize_body = {
             "jsonrpc": "2.0",
             "id": "initialize",
@@ -202,7 +230,7 @@ def test_real_backend_and_fastmcp_process_roundtrip() -> None:
         assert resource_payload["window_id"] == window_id
         assert "me" not in resource_payload["data"]
         assert prompt.status_code == 200
-        assert "게임 context" in prompt.json()["result"]["messages"][0]["content"]["text"]
+        assert "역할: CITIZEN" in prompt.json()["result"]["messages"][0]["content"]["text"]
         assert action.status_code == 200
         action_result = action.json()["result"]
         assert action_result.get("isError") is False

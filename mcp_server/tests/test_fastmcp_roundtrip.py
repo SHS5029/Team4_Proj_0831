@@ -10,6 +10,7 @@ import pytest
 
 from mafia_game.integrations.engine_http import MinimalBackendContextClient
 from mafia_game.main import create_fastmcp_server
+from mafia_game.api.prompts.instructions import role_instruction
 
 
 class RoundtripBackend:
@@ -60,9 +61,6 @@ async def test_fastmcp_asgi_initialize_and_capability_roundtrip() -> None:
         requests.append(request)
         if request.url.path == "/internal/mcp/context":
             return httpx.Response(200, json={"fixture_query": dict(request.url.params)})
-        if request.url.path == "/internal/mcp/prompts/agent_instruction":
-            assert not request.url.query
-            return httpx.Response(200, json={"prompt": "fixture agent instruction"})
         assert request.url.path == "/internal/mcp/actions"
         assert json.loads(request.content)["action"] == "PASS"
         return httpx.Response(200, json={"accepted": True})
@@ -154,12 +152,11 @@ async def test_fastmcp_asgi_initialize_and_capability_roundtrip() -> None:
             assert json.loads(tool_result["content"][0]["text"])["accepted"] is True
             assert prompt.status_code == 200
             assert prompt.json()["result"]["messages"][0]["content"]["text"] == (
-                "fixture agent instruction"
+                role_instruction("CITIZEN", "DAY_DISCUSSION")
             )
             assert [request.url.path for request in requests] == [
                 *(["/internal/mcp/context"] * 5),
                 "/internal/mcp/actions",
-                "/internal/mcp/prompts/agent_instruction",
             ]
     await backend_http.aclose()
 

@@ -15,6 +15,7 @@ from backend.app.core.errors import ApiError
 from backend.app.game_engine.engine import GameEngine
 from backend.app.game_engine.errors import RuleViolation
 from backend.app.infrastructure.transaction import lock_idempotency
+from backend.app.models.enums import GamePhase
 from backend.app.repositories.action_repository import ActionSubmissionInsert
 from backend.app.schemas.command_schema import GameCommandRequest
 from backend.app.services.game.actor_context import ActorContext, validate_discussion_actor
@@ -58,6 +59,7 @@ def submit_discussion_transaction(service: Any, owner_user_id: UUID, game_id: UU
                 validate_discussion_actor(state=state, window=window, actor=current_actor, window_id=payload.window_id)
                 service.hydrate_discussion_state(cursor, state=state, window=window)
                 accepted_version = state.state_version
+                discussion_phase = state.phase
                 timed = window.get("deadline_at") is not None
                 if timed:
                     current_time = now or datetime.now(UTC)
@@ -93,11 +95,26 @@ def submit_discussion_transaction(service: Any, owner_user_id: UUID, game_id: UU
                             GameEngine().pass_turn(state, current_actor.player_id)
                 except RuleViolation as exc:
                     raise rule_error(exc) from exc
+                waiting_for_analysis = (
+                    not timed and getattr(service, "wait_for_speech_analysis", False) is True
+                    and state.phase in {GamePhase.DAY_VOTE, GamePhase.FINAL_ACCUSATION}
+                )
+                if waiting_for_analysis:
+                    # 구형 순차 토론도 마지막 행동은 확정하되 투표를 아직 열지 않는다.
+                    # 즉시 마감된 토론 창을 남기면 재시작 후에도 동일 준비 경로로 복구된다.
+                    state.phase = discussion_phase
                 operation = state.operations[-1]
                 service._actions.insert_submission(cursor, ActionSubmissionInsert(game_id=game_id, window_id=UUID(str(window["id"])), actor_player_id=current_actor.player_id, action_type=payload.type, target_player_id=None, message=operation.text if payload.type == "SPEAK" else None, source=current_actor.source, observed_state_version=accepted_version))
-                service._games.update_game_state(cursor, state=state, expected_state_version=accepted_version)
+                service._games.update_game_state(
+                    cursor,
+                    state=state,
+                    expected_state_version=accepted_version,
+                    user_action=actor is None,
+                )
                 service._actions.cancel_current_window(cursor, game_id=game_id)
                 following = next_window(state, current_time)
+                if waiting_for_analysis and following is not None:
+                    following = replace(following, deadline_at=current_time)
                 if timed and following is not None:
                     counts = Counter(row["actor_player_id"] for row in recent)
                     counts[current_actor.player_id] += 1
@@ -123,7 +140,8 @@ def submit_discussion_transaction(service: Any, owner_user_id: UUID, game_id: UU
         raise ApiError(status_code=503, code="DEPENDENCY_UNAVAILABLE", message="게임 저장소를 사용할 수 없습니다.", retryable=True) from exc
 
 
-def expire_discussion(service: Any, owner_user_id: UUID, game_id: UUID, *, now: datetime | None = None) -> dict[str, Any] | None:
+def expire_discussion(service: Any, owner_user_id: UUID, game_id: UUID, *, now: datetime | None = None,
+                      expected_window_id: UUID | None = None) -> dict[str, Any] | None:
     """게임 잠금 아래 마감을 한 번 확정하고 발언을 만들지 않은 상태 전이만 저장한다."""
     from backend.app.models.enums import GamePhase, GameStatus
     from backend.app.game_engine.phases.transition import touch
@@ -135,6 +153,15 @@ def expire_discussion(service: Any, owner_user_id: UUID, game_id: UUID, *, now: 
             if row is None or UUID(str(row["owner_user_id"])) != owner_user_id:
                 return
             window = service._actions.current_window(cursor, game_id=game_id)
+            # 잠금 대기 시간을 새 투표 제한 시간에서 차감하지 않도록 잠금을 얻은 뒤
+            # 실제 전환 시각을 정한다. 합성 검증에서 지정한 시각은 그대로 보존한다.
+            current_time = now or datetime.now(UTC)
+            # 준비 조회 이후 저장·재개 또는 다른 명령으로 창이 바뀌었으면 다음 주기에
+            # 새 창을 다시 검증한다. 이전 분석 판정으로 새 투표를 조기에 열지 않는다.
+            if expected_window_id is not None and (
+                not window or UUID(str(window["id"])) != expected_window_id
+            ):
+                return
             if not window or window["window_kind"] != "SPEECH" or window.get("deadline_at") is None or window["deadline_at"] > current_time:
                 return
             state, human = restore_locked_game(service, cursor, row)

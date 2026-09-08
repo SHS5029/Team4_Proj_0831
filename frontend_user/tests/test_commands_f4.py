@@ -464,8 +464,8 @@ def test_new_game_or_window_does_not_reuse_previous_clock(panel_state, monkeypat
     assert action_panel._countdown_remaining_ms(game_id=game_id, snapshot=snapshot) == 30000
 
 
-def test_free_discussion_input_is_available_during_ai_slot():
-    """AI 작업 예약 힌트가 인간의 자유 발언 입력을 숨기지 않는지 확인한다."""
+def test_free_discussion_chat_input_is_available_during_ai_slot():
+    """AI 작업 예약 힌트가 Enter 제출용 자유 발언 입력을 숨기지 않는지 확인한다."""
     snapshot = _action_snapshot("DAY_DISCUSSION")
     snapshot["legal_actions"] = ["SPEAK", "SAVE_AND_EXIT"]
     snapshot["action_window"].update(kind="SPEECH", turn_player_id=TARGET,
@@ -473,5 +473,52 @@ def test_free_discussion_input_is_available_during_ai_slot():
         legal_actions=snapshot["legal_actions"], valid_targets=[], has_submitted=False)
     app = AppTest.from_function(_action_app, args=(snapshot, Mock())).run()
     assert not app.exception
-    assert len(app.text_area) == 1 and not app.text_area[0].disabled
-    assert any("1분에 최대 7회" in item.value for item in app.markdown)
+    assert len(app.chat_input) == 1 and not app.chat_input[0].disabled
+    assert app.chat_input[0].key == f"form.message.{GAME}"
+    assert any("Enter로 발언" in item.value for item in app.caption)
+
+
+def test_free_discussion_uses_same_draft_widget_after_another_player_speaks():
+    """새 발언 window를 받아도 같은 game의 브라우저 초안 위젯을 유지한다."""
+
+    snapshot = _action_snapshot("DAY_DISCUSSION")
+    snapshot["legal_actions"] = ["SPEAK", "PASS"]
+    snapshot["action_window"].update(
+        kind="SPEECH",
+        deadline_at="2026-09-07T00:01:45Z",
+        remaining_ms=105_000,
+        legal_actions=snapshot["legal_actions"],
+    )
+    app = AppTest.from_function(_action_app, args=(snapshot, Mock())).run()
+    original_key = app.chat_input[0].key
+
+    updated = deepcopy(snapshot)
+    updated["action_window"]["window_id"] = OUTSIDER
+    app.session_state["test.snapshot"] = updated
+    app.run()
+
+    assert not app.exception
+    assert app.chat_input[0].key == original_key == f"form.message.{GAME}"
+
+
+def test_free_discussion_chat_input_submits_message():
+    """채팅 입력의 Enter 제출 이벤트가 기존 SPEAK command 경로를 사용하는지 확인한다."""
+
+    snapshot = _action_snapshot("DAY_DISCUSSION")
+    snapshot["legal_actions"] = ["SPEAK", "PASS"]
+    snapshot["action_window"].update(
+        kind="SPEECH",
+        deadline_at="2026-09-07T00:01:45Z",
+        remaining_ms=105_000,
+        legal_actions=snapshot["legal_actions"],
+    )
+    client = Mock()
+    client.submit_command.return_value = {"data": {"command_type": "SPEAK"}}
+    client.get_game.return_value = snapshot
+    app = AppTest.from_function(_action_app, args=(snapshot, client)).run()
+
+    app.chat_input[0].set_value("  작성 중인 의견입니다.  ").run()
+
+    assert not app.exception
+    assert client.submit_command.call_count == 1
+    assert client.submit_command.call_args.kwargs["command"]["message"] == "작성 중인 의견입니다."

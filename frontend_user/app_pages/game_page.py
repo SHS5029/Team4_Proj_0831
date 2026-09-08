@@ -12,7 +12,7 @@ import streamlit as st
 
 from frontend_user.components.action_panel import render as render_action_panel
 from frontend_user.components.sync_bridge import apply_sync, mount_sse
-from frontend_user.components.theme import render_page_navigation
+from frontend_user.components.theme import render_application_header, render_header_back_button
 from frontend_user.core.api_client import ApiResponseError, ApiUnavailableError
 from frontend_user.core.sync import SyncEnvelopeError
 from frontend_user.core.view_models import own_private_view, public_players, public_timeline
@@ -59,11 +59,28 @@ GAME_PAGE_CSS = """
 .game-phase-caption { margin: .35rem 0 1rem; color: var(--game-muted); }
 [class*="st-key-current-action-region"] { margin-bottom: 1.1rem; }
 [class*="st-key-game-player-panel"],
-[class*="st-key-game-timeline-panel"],
 [class*="st-key-game-my-panel"] {
-  min-height: 37rem; padding: 1rem !important; border: 1px solid var(--game-border) !important;
+  min-height: 40rem; padding: 1rem !important; border: 1px solid var(--game-border) !important;
   border-radius: .8rem !important; background: #fff !important;
   box-shadow: 0 .5rem 1.5rem rgba(20, 42, 81, .05);
+}
+[class*="st-key-game-timeline-panel"] {
+  padding: 1rem !important; border: 1px solid var(--game-border) !important;
+  border-radius: .8rem !important; background: #fff !important;
+  box-shadow: 0 .5rem 1.5rem rgba(20, 42, 81, .05);
+}
+[class*="st-key-side-action-region"] [class*="st-key-night-action-panel"],
+[class*="st-key-side-action-region"] [class*="st-key-vote-action-panel"] {
+  min-height: 40rem;
+}
+[class*="st-key-side-action-region"] [class*="st-key-night-action-panel"] div[role="radiogroup"] > label {
+  flex: 1 1 29%; min-width: 0; padding: .7rem .35rem;
+}
+[class*="st-key-side-action-region"] [class*="st-key-vote-action-panel"] div[role="radiogroup"] > label {
+  flex: 1 1 100%; min-width: 0; padding: .65rem .7rem;
+}
+[class*="st-key-game-timeline-scroll"] {
+  margin-top: .7rem; padding-right: .2rem;
 }
 .game-panel-title {
   margin-bottom: .1rem; color: var(--game-ink); font-size: 1.05rem; font-weight: 800;
@@ -157,7 +174,6 @@ GAME_PAGE_CSS = """
   .game-header { margin: 0 -.8rem 1rem; padding: 0 .9rem; }
   .game-nav { display: none; }
   [class*="st-key-game-player-panel"],
-  [class*="st-key-game-timeline-panel"],
   [class*="st-key-game-my-panel"],
   [class*="st-key-spectator-player-panel"],
   [class*="st-key-spectator-timeline-panel"],
@@ -188,6 +204,7 @@ PHASE_LABELS = {
     "FINAL_DISCUSSION": "마지막 토론",
     "FINAL_ACCUSATION": "최종 지목",
 }
+RIGHT_ACTION_PHASES = frozenset({"NIGHT_ACTION", "DAY_VOTE", "REVOTE", "FINAL_ACCUSATION"})
 
 ROLE_PRESENTATION = {
     "MAFIA": ("마피아", "🥷"),
@@ -280,19 +297,40 @@ def render(snapshot: dict[str, Any]) -> None:
         "POLLING": "다시 연결 중",
         "STALE": "상태 확인 필요",
     }.get(connection, "연결 확인 중")
-    connection_class = {
-        "POLLING": " game-status-polling",
-        "STALE": " game-status-stale",
-    }.get(connection, "")
-
     st.markdown(GAME_PAGE_CSS, unsafe_allow_html=True)
-    st.markdown(
-        '<header class="game-header"><div><span class="game-brand">AI 마피아</span>'
-        f'<span class="game-status{connection_class}">{connection_label}</span></div>'
-        '<nav class="game-nav"><span>▣&nbsp; 피드백</span><span>⚙&nbsp; 설정</span></nav></header>',
-        unsafe_allow_html=True,
+    spectating = me.get("alive") is False
+    day_number = game.get("day_number", 1)
+    phase = str(game.get("phase", "확인 중"))
+    if spectating:
+        header_phase = f"☀️ 낮 {day_number}일차 · 관전 중"
+    else:
+        phase_label = PHASE_LABELS.get(phase, phase)
+        phase_icon = "🌙" if phase == "NIGHT_ACTION" else "☀️"
+        cycle_label = (
+            f"밤 {game.get('round', 1)}" if phase == "NIGHT_ACTION" else f"낮 {day_number}일차"
+        )
+        header_phase = f"{phase_icon} {cycle_label} · {phase_label}"
+
+    def render_header_actions() -> None:
+        save_column, back_column = st.columns(2)
+        with save_column:
+            # 저장 노출은 관전자 여부가 아니라 Backend legal_actions가 최종 결정한다.
+            # 저장된 관전 게임도 기존 복구 흐름을 유지하기 위해 같은 제어를 사용한다.
+            if not spectating or game.get("status") == "SAVED":
+                _render_save_control(
+                    client=client,
+                    game_id=str(game.get("game_id")),
+                    snapshot=snapshot,
+                )
+        with back_column:
+            render_game_back_button(snapshot=snapshot)
+
+    render_application_header(
+        title="AI 마피아",
+        connection_label=connection_label,
+        phase_label=header_phase,
+        action_renderer=render_header_actions,
     )
-    render_page_navigation(current_page="game")
     # 응답 유실 뒤 서버가 phase를 변경했어도 기존 요청의 재시도 UI를 유지한다.
     # 정상 시작 버튼은 역할 공개 화면에서만 표시한다.
     for command_type in ("BEGIN_GAME", "RESUME"):
@@ -302,38 +340,7 @@ def render(snapshot: dict[str, Any]) -> None:
                 and not (command_type == "RESUME" and game.get("status") == "SAVED")):
             _render_shell_command(client=client, game_id=str(game_id), snapshot=snapshot, command_type=command_type)
 
-    day_number = game.get("day_number", 1)
-    phase = game.get("phase", "확인 중")
-    spectating = me.get("alive") is False
-    title_col, save_col = st.columns([5, 1])
-    with title_col:
-        if spectating:
-            st.markdown(f"# ☀️ 낮 {day_number}일차 · 관전 중")
-            caption = "게임의 공개 정보와 이미 허용된 본인 정보만 확인할 수 있습니다."
-        else:
-            phase_label = PHASE_LABELS.get(phase, str(phase))
-            phase_icon = "🌙" if phase == "NIGHT_ACTION" else "☀️"
-            cycle_label = (
-                f"밤 {game.get('round', 1)}" if phase == "NIGHT_ACTION" else f"낮 {day_number}일차"
-            )
-            st.markdown(f"# {phase_icon} {cycle_label} · {phase_label}")
-            caption = (
-                "역할에 허용된 행동을 선택하세요. 다른 플레이어의 밤 행동은 공개되지 않습니다."
-                if phase == "NIGHT_ACTION"
-                else "생존자들과 함께 공개된 사건 정보를 확인하세요."
-            )
-        st.markdown(f'<p class="game-phase-caption">{caption}</p>', unsafe_allow_html=True)
-    with save_col:
-        if not spectating:
-            _render_save_control(
-                client=client,
-                game_id=str(game.get("game_id")),
-                snapshot=snapshot,
-            )
-
     if game.get("status") == "SAVED":
-        if spectating:
-            _render_save_control(client=client, game_id=str(game_id), snapshot=snapshot)
         render_saved_control(client=client, snapshot=snapshot)
         left, center, right = st.columns([1, 1.65, 1.08])
         with left:
@@ -354,17 +361,8 @@ def render(snapshot: dict[str, Any]) -> None:
         )
         return
 
-    # 살아 있는 사용자의 현재 행동은 phase 제목 바로 다음에 한 번만 렌더링한다.
-    # 긴 누적 타임라인이나 AI 진행 기록을 읽고 있어도 하단 요약이 행동 window를
-    # 알리며, 브라우저 component가 새 window에서만 이 영역으로 이동·focus한다.
-    with st.container(key="current-action-region"):
-        _render_visible_action_panel(
-            client=client,
-            game_id=str(game.get("game_id")),
-            snapshot=snapshot,
-        )
-
     left, center, right = st.columns([1, 1.65, 1.08])
+    action_in_right_panel = phase in RIGHT_ACTION_PHASES
     with left:
         _render_players(snapshot=snapshot, me=me, phase=str(phase))
     with center:
@@ -375,8 +373,25 @@ def render(snapshot: dict[str, Any]) -> None:
             phase=str(phase),
             day_number=day_number,
         )
+        if not action_in_right_panel:
+            # 낮 토론의 발언 입력만 공개 대화 바로 아래에 두어, 맥락을 보며
+            # 작성할 수 있게 한다. 밤 행동·투표는 우측 독립 panel로 분리한다.
+            with st.container(key="current-action-region"):
+                _render_visible_action_panel(
+                    client=client,
+                    game_id=str(game.get("game_id")),
+                    snapshot=snapshot,
+                )
     with right:
-        _render_private_panel(snapshot=snapshot, me=me)
+        if action_in_right_panel:
+            with st.container(key="side-action-region"):
+                _render_visible_action_panel(
+                    client=client,
+                    game_id=str(game.get("game_id")),
+                    snapshot=snapshot,
+                )
+        else:
+            _render_private_panel(snapshot=snapshot, me=me)
 
     # 사망자는 위의 전용 분기에서 반환되므로 이 아래에는 생존자 입력만 존재한다.
 
@@ -510,9 +525,11 @@ def _render_spectator_timeline(*, snapshot: dict[str, Any]) -> None:
     with st.container(key="spectator-timeline-panel", border=True):
         st.markdown("### ▣ 공개 타임라인")
         st.caption("게임의 공개 이벤트와 발언만 표시됩니다.")
-        if not events:
-            st.info("아직 표시할 공개 기록이 없습니다.")
-        with st.container(key="spectator-chat-scroll", height=480, border=False, autoscroll=True):
+        # 관전 중에도 공개 발언이 계속 누적되므로, timeline만 고정 높이로 스크롤해
+        # 하단의 빠른 진행·저장 제어가 화면 밖으로 밀리지 않게 한다.
+        with st.container(height=300, border=False):
+            if not events:
+                st.info("아직 표시할 공개 기록이 없습니다.")
             for event in events:
                 _render_public_chat_event(event=event, player_names=player_names)
 
@@ -569,9 +586,7 @@ def _render_timeline(
             unsafe_allow_html=True,
         )
         discussion_started = phase in {"DAY_DISCUSSION", "FINAL_DISCUSSION"} and bool(events)
-        if discussion_started:
-            st.markdown(f"### ☀️ 낮 {day_number}일차 · 토론")
-        else:
+        if not discussion_started:
             st.markdown('<div class="game-scene" aria-hidden="true"></div>', unsafe_allow_html=True)
             st.subheader(str(scenario.get("title", "사건 정보")))
             victim = scenario.get("victim", "알 수 없음")
@@ -581,13 +596,15 @@ def _render_timeline(
             )
             st.caption(f"피해자: {victim} · 장소: {location_text}")
             st.write(str(scenario.get("background", "")))
-        if not events:
-            st.info("사건 설명을 확인한 뒤 공개 대화가 이곳에 표시됩니다.")
-        player_names = {
-            str(player.get("player_id")): str(player.get("display_name", "플레이어"))
-            for player in public_players(snapshot)
-        }
-        with st.container(key="game-chat-scroll", height=480, border=False, autoscroll=True):
+        # 공개 대화만 고정 높이의 Streamlit container에 넣어 긴 발언이 쌓여도
+        # 사건 정보와 하단 발언 입력이 같은 화면에서 유지되게 한다.
+        with st.container(height=230, border=False):
+            if not events:
+                st.info("사건 설명을 확인한 뒤 공개 대화가 이곳에 표시됩니다.")
+            player_names = {
+                str(player.get("player_id")): str(player.get("display_name", "플레이어"))
+                for player in public_players(snapshot)
+            }
             for event in events:
                 _render_public_chat_event(event=event, player_names=player_names)
 
@@ -990,9 +1007,47 @@ def _render_save_control(
     game_id: str,
     snapshot: dict[str, Any],
 ) -> None:
-    """Backend legal_actions가 허용한 저장 command만 표시한다."""
+    """저장 확인 다이얼로그를 거친 뒤 Backend 허용 command만 제출한다."""
 
-    _render_shell_command(client=client, game_id=game_id, snapshot=snapshot, command_type="SAVE_AND_EXIT")
+    command_type = "SAVE_AND_EXIT"
+    label, button_key, pending_key = SHELL_COMMANDS[command_type]
+    pending = st.session_state.get(pending_key)
+    if not isinstance(pending, dict) or pending.get("game_id") != game_id:
+        pending = {}
+    status = pending.get("status")
+    allowed = command_type in snapshot.get("legal_actions", [])
+    locked = _has_pending_deletion(game_id) or bool(st.session_state.get("game.sync_hidden")) or any(
+        isinstance(existing := st.session_state.get(key), dict)
+        and existing.get("game_id") == game_id
+        and existing.get("status") in SHELL_LOCKED
+        for _, _, key in SHELL_COMMANDS.values()
+    )
+    if allowed or status in SHELL_LOCKED:
+        if st.button(
+            label,
+            key=button_key,
+            type="secondary",
+            disabled=locked or not allowed,
+            use_container_width=True,
+        ):
+            _render_save_confirmation_dialog(game_id=game_id, snapshot=snapshot)
+    if status == "RETRYABLE_UNKNOWN":
+        st.warning("요청 결과를 확인하지 못했습니다. 같은 요청 다시 확인을 눌러 주세요.")
+    elif status == "REFRESH_FAILED":
+        st.warning("요청 응답은 확인했지만 최신 게임 상태를 불러오지 못했습니다.")
+    elif status == "REJECTED" and allowed:
+        st.warning("게임 상태가 바뀌어 저장이 거부되었습니다. 최신 상태를 확인해 주세요.")
+    if status in {"RETRYABLE_UNKNOWN", "REFRESH_FAILED"}:
+        if st.button(
+            "같은 요청 다시 확인" if status == "RETRYABLE_UNKNOWN" else "최신 상태 다시 확인",
+            key=f"{button_key}_retry",
+            disabled=bool(st.session_state.get("game.sync_hidden")),
+        ):
+            st.session_state[pending_key] = {
+                **pending,
+                "status": "IN_FLIGHT" if status == "RETRYABLE_UNKNOWN" else "REFRESH_REQUIRED",
+            }
+            st.rerun()
 
 
 ACTIVITY_STAGES = {
@@ -1193,6 +1248,168 @@ SHELL_COMMANDS = {
 SHELL_LOCKED = {"PENDING_TO_RENDER", "IN_FLIGHT", "RETRYABLE_UNKNOWN", "REFRESH_REQUIRED", "REFRESH_FAILED"}
 
 
+def _has_pending_deletion(game_id: str) -> bool:
+    """다른 게임의 미확정 삭제 요청이 현재 게임의 입력까지 잠그지 않게 범위를 확인한다."""
+
+    pending = st.session_state.get("game.delete_pending")
+    return isinstance(pending, dict) and pending.get("game_id") == game_id
+
+
+def _dismiss_exit_dialog() -> None:
+    """닫기·계속 플레이는 화면과 미확정 요청을 보존하고 팝업 표시만 해제한다."""
+
+    st.session_state.pop("game.exit_dialog_id", None)
+
+
+def render_game_back_button(*, snapshot: dict[str, Any]) -> None:
+    """진행 게임의 뒤로가기는 저장·삭제 선택을 기다리고 rerun 중에도 팝업을 유지한다."""
+
+    game = snapshot.get("game", {})
+    game_id = str(game.get("game_id"))
+    pending = st.session_state.get("game.delete_pending")
+    needs_confirmation = game.get("status") == "IN_PROGRESS" or (
+        isinstance(pending, dict) and pending.get("game_id") == game_id
+    )
+    if needs_confirmation:
+        render_header_back_button(
+            current_page="game",
+            on_back=lambda: st.session_state.update({"game.exit_dialog_id": game_id}),
+        )
+        if st.session_state.get("game.exit_dialog_id") == game_id:
+            _render_save_confirmation_dialog(game_id=game_id, snapshot=snapshot, exiting=True)
+    else:
+        _dismiss_exit_dialog()
+        render_header_back_button(current_page="game")
+    if message := st.session_state.pop("game.exit_error", None):
+        st.warning(message)
+
+
+def _delete_from_exit_dialog(*, game_id: str, snapshot: dict[str, Any]) -> None:
+    """응답 유실은 같은 대상·버전으로 재확인하고 삭제가 확인된 경우에만 홈으로 이동한다."""
+
+    pending = st.session_state.get("game.delete_pending")
+    if not isinstance(pending, dict) or pending.get("game_id") != game_id:
+        pending = {"game_id": game_id, "expected_state_version": snapshot["game"]["state_version"]}
+    st.session_state["game.delete_pending"] = pending
+    try:
+        response = st.session_state["game.client"].delete_game(**pending)
+        data = response.get("data", response)
+        if not isinstance(data, dict) or data.get("game_id") != game_id or data.get("deleted") is not True:
+            raise ValueError("INVALID_RESPONSE")
+    except ApiResponseError as error:
+        if error.status_code != 404 or error.code != "GAME_NOT_FOUND":
+            if error.status_code == 409:
+                st.session_state.pop("game.delete_pending", None)
+                st.session_state.pop("game.delete_error", None)
+                _dismiss_exit_dialog()
+                st.session_state["game.exit_error"] = "게임 상태가 바뀌어 삭제하지 않았습니다. 최신 상태를 확인한 뒤 뒤로가기를 다시 눌러 주세요."
+                st.rerun()
+            st.session_state["game.delete_error"] = True
+            st.rerun()
+    except (ValueError, AttributeError):
+        st.session_state["game.delete_error"] = True
+        st.rerun()
+    finish_deleted_game()
+
+
+def finish_deleted_game() -> None:
+    """직접 삭제 응답이나 결과 불명 삭제의 후속 404를 확인한 뒤 홈 상태를 복구한다."""
+
+    # 삭제 응답 또는 후속 조회로 접근 불가를 확인했으므로 관련 화면 cache를 해제한다.
+    # identity·작성 중 피드백은 유지하며 홈 목록은 다음 방문 때 서버에서 다시 읽는다.
+    for key in list(st.session_state):
+        if (str(key).startswith("game.") and key != "game.client") or key in {
+            "home.games", "home.games_error", "home.games_loaded_at", "home.games_loading",
+        }:
+            st.session_state.pop(key, None)
+    st.session_state.update({"navigation.page": "home", "navigation.current_page": "home", "navigation.history": []})
+    st.rerun()
+
+
+def _render_save_confirmation_dialog(*, game_id: str, snapshot: dict[str, Any], exiting: bool = False) -> None:
+    """저장 시점과 삭제 범위를 안내하고 명시적 선택 뒤에만 서버 상태를 변경한다."""
+
+    game = snapshot.get("game") if isinstance(snapshot.get("game"), dict) else {}
+    window = snapshot.get("action_window") if isinstance(snapshot.get("action_window"), dict) else {}
+    phase = str(game.get("phase", ""))
+    phase_label = PHASE_LABELS.get(phase, "게임 진행")
+    cycle = (
+        f"밤 {game.get('round', 1)}일차"
+        if phase == "NIGHT_ACTION"
+        else f"낮 {game.get('day_number', 1)}일차"
+    )
+    remaining_ms = window.get("remaining_ms")
+    if type(remaining_ms) is int and remaining_ms >= 0:
+        remaining_seconds = (remaining_ms + 999) // 1000
+        remaining_text = f"{remaining_seconds // 60:02}:{remaining_seconds % 60:02}"
+    else:
+        remaining_text = "시간 확인 중"
+
+    @st.dialog("저장 / 게임 삭제" if exiting else "게임 저장", on_dismiss=_dismiss_exit_dialog)
+    def save_dialog() -> None:
+        st.markdown("## 게임을 나가시겠어요?" if exiting else "## 💾 게임 저장")
+        st.caption("현재 상황")
+        with st.container(border=True):
+            phase_col, time_col = st.columns([2, 1])
+            phase_col.markdown(f"**{phase_label}**")
+            phase_col.caption(cycle)
+            time_col.metric("남은 시간", remaining_text)
+        st.info("게임을 저장하고 나가면 나중에 이어서 플레이할 수 있습니다.")
+        locked = bool(st.session_state.get("game.sync_hidden")) or any(
+            isinstance(pending := st.session_state.get(key), dict)
+            and pending.get("game_id") == game_id and pending.get("status") in SHELL_LOCKED
+            for _, _, key in SHELL_COMMANDS.values()
+        )
+        delete_pending = _has_pending_deletion(game_id)
+        if exiting:
+            st.warning("게임 삭제를 선택하면 이 게임의 진행 상황과 기록이 삭제되며 복구할 수 없습니다.")
+            if st.session_state.get("game.delete_error"):
+                st.error("삭제 결과를 확인하지 못했습니다. 같은 삭제 요청 다시 확인을 눌러 주세요.")
+        save_col, continue_col = st.columns(2)
+        if save_col.button(
+            "저장하고 나가기",
+            key="game.save_confirm",
+            type="primary",
+            disabled=locked or bool(delete_pending) or "SAVE_AND_EXIT" not in snapshot.get("legal_actions", []),
+            use_container_width=True,
+        ):
+            _queue_shell_command(
+                game_id=game_id,
+                snapshot=snapshot,
+                command_type="SAVE_AND_EXIT",
+            )
+            _dismiss_exit_dialog()
+            st.rerun()
+        if continue_col.button(
+            "계속 플레이",
+            key="game.save_cancel",
+            use_container_width=True,
+        ):
+            _dismiss_exit_dialog()
+            st.rerun()
+        if exiting and st.button(
+            "같은 삭제 요청 다시 확인" if delete_pending else "게임 삭제",
+            key="game.delete_confirm",
+            disabled=locked,
+            use_container_width=True,
+        ):
+            _delete_from_exit_dialog(game_id=game_id, snapshot=snapshot)
+
+    save_dialog()
+
+
+def _queue_shell_command(*, game_id: str, snapshot: dict[str, Any], command_type: str) -> None:
+    """확인된 shell command의 상태 버전과 idempotency key를 한 번만 고정한다."""
+
+    _, _, pending_key = SHELL_COMMANDS[command_type]
+    st.session_state[pending_key] = {
+        "status": "IN_FLIGHT",
+        "game_id": game_id,
+        "expected_state_version": snapshot["game"]["state_version"],
+        "idempotency_key": str(uuid4()),
+    }
+
+
 def _process_shell_pending(*, client: Any, game_id: str) -> None:
     """화면 phase가 바뀌어도 이미 제출한 시작·저장·재개 요청의 결과를 처리한다."""
 
@@ -1250,14 +1467,13 @@ def _render_shell_command(*, client: Any, game_id: str, snapshot: dict[str, Any]
         pending = {}
     status = pending.get("status")
     allowed = command_type in snapshot.get("legal_actions", [])
-    locked = bool(st.session_state.get("game.sync_hidden")) or any(isinstance(p := st.session_state.get(key), dict)
+    locked = _has_pending_deletion(game_id) or bool(st.session_state.get("game.sync_hidden")) or any(isinstance(p := st.session_state.get(key), dict)
                  and p.get("game_id") == game_id and p.get("status") in SHELL_LOCKED
                  for _, _, key in SHELL_COMMANDS.values())
     if allowed or status in SHELL_LOCKED:
         if st.button(label, key=button_key, type="primary" if command_type != "SAVE_AND_EXIT" else "secondary",
                      disabled=locked or not allowed, use_container_width=True):
-            st.session_state[pending_key] = {"status": "IN_FLIGHT", "game_id": game_id,
-                "expected_state_version": snapshot["game"]["state_version"], "idempotency_key": str(uuid4())}
+            _queue_shell_command(game_id=game_id, snapshot=snapshot, command_type=command_type)
             st.rerun()
     if status == "RETRYABLE_UNKNOWN":
         st.warning("요청 결과를 확인하지 못했습니다. 같은 요청으로 다시 확인해 주세요.")

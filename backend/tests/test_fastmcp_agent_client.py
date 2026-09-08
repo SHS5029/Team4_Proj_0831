@@ -22,14 +22,16 @@ def context(scope):
         "public": {"game": {"game_id": str(GAME), "phase": "DAY_DISCUSSION", "state_version": 2},
                    "scenario": {}, "players": [], "public_events": []},
         "me": {"player_id": str(ACTOR), "role": "CITIZEN", "alive": True,
-               "alibi": "합성 알리바이입니다.", "observation": "합성 관찰입니다.", "private_events": []},
+               "alibi": "합성 알리바이입니다.", "observation": "합성 관찰입니다.", "private_events": [],
+               "agent_instruction": "합성 시민 지침"},
         "turn": {"window_id": str(WINDOW), "window_kind": "SPEECH", "cycle": 1,
                  "opened_state_version": 2,
                  "server_time": datetime(2026, 9, 7, microsecond=123456, tzinfo=timezone.utc).isoformat(),
                  "deadline_at": None,
                  "turn_player_id": str(ACTOR), "allowed_tools": ["propose_speech", "propose_pass"], "valid_targets": []},
         "persona": {"persona_id": "synthetic", "version": "v1", "display_name": "AI",
-                    "speech_style": "차분함", "backstory": "합성 설정", "parameters": {}},
+                    "speech_style": "차분함", "backstory": "합성 설정", "parameters": {},
+                    "agent_instruction": "합성 말투 지침"},
     }[scope]
     return {"context_version": 1, "game_id": str(GAME), "subject_type": "AI_PLAYER", "subject_id": str(ACTOR),
             "phase": "DAY_DISCUSSION", "state_version": 2, "window_id": str(WINDOW), "scope": scope, "data": data}
@@ -206,3 +208,37 @@ async def test_unknown_data_field_never_reaches_provider():
     async with httpx.AsyncClient(transport=transport([], mutate=mutate)) as http_client:
         with pytest.raises(RuntimeError):
             await client(http_client).get_context(capability="", scope="public")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("scope", ["me", "persona"])
+@pytest.mark.parametrize("value", [None, 42, "가" * 2401])
+async def test_mcp_instruction_rejects_missing_invalid_and_oversized_values(scope, value):
+    """구버전 MCP나 잘못된 지침을 조용히 모델에 전달하지 않는다."""
+
+    def mutate(payload):
+        if value is None:
+            payload["data"].pop("agent_instruction")
+        else:
+            payload["data"]["agent_instruction"] = value
+
+    async with httpx.AsyncClient(transport=transport([], mutate=mutate)) as http_client:
+        with pytest.raises(RuntimeError, match="contract"):
+            await client(http_client).get_context(capability="", scope=scope)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("scope", ["me", "persona"])
+async def test_only_persona_instruction_may_be_empty(scope):
+    """말투 생략은 허용하되 역할 전략 없는 me는 거부한다."""
+
+    def mutate(payload):
+        payload["data"]["agent_instruction"] = ""
+
+    async with httpx.AsyncClient(transport=transport([], mutate=mutate)) as http_client:
+        adapter = client(http_client)
+        if scope == "persona":
+            assert (await adapter.get_context(capability="", scope=scope))["data"]["agent_instruction"] == ""
+        else:
+            with pytest.raises(RuntimeError, match="contract"):
+                await adapter.get_context(capability="", scope=scope)

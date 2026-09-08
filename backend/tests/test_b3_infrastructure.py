@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from backend.app.game_engine.engine import GameEngine
 from backend.app.core.config import Settings
 from backend.app.core.errors import ApiError
-from backend.app.infrastructure.redis.cache import RedisPublicCache
+from backend.app.infrastructure.redis.cache import RedisConversationHistory, RedisPublicCache
 from backend.app.infrastructure.redis.lock import RedisGameLock
 from backend.app.infrastructure.redis.streams import RedisEventStream
 from backend.app.infrastructure.transaction import (
@@ -289,6 +289,16 @@ class FakeConnection:
         return self._cursor
 
 
+def _last_user_action_flags(cursor: FakeCursor) -> list[bool]:
+    """게임 상태 UPDATE에 전달된 사용자 동작 표지만 테스트용으로 추출한다."""
+
+    return [
+        params[-3]
+        for sql, params in cursor.statements
+        if "last_user_action_at" in sql and isinstance(params, tuple)
+    ]
+
+
 class _DirectContext:
     """저장소의 수동 context 종료 호출을 검증하는 얇은 대역이다."""
 
@@ -419,6 +429,131 @@ def test_game_repository_locks_row_and_allocates_both_sequences() -> None:
     assert "for update" in cursor.statements[0][0].lower()
     assert "next_event_sequence = next_event_sequence + 1" in cursor.statements[1][0]
     assert "next_front_sequence = next_front_sequence + 1" in cursor.statements[2][0]
+
+
+def test_game_repository_deletes_only_locked_stale_in_progress_batch() -> None:
+    """15분 경계를 포함하고 잠기지 않은 최대 100개 진행 게임만 삭제한다."""
+
+    second_game_id = UUID("00000000-0000-4000-8000-000000000005")
+    cursor = FakeCursor(all_rows=[[{"id": GAME_ID}, {"id": second_game_id}]])
+
+    deleted = PostgresGameRepository().delete_stale_in_progress(cursor, limit=100)
+
+    assert deleted == [GAME_ID, second_game_id]
+    sql, params = cursor.statements[0]
+    normalized = " ".join(sql.lower().split())
+    assert normalized.count("game.status = 'in_progress'") == 1
+    assert "where status = 'in_progress'" in normalized
+    assert normalized.count("<= current_timestamp - interval '15 minutes'") == 2
+    assert "for update skip locked" in normalized
+    assert "delete from public.games" in normalized
+    assert params == (100,)
+
+
+@pytest.mark.parametrize("limit", [0, 101, True])
+def test_game_repository_rejects_unbounded_cleanup_batch(limit: object) -> None:
+    """잘못된 batch 크기는 삭제 SQL을 실행하기 전에 거부한다."""
+
+    cursor = FakeCursor()
+    with pytest.raises(ValueError, match="batch"):
+        PostgresGameRepository().delete_stale_in_progress(
+            cursor, limit=limit,  # type: ignore[arg-type]
+        )
+    assert cursor.statements == []
+
+
+def test_runtime_commits_stale_game_deletion_before_cache_invalidation() -> None:
+    """Redis 정리는 권위 DB commit 뒤 실행하며 삭제 건수를 그대로 반환한다."""
+
+    from types import SimpleNamespace
+
+    from backend.app.services.game.postgres_runtime import PostgresGameRuntime
+
+    second_game_id = UUID("00000000-0000-4000-8000-000000000005")
+    connection = FakeConnection()
+    deleted: list[str] = []
+
+    class History:
+        def delete(self, game_id: str) -> bool:
+            assert connection.committed
+            deleted.append(game_id)
+            return True
+
+    runtime = object.__new__(PostgresGameRuntime)
+    runtime._transactions = TransactionManager(
+        "postgresql://synthetic", connection_factory=lambda _: connection,
+    )
+    runtime._games = SimpleNamespace(
+        delete_stale_in_progress=lambda cursor, *, limit: [GAME_ID, second_game_id],
+    )
+    runtime._conversation_history = History()
+
+    assert runtime.cleanup_stale_games() == 2
+    assert deleted == [str(GAME_ID), str(second_game_id)]
+
+
+@pytest.mark.parametrize("case,code", [
+    ("missing", "GAME_NOT_FOUND"), ("other_owner", "GAME_NOT_FOUND"),
+    ("stale", "STALE_STATE_VERSION"), ("completed", "INVALID_GAME_STATUS"),
+    ("failed", "INVALID_GAME_STATUS"), ("write_failure", "DEPENDENCY_UNAVAILABLE"),
+    ("success", None), ("saved", None),
+])
+def test_manual_delete_checks_owner_version_status_and_rolls_back(case, code) -> None:
+    """게임 행 잠금 뒤 모든 거부 조건을 확인하며 삭제 실패도 transaction을 되돌린다."""
+
+    from types import SimpleNamespace
+    from backend.app.services.game.lifecycle_service import delete_game
+
+    row = {"id": GAME_ID, "owner_user_id": USER_ID, "state_version": 12, "status": "IN_PROGRESS"}
+    if case == "other_owner":
+        row["owner_user_id"] = GAME_ID
+    elif case == "stale":
+        row["state_version"] = 13
+    elif case in {"completed", "failed", "saved"}:
+        row["status"] = case.upper()
+    cursor = FakeCursor(one_rows=[None if case == "missing" else row,
+                                  None if case == "write_failure" else {"id": GAME_ID}])
+    connection = FakeConnection(cursor)
+    service = SimpleNamespace(
+        _transactions=TransactionManager("postgresql://synthetic", connection_factory=lambda _: connection),
+        _games=PostgresGameRepository(),
+    )
+    if code:
+        with pytest.raises(ApiError) as error:
+            delete_game(service, USER_ID, GAME_ID, expected_state_version=12)
+        assert error.value.code == code
+        assert connection.rolled_back and not connection.committed
+        if case != "write_failure":
+            assert len(cursor.statements) == 1
+    else:
+        assert delete_game(service, USER_ID, GAME_ID, expected_state_version=12) == {
+            "game_id": str(GAME_ID), "deleted": True,
+        }
+        assert connection.committed
+        assert cursor.statements[-1][1] == (GAME_ID, USER_ID, 12)
+    assert "FOR UPDATE" in cursor.statements[0][0]
+
+
+def test_manual_delete_commits_before_cache_and_tolerates_cache_failure() -> None:
+    """Redis 실패로 이미 확정된 DB 삭제를 실패 응답으로 바꾸지 않는다."""
+
+    from types import SimpleNamespace
+    from backend.app.services.game.postgres_runtime import PostgresGameRuntime
+
+    cursor = FakeCursor(one_rows=[
+        {"owner_user_id": USER_ID, "state_version": 12, "status": "IN_PROGRESS"}, {"id": GAME_ID},
+    ])
+    connection = FakeConnection(cursor)
+
+    def fail_cache(game_id):
+        assert game_id == str(GAME_ID) and connection.committed
+        raise RuntimeError("합성 Redis 장애")
+
+    runtime = object.__new__(PostgresGameRuntime)
+    runtime._transactions = TransactionManager("postgresql://synthetic", connection_factory=lambda _: connection)
+    runtime._games = PostgresGameRepository()
+    runtime._conversation_history = SimpleNamespace(delete=fail_cache)
+    assert runtime.delete_game(USER_ID, GAME_ID, expected_state_version=12)["deleted"] is True
 
 
 def test_game_creation_repositories_use_canonical_tables_and_bound_values() -> None:
@@ -1224,6 +1359,7 @@ def test_begin_game_transaction_persists_state_window_events_outbox_and_receipt(
     assert result["accepted_state_version"] == 1
     assert result["result_state_version"] == 2
     assert connection.committed
+    assert _last_user_action_flags(cursor) == [True]
     statements = "\n".join(sql for sql, _ in cursor.statements).lower()
     for table_name in (
         "games",
@@ -1324,6 +1460,7 @@ def test_save_game_transaction_pauses_window_and_persists_result() -> None:
     assert result["accepted_state_version"] == 2
     assert result["result_state_version"] == 3
     assert connection.committed
+    assert _last_user_action_flags(cursor) == [True]
     statements = "\n".join(sql for sql, _ in cursor.statements).lower()
     for table_name in (
         "games",
@@ -1425,6 +1562,7 @@ def test_resume_game_transaction_restores_timed_window_and_persists_result() -> 
     assert result["accepted_state_version"] == 3
     assert result["result_state_version"] == 4
     assert connection.committed
+    assert _last_user_action_flags(cursor) == [True]
     statements = "\n".join(sql for sql, _ in cursor.statements).lower()
     for table_name in (
         "games",
@@ -1543,6 +1681,7 @@ def test_discussion_speak_persists_submission_and_opens_next_turn() -> None:
     assert result["accepted_state_version"] == 2
     assert result["result_state_version"] == 3
     assert connection.committed
+    assert _last_user_action_flags(cursor) == [True]
     statements = "\n".join(sql for sql, _ in cursor.statements).lower()
     for table_name in (
         "games",
@@ -1665,6 +1804,12 @@ def test_redis_lock_cache_and_stream_follow_canonical_keys() -> None:
     assert cache.get(str(GAME_ID), 2) == {"phase": "DAY_DISCUSSION"}
     assert RedisPublicCache.key(str(GAME_ID), 2) == f"mafia:v1:public:{GAME_ID}:2"
 
+    history = RedisConversationHistory(client, namespace="synthetic")
+    history_key = history.key(str(GAME_ID))
+    client.values[history_key] = "synthetic-public-history"
+    assert history.delete(str(GAME_ID))
+    assert history_key not in client.values
+
     stream = RedisEventStream(client, max_length=100)
     stream_id = stream.publish_batch(str(GAME_ID), 2, [str(EVENT_ID)])
     stream.publish_outbox_wakeup(7)
@@ -1759,6 +1904,7 @@ def test_b5_mixed_night_batch_keeps_human_choice_and_all_mafia():
     public = [call.kwargs for call in service._events.append.call_args_list if call.kwargs["operation_type"] == "APPEND_PUBLIC_EVENT"]
     assert [event["event_type"] for event in public] == ["NIGHT_RESOLVED"]
     assert "target_player_id" not in json.dumps([event["payload"] for event in public])
+    assert service._games.update_game_state.call_args.kwargs["user_action"] is False
 
 
 def test_b5_partial_night_only_stores_choice_without_public_target():
@@ -1769,6 +1915,7 @@ def test_b5_partial_night_only_stores_choice_without_public_target():
     service._actions.insert_resolution.assert_not_called()
     service._actions.open_window.assert_not_called()
     assert all(call.kwargs["operation_type"] != "APPEND_PUBLIC_EVENT" for call in service._events.append.call_args_list)
+    assert service._games.update_game_state.call_args.kwargs["user_action"] is True
 
 
 @pytest.mark.parametrize("existing_attack", [True, False])
@@ -1826,6 +1973,7 @@ def test_b5_expired_vote_fills_only_missing_ballots(phase):
     assert all(row["actor_player_id"] != row["target_player_id"] for row in payload["ballots"])
     assert sum(row["is_auto"] for row in payload["ballots"]) == 6
     assert service._actions.insert_submission.call_count == 6
+    assert service._games.update_game_state.call_args.kwargs["user_action"] is False
 
 
 @pytest.mark.parametrize("attackers", [[0], [1, 1]])
@@ -1847,6 +1995,7 @@ def test_b5_fast_forward_persists_selection_without_advancing_phase():
     service.fast_forward(USER_ID, GAME_ID, GameCommandRequest(type="FAST_FORWARD", expected_state_version=10), IDEMPOTENCY_KEY)
     update = service._games.update_game_state.call_args.kwargs
     assert update["state"].fast_forward_enabled is True
+    assert update["user_action"] is True
     assert update["state"].phase.value == game["phase"] and update["state"].round == game["round"]
     service._actions.open_window.assert_not_called()
     service._actions.insert_resolution.assert_not_called()

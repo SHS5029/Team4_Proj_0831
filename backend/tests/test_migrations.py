@@ -16,6 +16,8 @@ EXPECTED_MIGRATIONS = [
     "003_create_mystery_v1_schema.sql",
     "004_seed_scenarios_and_personas.sql",
     "005_create_admin_knowledge_schema.sql",
+    "006_create_speech_analysis.sql",
+    "007_add_stale_game_cleanup.sql",
 ]
 
 EXPECTED_SCENARIOS = (
@@ -348,3 +350,24 @@ def test_admin_knowledge_migration_contains_approved_vector_schema() -> None:
     assert "using hnsw (embedding vector_cosine_ops)" in normalized
     for table in KNOWLEDGE_TABLES:
         assert f"create table if not exists public.{table}" in normalized
+
+
+def test_stale_game_cleanup_migration_tracks_only_user_commands() -> None:
+    """기존 사용자 활동 기준과 제한된 진행 게임 index를 순방향으로 추가한다."""
+
+    migration = (MIGRATIONS_DIR / "007_add_stale_game_cleanup.sql").read_text(
+        encoding="utf-8"
+    )
+    normalized = " ".join(migration.lower().split())
+    assert normalized.startswith("-- 진행 중 게임의 마지막 사용자 동작")
+    assert normalized.endswith("commit;")
+    assert "add column if not exists last_user_action_at timestamptz" in normalized
+    assert "receipt.principal_type = 'user'" in normalized
+    assert "receipt.http_status between 200 and 299" in normalized
+    assert "disable trigger set_games_updated_at" in normalized
+    assert "enable trigger set_games_updated_at" in normalized
+    assert "'/commands'" in normalized
+    assert "alter column last_user_action_at set not null" in normalized
+    assert "where status = 'in_progress'" in normalized
+    assert "drop table" not in normalized
+    assert "delete from public.games" not in normalized

@@ -8,10 +8,12 @@ import streamlit as st
 
 from frontend_user.app_pages.game_page import (
     _process_shell_pending,
+    _render_save_control,
     _render_shell_command,
+    render_game_back_button,
     render_saved_control,
 )
-from frontend_user.components.theme import render_page_navigation
+from frontend_user.components.theme import render_application_header
 from frontend_user.core.view_models import own_private_view, public_players
 
 ROLE_REVEAL_CSS = """
@@ -135,19 +137,19 @@ def render(snapshot: dict[str, Any]) -> None:
     # 렌더링한다. Backend 문자열을 unsafe HTML에 삽입하지 않아 마크업 주입과
     # 다른 플레이어 정보의 우발적 노출을 함께 방지한다.
     st.markdown(ROLE_REVEAL_CSS, unsafe_allow_html=True)
-    st.markdown(
-        '<header class="role-header"><div><span class="role-brand">AI 마피아</span>'
-        '<span class="role-status">연결됨</span></div>'
-        '<nav class="role-nav"><span>▣&nbsp; 피드백</span><span>⚙&nbsp; 설정</span></nav></header>',
-        unsafe_allow_html=True,
+    render_application_header(
+        title="AI 마피아",
+        action_renderer=lambda: render_game_back_button(snapshot=snapshot),
     )
-    render_page_navigation(current_page="game")
 
     scenario = snapshot.get("scenario", {})
     game = snapshot.get("game", {})
     client = st.session_state["game.client"]
     game_id = str(game.get("game_id"))
     _process_shell_pending(client=client, game_id=game_id)
+    pending_save = st.session_state.get("game.save_pending")
+    if isinstance(pending_save, dict) and pending_save.get("game_id") == game_id:
+        _render_save_control(client=client, game_id=game_id, snapshot=snapshot)
     me = own_private_view(snapshot)
     role_name, role_icon, role_text = ROLE_PRESENTATION.get(
         me.get("role"),
