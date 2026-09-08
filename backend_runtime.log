@@ -1471,3 +1471,9 @@ INFO:     127.0.0.1:63896 - "GET /internal/mcp/context?game_id=5377f7a0-04ad-4e1
 INFO:     127.0.0.1:63896 - "GET /internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=ce2a5297-af8c-4319-a668-b4097c897234&scope=me HTTP/1.1" 200 OK
 INFO:     127.0.0.1:63896 - "GET /internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=ce2a5297-af8c-4319-a668-b4097c897234&scope=turn HTTP/1.1" 200 OK
 INFO:     127.0.0.1:63896 - "GET /internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=ce2a5297-af8c-4319-a668-b4097c897234&scope=persona HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63896 - "POST /internal/mcp/actions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63896 - "GET /internal/mcp/context?game_id=47abb28c-e831-449f-88ed-627908a877f7&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=83e47d0a-a528-4f73-a37c-163b591698ff&scope=public HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63896 - "GET /internal/mcp/context?game_id=47abb28c-e831-449f-88ed-627908a877f7&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=83e47d0a-a528-4f73-a37c-163b591698ff&scope=me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63896 - "GET /internal/mcp/context?game_id=47abb28c-e831-449f-88ed-627908a877f7&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=83e47d0a-a528-4f73-a37c-163b591698ff&scope=turn HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63896 - "GET /internal/mcp/context?game_id=47abb28c-e831-449f-88ed-627908a877f7&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=83e47d0a-a528-4f73-a37c-163b591698ff&scope=persona HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58455 - "POST /internal/mcp/actions HTTP/1.1" 200 OK
