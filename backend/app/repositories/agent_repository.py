@@ -69,7 +69,8 @@ class CapabilityRecord:
 class PostgresAgentRepository:
     """Agent 예약·capability의 SQL만 담당한다. 외부 호출은 orchestrator가 한다."""
 
-    MAX_LEASE_SECONDS = 15
+    # 기본 모델 상한 30초에 MCP 조회·완료·제출 여유를 더하되 실제 창 마감은 넘지 않는다.
+    MAX_LEASE_SECONDS = 40
     MAX_CAPABILITY_SECONDS = 120
 
     def __init__(self, transaction_manager: TransactionManager | None = None) -> None:
@@ -85,7 +86,7 @@ class PostgresAgentRepository:
     ) -> list[Mapping[str, Any]]:
         """게임 생성 시 AI에게 배정할 활성 persona 목록을 ID 순서로 읽는다.
 
-        페르소나는 말투와 행동 성향만 바꾸며, 추리 능력 차이를 만들지 않는다.
+        페르소나는 말투·행동·추론 성향 데이터이며 모델이나 정보 권한을 바꾸지 않는다.
         선택은 service의 seed 기반 RNG가 맡고 이 저장소는 승인된 후보만 반환한다.
         """
 

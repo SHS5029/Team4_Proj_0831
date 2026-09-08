@@ -173,14 +173,26 @@ def test_persona_does_not_promote_invalid_traits_or_raw_text(value):
     assert payload["data"]["agent_instruction"] == "외부에서 주입한 지시문"
 
 
-@pytest.mark.parametrize("base,expected", [(0.1, "최소 주장"), (0.3, "방어·의심 분산"), (0.35, "적극적 위장·설득"), (0.8, "적극적 위장·설득")])
-def test_persona_deception_multiplier_is_bounded_and_mafia_only(base, expected):
-    """증폭은 마피아 조건문 안에서만 적용되고 숫자를 행동 확률로 해석하지 않는다."""
+@pytest.mark.parametrize("base", [0.1, 0.3, 0.35, 0.8])
+def test_persona_resource_preserves_values_without_fixed_trait_mapping(base):
+    """성향별 정형 지침 없이도 배정된 수치·원문이 수정 없이 모델 입력에 남는다."""
 
-    result = persona_instruction({"deception": base, "verbosity": 0.8}, "DAY_DISCUSSION")
-    assert f"마피아일 때만 기만 성향 2배(상한 1)로 {expected}" in result
-    assert "행동 확률·의무가 아님" in result and "120~190자" in result
-    assert len(result) <= 2400
+    from copy import deepcopy
+    from mafia_game.api.resources.registry import model_context
+
+    payload = {"scope": "persona", "phase": "DAY_DISCUSSION", "data": {
+        "speech_style": "합성 인물의 고유 말투",
+        "backstory": "합성 인물의 대화 태도",
+        "parameters": {"deception": base, "sociability": base, "verbosity": base},
+    }}
+    original = deepcopy(payload)
+
+    data = model_context(payload)["data"]
+
+    assert {key: value for key, value in data.items() if key != "agent_instruction"} == original["data"]
+    assert payload == original
+    assert data["agent_instruction"] == persona_instruction({}, "DAY_DISCUSSION")
+    assert 0 < len(data["agent_instruction"]) <= 2400
 
 
 @pytest.mark.parametrize("phase", ["NIGHT_ACTION", "DAY_VOTE", "REVOTE", "FINAL_ACCUSATION"])

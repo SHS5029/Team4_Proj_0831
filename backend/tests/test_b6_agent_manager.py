@@ -1,6 +1,7 @@
 """B6 Agent Manager, projection과 fallback의 경계 테스트."""
 
 from copy import deepcopy
+import asyncio
 from datetime import datetime, timedelta, timezone
 import json
 from uuid import UUID, uuid4
@@ -12,7 +13,7 @@ from backend.app.agent.projections import build_context
 from backend.app.llm_provider.base import LLMResponse
 from backend.app.llm_provider.dummy import DummyProvider
 from backend.app.llm_provider.schemas import NormalizedAgentProposal
-from backend.app.mcp.client import FakeAgentContextClient
+from backend.app.mcp.client import FakeAgentContextClient, McpContextError
 from backend.app.models.enums import GamePhase, PlayerKind, PlayerRole
 from backend.app.models.game_state import GameState, PlayerState
 from backend.app.repositories.agent_repository import AgentReservation, CapabilityGrant
@@ -41,7 +42,7 @@ def sample_state() -> GameState:
 class FakeRepository:
     """DB를 건드리지 않고 orchestrator의 fencing 흐름만 기록한다."""
 
-    def __init__(self, now: datetime = NOW, lease_seconds: int = 15) -> None:
+    def __init__(self, now: datetime = NOW, lease_seconds: float = 40) -> None:
         self.now = now
         self.lease_seconds = lease_seconds
         self.completed: list[dict] = []
@@ -71,11 +72,132 @@ class FakeProvider:
     def __init__(self, outputs):
         self.outputs = list(outputs)
         self.calls = 0
+        self.requests = []
 
     async def generate(self, request):
         self.calls += 1
+        self.requests.append(request)
         output = self.outputs[min(self.calls - 1, len(self.outputs) - 1)]
         return LLMResponse(provider="fake", model="fake", output=output)
+
+
+class MutableClock:
+    """호출 횟수에 의존하지 않고 MCP·모델이 소비한 시간을 따로 재현한다."""
+
+    def __init__(self, now=NOW):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += timedelta(seconds=seconds)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repair_succeeds", [False, True])
+async def test_day1_pass_is_repaired_or_replaced_with_speech(repair_succeeds):
+    """첫날 자발적 PASS와 교정 실패가 모두 실제 발언으로 이어져야 한다."""
+
+    spec = AgentJobSpec(GAME_ID, PLAYER_ID, WINDOW_ID, "SPEECH", "DAY_DISCUSSION", 3,
+                        day_number=1)
+    second = {"type": "SPEAK", "message": "앞으로 누구의 주장을 먼저 비교해 볼까?"} if repair_succeeds else {"type": "PASS"}
+    provider = FakeProvider([{"type": "PASS"}, second])
+    repository = FakeRepository()
+    result = await AgentOrchestrator(repository, provider, FakeAgentContextClient(),
+                                     clock=lambda: NOW).run(spec)
+    assert provider.calls == 2
+    assert result.status == ("SUCCEEDED" if repair_succeeds else "FALLBACK")
+    assert result.proposal.type == "SPEAK"
+    assert 1 <= len(result.proposal.message) <= 200
+    assert repository.completed[0]["normalized_proposal"]["type"] == "SPEAK"
+    for request in provider.requests:
+        assert request.response_schema["properties"]["type"]["enum"] == ["SPEAK"]
+        assert "첫날" in request.messages[1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_day1_context_failure_still_falls_back_to_speech():
+    """MCP 공개 정보를 읽지 못해도 서버가 지정한 날짜로 첫날 규칙을 지킨다."""
+
+    class FailingContext(FakeAgentContextClient):
+        async def get_context(self, **kwargs):
+            raise McpContextError("MCP_TIMEOUT")
+
+    spec = AgentJobSpec(GAME_ID, PLAYER_ID, WINDOW_ID, "SPEECH", "DAY_DISCUSSION", 3,
+                        day_number=1)
+    provider = FakeProvider([])
+    result = await AgentOrchestrator(FakeRepository(), provider, FailingContext(),
+                                     clock=lambda: NOW).run(spec)
+    assert result.status == "FALLBACK"
+    assert result.proposal.type == "SPEAK"
+    assert provider.calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code,expected_status", [
+    ("MCP_CONTEXT_STALE", "STALE"),
+    ("MCP_TIMEOUT", "FALLBACK"),
+    ("MCP_BACKEND_HTTP_403", "FALLBACK"),
+    ("MCP_INSTRUCTION_MISSING", "FALLBACK"),
+])
+async def test_context_failure_diagnostic_preserves_fallback_and_discards_stale(monkeypatch, code, expected_status):
+    """새 발언으로 지난 예약은 PASS 없이 폐기하고 실제 의존성 실패만 대체한다."""
+
+    from types import SimpleNamespace
+    from backend.app.agent.activity import AgentActivity
+
+    diagnostics, activities = [], []
+    monkeypatch.setattr("backend.app.agent.orchestrator.progress_logger",
+                        lambda: SimpleNamespace(warning=diagnostics.append))
+    activity = AgentActivity(logger=SimpleNamespace(info=activities.append))
+    repository, provider = FakeRepository(), FakeProvider([])
+
+    class FailingContext(FakeAgentContextClient):
+        async def get_context(self, *, capability, scope):
+            if scope == "me":
+                raise McpContextError(code, http_status=403 if code.endswith("403") else None)
+            return {"data": {"valid_targets": []}}
+
+    context_client = FailingContext()
+    result = await AgentOrchestrator(
+        repository, provider, context_client, clock=lambda: NOW, activity=activity,
+    ).run(AgentJobSpec(GAME_ID, PLAYER_ID, WINDOW_ID, "SPEECH", "DAY_DISCUSSION", 3))
+
+    assert result.status == expected_status
+    assert provider.calls == 0
+    assert repository.completed[0]["status"] == expected_status
+    assert context_client.closed and repository.revoked
+    record = json.loads(diagnostics[0])
+    assert record["diagnostic_code"] == code and record["scope"] == "me"
+    assert record["run_id"] == activity.run_id
+    assert "player_id" not in record and "capability" not in record
+    stages = [json.loads(item)["stage"] for item in activities]
+    if expected_status == "STALE":
+        assert result.proposal is None
+        assert repository.completed[0]["normalized_proposal"] is None
+        assert "FALLBACK" not in stages and stages[-1] == "SKIPPED"
+    else:
+        assert result.proposal.type == "PASS"
+        assert result.failure_code == "MCP_UNAVAILABLE"
+        assert "FALLBACK" in stages
+
+
+@pytest.mark.asyncio
+async def test_context_diagnostic_sink_failure_does_not_block_cleanup(monkeypatch):
+    """파일 쓰기가 실패해도 비밀 원문을 출력하지 않고 capability와 client를 정리한다."""
+
+    def unavailable_logger():
+        raise OSError("synthetic-private-log-path")
+
+    monkeypatch.setattr("backend.app.agent.orchestrator.progress_logger", unavailable_logger)
+    repository, provider = FakeRepository(), FakeProvider([])
+    context_client = FakeAgentContextClient(error=RuntimeError("synthetic-secret-response"))
+    result = await AgentOrchestrator(repository, provider, context_client, clock=lambda: NOW).run(
+        AgentJobSpec(GAME_ID, PLAYER_ID, WINDOW_ID, "SPEECH", "DAY_DISCUSSION", 3)
+    )
+    assert result.status == "FALLBACK" and result.failure_code == "MCP_UNAVAILABLE"
+    assert provider.calls == 0 and context_client.closed and repository.revoked
 
 
 @pytest.mark.asyncio
@@ -214,18 +336,352 @@ async def test_invalid_provider_response_is_retried_once_then_speech_passes():
 
 @pytest.mark.asyncio
 async def test_lease_expiry_discards_late_provider_result():
+    """만료 뒤 돌아온 정상 응답은 모델 선택과 무관하게 적용 대상에서 제외한다."""
+
     repository = FakeRepository(lease_seconds=15)
-    provider = FakeProvider([{
-        "type": "PASS", "target_player_id": None, "message": None, "public_rationale": None,
-    }])
+    clock = MutableClock()
+
+    class LateProvider(FakeProvider):
+        async def generate(self, request):
+            response = await super().generate(request)
+            clock.advance(16)
+            return response
+
+    provider = LateProvider([{"type": "PASS"}])
     context_client = FakeAgentContextClient({"data": {"valid_targets": []}})
-    clock_values = iter([NOW, NOW, NOW + timedelta(seconds=16), NOW + timedelta(seconds=16), NOW + timedelta(seconds=16)])
-    result = await AgentOrchestrator(repository, provider, context_client, clock=lambda: next(clock_values)).run(
+    result = await AgentOrchestrator(repository, provider, context_client, clock=clock).run(
         AgentJobSpec(GAME_ID, PLAYER_ID, WINDOW_ID, "SPEECH", "DAY_DISCUSSION", 3)
     )
     # Provider 응답 자체는 정상이어도, 결과를 반영하는 순간 lease가 만료되면
     # fencing 규칙에 따라 외부 결과를 버려야 한다.
     assert result.status == "STALE"
+    assert result.proposal is None
+
+
+@pytest.mark.parametrize("timeout_seconds", [0, -1, 301, float("inf"), float("nan"), True, "30", None])
+def test_orchestrator_rejects_invalid_timeout_budget(timeout_seconds):
+    """잘못된 배포 시간값으로 무제한 호출이나 즉시 만료 작업을 만들지 않는다."""
+
+    with pytest.raises(ValueError):
+        AgentOrchestrator(
+            FakeRepository(), FakeProvider([]), FakeAgentContextClient(),
+            timeout_seconds=timeout_seconds,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timeout_seconds,expected", [(1, 1), (22.5, 22.5), (30, 30), (300, 37)])
+async def test_orchestrator_passes_configured_timeout_within_lease(timeout_seconds, expected):
+    """배포 timeout은 Provider까지 전달되며 저장 여유를 남긴 lease보다 길어지지 않는다."""
+
+    provider = FakeProvider([{"type": "SPEAK", "message": "첫날에는 어디에 있었는지부터 들어볼게."}])
+    result = await AgentOrchestrator(
+        FakeRepository(), provider, FakeAgentContextClient({"data": {"valid_targets": []}}),
+        clock=lambda: NOW, timeout_seconds=timeout_seconds,
+    ).run(AgentJobSpec(GAME_ID, PLAYER_ID, WINDOW_ID, "SPEECH", "DAY_DISCUSSION", 3))
+
+    assert result.status == "SUCCEEDED"
+    assert provider.requests[0].timeout_seconds == pytest.approx(expected, abs=0.05)
+    assert 0 < provider.requests[0].timeout_seconds <= expected
+
+
+@pytest.mark.asyncio
+async def test_runtime_factory_delivers_timeout_setting_to_provider_request(monkeypatch):
+    """실제 조립 경계가 배포 설정을 놓치지 않고 모델 요청까지 전달하는지 확인한다."""
+
+    from types import SimpleNamespace
+    from backend.app.services.game.runtime_factory import build_agent_orchestrator
+
+    settings = SimpleNamespace(llm_timeout_seconds=7, llm_max_output_tokens=8192)
+    provider = FakeProvider([{"type": "SPEAK", "message": "그때 누구와 있었는지 알려줄래?"}])
+    selected_settings = []
+
+    def select_provider(values):
+        selected_settings.append(values)
+        return provider
+
+    monkeypatch.setattr("backend.app.services.game.runtime_factory.get_llm_provider", select_provider)
+    orchestrator = build_agent_orchestrator(
+        settings, repository=FakeRepository(),
+        context_client=FakeAgentContextClient({"data": {"valid_targets": []}}),
+    )
+    orchestrator.clock = lambda: NOW
+    result = await orchestrator.run(
+        AgentJobSpec(GAME_ID, PLAYER_ID, WINDOW_ID, "SPEECH", "DAY_DISCUSSION", 3)
+    )
+
+    assert result.status == "SUCCEEDED"
+    assert selected_settings == [settings]
+    assert provider.requests[0].timeout_seconds == 7
+
+
+@pytest.mark.asyncio
+async def test_context_elapsed_time_reduces_provider_budget():
+    """네 Resource 조회가 쓴 시간을 빼고 남은 예산만 모델에 전달한다."""
+
+    clock = MutableClock()
+
+    class SlowContext(FakeAgentContextClient):
+        async def get_context(self, *, capability, scope):
+            context = await super().get_context(capability=capability, scope=scope)
+            clock.advance(4)
+            return context
+
+    provider = FakeProvider([{"type": "SPEAK", "message": "공개된 이야기 중 빠진 부분부터 물어볼게."}])
+    result = await AgentOrchestrator(
+        FakeRepository(), provider, SlowContext({"data": {"valid_targets": []}}),
+        clock=clock, timeout_seconds=30,
+    ).run(AgentJobSpec(GAME_ID, PLAYER_ID, WINDOW_ID, "SPEECH", "DAY_DISCUSSION", 3))
+
+    assert result.status == "SUCCEEDED"
+    assert provider.requests[0].timeout_seconds == pytest.approx(21, abs=0.05)
+
+
+@pytest.mark.asyncio
+async def test_provider_response_after_sixteen_seconds_remains_valid():
+    """기존 15초를 넘겨도 새 예약과 window가 유효한 발언은 PASS로 바꾸지 않는다."""
+
+    clock = MutableClock()
+
+    class ThinkingProvider(FakeProvider):
+        async def generate(self, request):
+            response = await super().generate(request)
+            clock.advance(16)
+            return response
+
+    provider = ThinkingProvider([{"type": "SPEAK", "message": "아까 한 말과 지금 설명이 다른 이유가 궁금해."}])
+    repository = FakeRepository()
+    result = await AgentOrchestrator(
+        repository, provider, FakeAgentContextClient({"data": {"valid_targets": []}}),
+        clock=clock, timeout_seconds=30,
+    ).run(AgentJobSpec(GAME_ID, PLAYER_ID, WINDOW_ID, "SPEECH", "DAY_DISCUSSION", 3))
+
+    assert result.status == "SUCCEEDED" and result.proposal.type == "SPEAK"
+    assert repository.completed[0]["status"] == "SUCCEEDED"
+    assert repository.completed[0]["failure_code"] is None
+
+
+@pytest.mark.asyncio
+async def test_window_deadline_clips_request_even_with_longer_reservation():
+    """예약이 길어도 원래 window 마감 전에 저장할 시간을 남긴다."""
+
+    provider = FakeProvider([{"type": "SPEAK", "message": "남은 시간에는 이 부분만 확인하자."}])
+    result = await AgentOrchestrator(
+        FakeRepository(), provider, FakeAgentContextClient({"data": {"valid_targets": []}}),
+        clock=lambda: NOW, timeout_seconds=30,
+    ).run(AgentJobSpec(
+        GAME_ID, PLAYER_ID, WINDOW_ID, "SPEECH", "DAY_DISCUSSION", 3,
+        window_deadline=NOW + timedelta(seconds=10),
+    ))
+
+    assert result.status == "SUCCEEDED"
+    assert provider.requests[0].timeout_seconds == pytest.approx(7, abs=0.05)
+    assert provider.requests[0].timeout_seconds <= 7
+
+
+@pytest.mark.asyncio
+async def test_repair_request_uses_only_budget_left_after_context_and_first_attempt():
+    """한 번의 교정에 새 전체 timeout을 주지 않고 첫 판단이 쓴 시간을 차감한다."""
+
+    clock = MutableClock()
+
+    class SlowContext(FakeAgentContextClient):
+        async def get_context(self, *, capability, scope):
+            context = await super().get_context(capability=capability, scope=scope)
+            clock.advance(2)
+            return context
+
+    class RepairProvider(FakeProvider):
+        async def generate(self, request):
+            response = await super().generate(request)
+            clock.advance(10)
+            return response
+
+    provider = RepairProvider([{"unexpected": True}, {"type": "SPEAK", "message": "그 질문에는 이렇게 답할게."}])
+    result = await AgentOrchestrator(
+        FakeRepository(), provider, SlowContext({"data": {"valid_targets": []}}),
+        clock=clock, timeout_seconds=30,
+    ).run(AgentJobSpec(GAME_ID, PLAYER_ID, WINDOW_ID, "SPEECH", "DAY_DISCUSSION", 3))
+
+    assert result.status == "SUCCEEDED" and provider.calls == 2
+    assert [request.timeout_seconds for request in provider.requests] == pytest.approx([29, 19], abs=0.05)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("consume_during_context", [False, True])
+async def test_exhausted_budget_starts_no_further_external_call_or_pass(consume_during_context):
+    """이미 소진된 예약은 최초 조회나 후속 판단을 새로 시작하지 않고 폐기한다."""
+
+    clock = MutableClock()
+
+    class ExhaustingContext(FakeAgentContextClient):
+        async def get_context(self, *, capability, scope):
+            context = await super().get_context(capability=capability, scope=scope)
+            clock.advance(37)
+            return context
+
+    repository = FakeRepository(lease_seconds=40 if consume_during_context else 3)
+    context_client = ExhaustingContext({"data": {"valid_targets": []}})
+    provider = FakeProvider([])
+    result = await AgentOrchestrator(
+        repository, provider, context_client, clock=clock, timeout_seconds=30,
+    ).run(AgentJobSpec(GAME_ID, PLAYER_ID, WINDOW_ID, "SPEECH", "DAY_DISCUSSION", 3))
+
+    assert result.status == "STALE" and result.proposal is None
+    assert result.failure_code == "AGENT_TIME_BUDGET_EXHAUSTED"
+    assert len(context_client.calls) == (1 if consume_during_context else 0)
+    assert provider.calls == 0
+    assert repository.completed[0]["normalized_proposal"] is None
+    assert context_client.closed and repository.revoked
+
+
+@pytest.mark.asyncio
+async def test_wallclock_context_timeout_cancels_pending_read_before_provider_starts():
+    """진행 중 MCP 조회가 전체 호출 예산을 넘기면 취소하고 남겨 둔 저장 시간에 대체한다."""
+
+    class BlockingContext(FakeAgentContextClient):
+        cancelled = False
+
+        async def get_context(self, *, capability, scope):
+            await super().get_context(capability=capability, scope=scope)
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+
+    context_client, repository = BlockingContext(), FakeRepository(lease_seconds=3.01)
+    provider = FakeProvider([])
+    result = await asyncio.wait_for(AgentOrchestrator(
+        repository, provider, context_client, clock=lambda: NOW, timeout_seconds=30,
+    ).run(AgentJobSpec(GAME_ID, PLAYER_ID, WINDOW_ID, "SPEECH", "DAY_DISCUSSION", 3)), timeout=1)
+
+    assert context_client.cancelled and context_client.calls == [("<opaque>", "public")]
+    assert provider.calls == 0
+    assert result.status == "FALLBACK" and result.failure_code == "MCP_UNAVAILABLE"
+    assert repository.completed[0]["status"] == "FALLBACK"
+    assert context_client.closed and repository.revoked
+
+
+@pytest.mark.asyncio
+async def test_wallclock_timeout_cancels_provider_that_ignores_request_timeout():
+    """SDK 대역이 timeout 값을 무시해도 실제 task를 취소하고 유효 예약에서만 대체한다."""
+
+    class BlockingProvider:
+        cancelled = False
+
+        async def generate(self, request):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+
+    provider, repository = BlockingProvider(), FakeRepository()
+    context_client = FakeAgentContextClient({"data": {"valid_targets": []}})
+    result = await asyncio.wait_for(AgentOrchestrator(
+        repository, provider, context_client, clock=lambda: NOW, timeout_seconds=0.01,
+    ).run(AgentJobSpec(GAME_ID, PLAYER_ID, WINDOW_ID, "SPEECH", "DAY_DISCUSSION", 3)), timeout=1)
+
+    assert provider.cancelled
+    assert result.status == "FALLBACK" and result.failure_code == "PROVIDER_TIMEOUT"
+    assert repository.completed[0]["status"] == "FALLBACK"
+    assert context_client.closed and repository.revoked
+
+
+@pytest.mark.asyncio
+async def test_expired_provider_timeout_rejects_response_after_adapter_swallows_cancellation():
+    """adapter가 취소 뒤 정상 JSON을 반환해도 이미 지난 요청 상한을 우회하지 못한다."""
+
+    class CancellationSwallowingProvider:
+        cancelled = False
+
+        async def generate(self, request):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                return LLMResponse(
+                    provider="fake", model="fake",
+                    output={"type": "SPEAK", "message": "너무 늦게 반환된 합성 발언입니다."},
+                )
+
+    provider, repository = CancellationSwallowingProvider(), FakeRepository()
+    context_client = FakeAgentContextClient({"data": {"valid_targets": []}})
+    result = await asyncio.wait_for(AgentOrchestrator(
+        repository, provider, context_client, clock=lambda: NOW, timeout_seconds=0.01,
+    ).run(AgentJobSpec(GAME_ID, PLAYER_ID, WINDOW_ID, "SPEECH", "DAY_DISCUSSION", 3)), timeout=1)
+
+    assert provider.cancelled
+    assert result.status == "FALLBACK" and result.failure_code == "PROVIDER_TIMEOUT"
+    assert result.proposal.type == "PASS"
+    assert repository.completed[0]["status"] == "FALLBACK"
+    assert repository.completed[0]["normalized_proposal"]["type"] == "PASS"
+    assert context_client.closed and repository.revoked
+
+
+@pytest.mark.asyncio
+async def test_external_cancellation_revokes_capability_without_success_or_pass():
+    """프로세스 종료 취소를 Provider 장애 PASS로 바꾸지 않고 자격과 조회 자원을 정리한다."""
+
+    started = asyncio.Event()
+
+    class BlockingProvider:
+        async def generate(self, request):
+            started.set()
+            await asyncio.Event().wait()
+
+    repository = FakeRepository()
+    context_client = FakeAgentContextClient({"data": {"valid_targets": []}})
+    task = asyncio.create_task(AgentOrchestrator(
+        repository, BlockingProvider(), context_client, clock=lambda: NOW,
+    ).run(AgentJobSpec(GAME_ID, PLAYER_ID, WINDOW_ID, "SPEECH", "DAY_DISCUSSION", 3)))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    assert context_client.closed and repository.revoked
+    assert all(item["status"] not in {"SUCCEEDED", "FALLBACK"} for item in repository.completed)
+
+
+@pytest.mark.asyncio
+async def test_fencing_rejection_does_not_log_provider_fallback_as_selected_pass(monkeypatch):
+    """완료가 거부된 Provider 실패는 진단으로 남기고 공개 FALLBACK PASS로 기록하지 않는다."""
+
+    from types import SimpleNamespace
+    from backend.app.agent.activity import AgentActivity
+
+    diagnostics, activities = [], []
+    monkeypatch.setattr("backend.app.agent.orchestrator.progress_logger",
+                        lambda: SimpleNamespace(warning=diagnostics.append))
+    activity = AgentActivity(logger=SimpleNamespace(info=activities.append))
+
+    class RejectedRepository(FakeRepository):
+        def complete_job(self, reservation, **kwargs):
+            super().complete_job(reservation, **kwargs)
+            return False
+
+    class FailedProvider:
+        async def generate(self, request):
+            raise TimeoutError("synthetic-private-provider-response")
+
+    result = await AgentOrchestrator(
+        RejectedRepository(), FailedProvider(), FakeAgentContextClient({"data": {"valid_targets": []}}),
+        clock=lambda: NOW, activity=activity,
+    ).run(AgentJobSpec(GAME_ID, PLAYER_ID, WINDOW_ID, "SPEECH", "DAY_DISCUSSION", 3))
+
+    assert result.status == "STALE" and result.proposal is None
+    stages = [json.loads(item)["stage"] for item in activities]
+    assert "FALLBACK" not in stages and stages[-1] == "SKIPPED"
+    failure = next(json.loads(item) for item in diagnostics if json.loads(item)["stage"] == "AGENT_GENERATION_FAILED")
+    assert failure.get("reason_code", failure.get("diagnostic_code")) == "PROVIDER_TIMEOUT"
+    assert "player_id" not in failure and "synthetic-private" not in "".join(diagnostics)
 
 
 def test_public_projection_does_not_change_with_subject_and_me_is_private():
@@ -289,18 +745,25 @@ async def test_invalid_stored_proposal_is_stale_without_new_generation(stored):
 
 @pytest.fixture
 def local_recovery_repository():
-    """명시적으로 선택한 loopback QA에서만 실제 SQL을 임시 테이블로 검증한다.
+    """명시적으로 선택한 팀 테스트 DB에서 실제 SQL을 세션 임시 테이블로 검증한다.
 
-    연결 주소는 환경의 원격 DSN을 사용하지 않는다. public 테이블은 수정하지 않고
-    같은 컬럼·CHECK를 복사한 세션 임시 원장만 사용한 뒤 전체 transaction을 rollback한다.
+    기존 실행 플래그는 호환용으로 유지하되 접속 대상은 TEAM_DATABASE_URL만 쓴다.
+    public 테이블은 수정하지 않고 같은 컬럼·CHECK를 복사한 임시 원장만 사용한 뒤
+    전체 transaction을 rollback하므로 다른 PC의 게임 자료에 영향을 주지 않는다.
     """
 
     import os
     import psycopg
     from backend.app.repositories.agent_repository import PostgresAgentRepository
     if os.getenv("B6_LOCAL_QA") != "1":
-        pytest.skip("loopback QA SQL 검증은 B6_LOCAL_QA=1에서만 실행합니다.")
-    connection = psycopg.connect("postgresql://qa:synthetic-only@127.0.0.1:55432/mafia_qa", connect_timeout=3)
+        pytest.skip("팀 DB 임시 테이블 검증은 기존 B6_LOCAL_QA=1 플래그로 선택합니다.")
+    database_url = os.getenv("TEAM_DATABASE_URL", "").strip()
+    if not database_url:
+        pytest.skip("팀 DB 임시 테이블 검증에는 TEAM_DATABASE_URL이 필요합니다.")
+    try:
+        connection = psycopg.connect(database_url, connect_timeout=5)
+    except psycopg.Error as error:
+        pytest.fail(f"팀 DB 검증 연결 실패: {type(error).__name__}", pytrace=False)
     connection.execute("CREATE TEMP TABLE games (id uuid PRIMARY KEY, status text, phase text, state_version bigint)")
     connection.execute("CREATE TEMP TABLE action_windows (id uuid PRIMARY KEY, game_id uuid, status text, phase text, window_kind text, deadline_at timestamptz, turn_player_id uuid)")
     connection.execute("CREATE TEMP TABLE game_players (id uuid PRIMARY KEY, game_id uuid, kind text, alive boolean)")
@@ -348,6 +811,32 @@ def complete_local(repository, reservation, **kwargs):
     return repository.complete_job(reservation, **{**values, **kwargs})
 
 
+@pytest.mark.parametrize("database_deadline,requested_deadline,expected_seconds", [
+    (None, None, 40),
+    (10, None, 10),
+    (20, 7, 7),
+])
+def test_team_sql_reservation_limits_lease_to_current_window_deadline(
+    local_recovery_repository, database_deadline, requested_deadline, expected_seconds,
+):
+    """실제 예약 SQL은 40초 상한과 DB·호출자 window 마감 중 가장 이른 시각을 사용한다."""
+
+    repository, connection = local_recovery_repository
+    if database_deadline is not None:
+        connection.execute(
+            "UPDATE action_windows SET deadline_at=%s WHERE id=%s",
+            (NOW + timedelta(seconds=database_deadline), WINDOW_ID),
+        )
+    reservation = reserve_local(
+        repository,
+        window_deadline=(NOW + timedelta(seconds=requested_deadline)
+                         if requested_deadline is not None else None),
+    )
+
+    assert reservation is not None
+    assert reservation.lease_expires_at == NOW + timedelta(seconds=expected_seconds)
+
+
 def test_local_sql_rollback_releases_same_job_and_reuses_saved_proposal(local_recovery_repository):
     repository, connection = local_recovery_repository
     first = reserve_local(repository)
@@ -374,8 +863,8 @@ def test_local_sql_crashed_unapplied_success_recovers_after_lease_only(local_rec
     repository, connection = local_recovery_repository
     first = reserve_local(repository)
     assert complete_local(repository, first)
-    assert reserve_local(repository, now=NOW + timedelta(seconds=14)) is None
-    second = reserve_local(repository, now=NOW + timedelta(seconds=16))
+    assert reserve_local(repository, now=NOW + timedelta(seconds=repository.MAX_LEASE_SECONDS - 1)) is None
+    second = reserve_local(repository, now=NOW + timedelta(seconds=repository.MAX_LEASE_SECONDS + 1))
     assert second.job_id == first.job_id and second.recovered_proposal == {"type": "PASS"}
 
 

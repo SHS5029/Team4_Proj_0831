@@ -278,7 +278,10 @@ class GameEngine:
             elif state.phase is GamePhase.DAY_DISCUSSION:
                 for player in state.alive_players:
                     if player.player_id not in state.speech_actors:
-                        self.pass_turn(state, player.player_id)
+                        if state.day_number == 1:
+                            self.speak(state, player.player_id, "난 앞으로 나온 주장과 그 근거가 맞는지 비교해 볼게.")
+                        else:
+                            self.pass_turn(state, player.player_id)
             elif state.phase is GamePhase.NIGHT_ACTION:
                 self.resolve_night(state, force=True)
             elif state.phase in {GamePhase.DAY_VOTE, GamePhase.REVOTE}:

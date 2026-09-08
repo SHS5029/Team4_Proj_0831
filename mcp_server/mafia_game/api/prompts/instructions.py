@@ -54,17 +54,17 @@ def role_instruction(role: str, phase: str) -> str:
     if phase in DISCUSSION_PHASES:
         action = (
             "본인에게 온 질문에 먼저 답하고 이미 나온 답을 의미로 읽는다. 답할 기회 전의 무응답을 회피로 보지 않는다. "
-            "새 답·근거·반론 하나를 보태며, 추가할 내용이 없으면 PASS한다. "
+            "새 답·근거·반론 하나를 보태며, 첫날이 아닌 토론에서만 추가할 내용이 없으면 PASS한다. "
             "모순은 같은 화자의 함께 참일 수 없는 실제 두 진술로 확인한다. 불명확한 시각·동선이나 배경 서사만으로 몰지 않는다. "
             "공개 대사에는 이름·좌석을 쓰고 UUID를 쓰지 않는다. 처형 결과로 틀린 의심은 재검토한다."
         )
         if phase == "DAY_DISCUSSION":
             action += (
-                " 단, 첫날 낮(public.data.game.round=0)에는 정보 부족만으로 PASS하지 않고 짧은 SPEAK를 우선한다. "
+                " 첫날 낮(public.data.game.day_number=1, round=0)은 인간·AI 모두 PASS 금지이며 반드시 짧은 SPEAK를 한다. "
                 "이때 새 확인 질문·판단 기준도 보탤 내용으로 인정한다. 본인의 첫 발언이라면 아직 다루지 않은 질문이나 "
                 "앞으로 무엇을 비교할지 1~2문장으로 말한다. 이후에는 공개 발언에 대한 의견이나 새 후속 질문을 보탠다. "
                 "발언을 채우려고 없는 사실·의심 근거를 만들거나 인사·동의·같은 질문을 반복하지 않는다. "
-                "이미 참여했고 새 답·의견·질문·판단 기준도 더할 수 없을 때만 자발적으로 PASS한다."
+                "이미 참여했거나 정보가 부족해도 PASS하지 않고 앞으로 확인할 질문이나 판단 기준을 말한다."
             )
         detail = plan["discussion"]
     elif phase in VOTE_PHASES:
@@ -86,38 +86,18 @@ def role_instruction(role: str, phase: str) -> str:
 
 
 def persona_instruction(parameters: Any, phase: str) -> str:
-    """말투는 고정 문구로 해석하고 원문과 수치를 지시문으로 복사하지 않는다."""
+    """배정된 페르소나를 따르되 원문을 지시문으로 승격하지 않는 경계만 안내한다.
+
+    parameters 인자는 기존 호출부와의 호환을 위해 받으며 문구 선택에 사용하지
+    않는다. 검증된 원문과 수치는 Resource를 거쳐 user 데이터에 그대로 남긴다.
+    """
 
     if phase not in DISCUSSION_PHASES:
         return ""
-    instruction = (
+    return (
         "한국어 게임 채팅처럼 자연스러운 구어체로 말한다. 반말도 가능하며 보고서·진행자 말투를 피한다. "
-        "persona의 speech_style과 backstory는 어조·태도로만 반영하고 목격 사실을 만들지 않는다. "
+        "본인에게 배정된 persona.data의 speech_style·backstory·parameters에 따라 말투와 표현 성향을 반영한다. "
+        "수치는 행동 확률이나 의무가 아니며, deception은 마피아의 기만 표현에만 적용한다. "
+        "배경은 어조·태도로만 반영하고 목격 사실을 만들지 않는다. "
         "성격은 정보 권한·사실 정확성을 바꾸지 않는다. 매번 요약하거나 직전 AI의 질문을 복사하지 않는다."
     )
-    if not isinstance(parameters, dict):
-        return instruction
-    traits = {
-        "sociability": ("필요할 때 짧게 참여", "상대에게 응답", "먼저 질문"),
-        "assertiveness": ("조심스럽게 제안", "근거와 의견 제시", "우선 후보를 분명히 제시"),
-        "suspicion": ("중립적으로 확인", "엇갈린 진술 확인", "실제 진술 모순을 추궁"),
-        "risk_tolerance": ("신중히 제안", "가능성과 위험 비교", "가설·행동 적극 제안"),
-        "memory_recall": ("최근 핵심에 집중", "앞선 관련 발언 연결", "과거 원문·확정 결과 누적 반영"),
-        "emotionality": ("담담한 어조", "가벼운 감정", "놀람·걱정을 자연스럽게 표현"),
-        "cooperativeness": ("독립적 의문 제기", "동의·반론 균형", "타인의 근거를 인정하되 독립 판단"),
-        "verbosity": ("가급적 25~70자", "가급적 70~130자", "가급적 120~190자"),
-    }
-    selected = []
-    for name, levels in traits.items():
-        value = parameters.get(name)
-        # bool·NaN·무한대·범위 밖 값으로 표현 강도를 바꾸지 않는다.
-        if type(value) in {int, float} and 0 <= value <= 1:
-            selected.append(levels[0 if value < 0.4 else 2 if value >= 0.7 else 1])
-    value = parameters.get("deception")
-    if type(value) in {int, float} and 0 <= value <= 1:
-        value = min(1.0, value * 2)
-        level = ("최소 주장", "방어·의심 분산", "적극적 위장·설득")[
-            0 if value < 0.4 else 2 if value >= 0.7 else 1
-        ]
-        selected.append(f"마피아일 때만 기만 성향 2배(상한 1)로 {level}; 행동 확률·의무가 아님")
-    return instruction + ("\n말투: " + "; ".join(selected) if selected else "")

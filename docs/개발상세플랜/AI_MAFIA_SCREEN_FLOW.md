@@ -331,7 +331,7 @@ HTML을 허용하지 않고 plain text로 렌더링한다. 내부 event payload 
 
 | Phase·상태 | 안내 | 입력 | 완료 후 |
 |---|---|---|---|
-| `DAY_DISCUSSION`, 내 차례 | 최대 200자 발언 또는 넘기기 | textarea, 글자수, `발언`, `PASS` | panel 잠금, 다음 turn 대기 |
+| `DAY_DISCUSSION`, 발언 가능 | 최대 200자 발언, 첫날은 인간·AI 모두 PASS 금지 | 발언 입력, 글자수, 첫날에는 `PASS` 숨김 | 서버 legal action·deadline에 따른 제어 |
 | `DAY_DISCUSSION`, 다른 차례 | 현재 발언자 표시 | 없음 | event 대기 |
 | `NIGHT_ACTION`, 마피아 | 공격 대상 선택, 20초 | target radio, 제출 | 대상 비공개 유지 |
 | `NIGHT_ACTION`, 탐정 | 조사 대상 선택, 20초 | target radio, 제출 | private 결과 event 대기 |

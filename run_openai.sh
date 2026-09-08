@@ -86,15 +86,15 @@ import sys
 
 from dotenv import dotenv_values
 
-mode = dotenv_values(Path(sys.argv[1])).get("AI_MAFIA_STORAGE_MODE", "isolated")
+mode = dotenv_values(Path(sys.argv[1])).get("AI_MAFIA_STORAGE_MODE", "team")
 if mode not in {"isolated", "team"}:
     raise SystemExit("오류: AI_MAFIA_STORAGE_MODE는 isolated 또는 team이어야 합니다.")
 print(mode, end="")
 PY
 )"
 
-# 공유 원장으로의 전환은 명시적 team 모드에서만 허용하고, DB와 Redis를 같은
-# 설정 묶음에서 선택해 로컬 게임 cache와 원격 게임 데이터를 섞지 않는다.
+# 팀 DB는 기본 테스트 저장소다. 명시적으로 isolated를 선택한 경우에만 별도
+# 저장소를 사용하며, DB와 Redis를 같은 설정 묶음에서 선택해 게임 데이터를 섞지 않는다.
 if [[ "${STORAGE_MODE}" == "team" ]]; then
     RUNTIME_DATABASE_URL="$(read_required_env_value TEAM_DATABASE_URL)"
     RUNTIME_REDIS_URL="$(read_required_env_value REDIS_URL)"
@@ -120,7 +120,7 @@ def target(value: str) -> tuple[str, str | None, int, str]:
     parsed = urlsplit(value)
     return parsed.scheme.lower(), parsed.hostname, parsed.port or 5432, unquote(parsed.path)
 
-if (values.get("AI_MAFIA_STORAGE_MODE", "isolated") == "isolated"
+if (values.get("AI_MAFIA_STORAGE_MODE", "team") == "isolated"
         and isinstance(isolated, str) and isinstance(shared, str)
         and target(isolated) == target(shared)):
     raise SystemExit("오류: AI_MAFIA_DATABASE_URL은 TEAM_DATABASE_URL과 다른 격리 DB여야 합니다.")

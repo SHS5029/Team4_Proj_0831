@@ -437,6 +437,15 @@ projection provenance·cross-scope 의미 불변식의 최종 판정자다.
 
 ## 11. 오류·fallback·재접속
 
+운영 FastMCP HTTP adapter는 연결·timeout·Backend HTTP 상태·JSON 형식 실패를
+비밀값 없는 고정 오류 코드로 표현한다. Backend MCP client도 RPC·응답 계약 실패를
+구분하며 내부 진행 로그에 발생 scope와 작업 binding을 남긴다. 상세 진단은 내부
+로그 전용으로, 공개 `MCP_UNAVAILABLE`나 fallback 결과·권한 검증을 바꾸지 않는다.
+같은 게임·actor의 기대 phase·window·버전이 달라진 응답은 기존 `STALE` 결과로
+폐기한다. 이 경우 PASS proposal이나 `FALLBACK`을 기록하지 않고 `SKIPPED`로 끝낸다.
+구형 MCP의 역할 지침 누락과 구형 Backend의 persona 0.5 고정 검증은 정상 응답으로
+우회하지 않으며, 양쪽을 같은 계약 버전으로 갱신한 뒤 네 scope 왕복을 확인한다.
+
 | 상황 | MCP 처리 | Backend 처리 |
 |---|---|---|
 | 세션 개설 토큰 누락·변조·만료·replay | session 비활성, 고정 거부 | 새 job 자격 검토 또는 fallback |
@@ -726,8 +735,9 @@ no persistent spool과 fresh credential이다. Resource context no-cache는 이�
 
 ## 2026-09-08 역할별 프롬프트 이관 (WU-M6)
 
-사용자 승인에 따라 `api/prompts/instructions.py`가 네 역할의 승리 전략·단계별 행동·성향
-해석을 소유한다. 운영 Resource 등록부에서 동일 renderer를 사용하여 추가 HTTP 호출
+사용자 승인에 따라 `api/prompts/instructions.py`가 네 역할의 승리 전략·단계별 행동·페르소나
+적용 경계를 소유한다. 성향 수치의 구간별 문구 변환과 deception 증폭은 제거하고,
+기존 Backend 응답의 말투·배경·수치를 보존한다. 운영 Resource 등록부에서 동일 renderer를 사용하여 추가 HTTP 호출
 없이 본인 역할 지침과 말투 지침을 전달한다. 상세 응답 변경은 API 명세의 같은 날짜
 계약을 따른다. 공통 system·출력 검증·Provider 호출은 Backend가 유지하고, MCP Prompt는
 더 이상 Backend prompt endpoint에서 본문을 가져오지 않는다.
@@ -739,5 +749,10 @@ no persistent spool과 fresh credential이다. Resource context no-cache는 이�
 직접 import한다. 등록명·URI·인자·프롬프트 내용은 유지한다.
 
 ## 2026-09-07 자유 토론 변경 (사용자 승인 WU-B4)
+
+2026-09-08 사용자 확인으로 같은 규칙 경계에 첫날 인간·AI PASS 금지를 적용한다.
+MCP 역할 지침·공개 규칙은 첫날 반드시 SPEAK하도록 안내하고, 허용 Tool 검증은
+API 명세 8.2.3의 첫날 배열을 수용한다. Backend가 최종 규칙과 실패 시 기본 발언을
+소유하며 MCP가 대체 발언을 생성하거나 DB에 접근하지 않는다.
 
 이번 단일 WU-B4는 1분 45초 자유 토론과 연결되는 Front·MCP 표현의 변경이다. 이 절이 기존 좌석당 한 번 발언·전원 PASS 추가 순환 규칙보다 우선한다. 새 일반·최종 토론은 Backend deadline 105초까지 열리며 인간은 AI 처리 순서와 무관하게 발언한다. 플레이어별 최근 60초 SPEAK는 최대 7회이며 서버 게임 행 잠금 안에서 원장으로 검증한다. PASS는 조기 마감하지 않는다. AI 작업은 기존 단일 예약 창을 재사용해 공정하게 배분하고, 발언마다 새 window를 열되 토론 deadline은 보존한다. turn_player_id는 AI 스케줄링 힌트이며 인간의 발언 권한 제한이 아니다. SPEECH에도 deadline·remaining_ms가 제공된다. 저장 시 잔여 시간을 보존한다. 마감 뒤 첫날은 밤, 이후 낮은 투표, 최종 토론은 최종 지목으로 진행한다. 과거 deadline 없는 발언 창은 기존 방식으로 처리한다. DB 구조와 idempotency·게임 상태 버전 검증은 보존한다.

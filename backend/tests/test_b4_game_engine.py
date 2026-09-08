@@ -36,13 +36,27 @@ def test_same_seed_repeats_role_assignment_and_different_seed_changes_it():
     assert [player.role for player in first.players] != [player.role for player in other.players]
 
 
-def test_first_day_moves_to_night_after_one_pass_cycle():
+@pytest.mark.parametrize("kind", [PlayerKind.HUMAN, PlayerKind.AI])
+def test_first_day_rejects_pass_without_changing_state(kind):
+    """첫날 PASS 거부는 인간·AI 모두의 상태 버전과 원장을 보존해야 한다."""
+
+    engine = GameEngine()
+    state = GameEngine.new_game(players(6), seed=b"day-seed")
+    engine.begin_game(state)
+    state.players[0].kind = kind
+    before = deepcopy(state)
+    with pytest.raises(RuleViolation, match="ACTION_NOT_ALLOWED"):
+        engine.pass_turn(state, state.players[0].player_id)
+    assert state == before
+
+
+def test_first_day_moves_to_night_after_one_speech_cycle():
     engine = GameEngine()
     state = GameEngine.new_game(players(6), seed=b"day-seed")
     engine.begin_game(state)
     assert state.round == 0
     for player in state.alive_players:
-        engine.pass_turn(state, player.player_id)
+        engine.speak(state, player.player_id, "앞으로 나온 주장을 비교해 볼게.")
     assert state.phase is GamePhase.NIGHT_ACTION
     assert state.round == 1
 
@@ -52,7 +66,7 @@ def test_invalid_actor_target_and_duplicate_are_rejected():
     state = GameEngine.new_game(players(6), seed=b"validation-seed")
     engine.begin_game(state)
     actor = state.players[0]
-    engine.pass_turn(state, actor.player_id)
+    engine.speak(state, actor.player_id, "공개 주장을 비교해 볼게.")
     with pytest.raises(RuleViolation, match="DUPLICATE_ACTION"):
         engine.pass_turn(state, actor.player_id)
     with pytest.raises(RuleViolation, match="PLAYER_NOT_FOUND"):
@@ -64,7 +78,7 @@ def test_night_resolution_uses_doctor_protection_and_detective_private_result():
     state = GameEngine.new_game(players(6), seed=b"night-seed")
     engine.begin_game(state)
     for player in state.alive_players:
-        engine.pass_turn(state, player.player_id)
+        engine.speak(state, player.player_id, "공개 주장을 비교해 볼게.")
     mafia = next(player for player in state.players if player.role is PlayerRole.MAFIA)
     doctor = next(player for player in state.players if player.role is PlayerRole.DOCTOR)
     detective = next(player for player in state.players if player.role is PlayerRole.DETECTIVE)
@@ -82,7 +96,7 @@ def test_one_mafia_submission_waits_for_deadline_when_two_mafia_are_alive():
     state = GameEngine.new_game(players(8), seed=b"two-mafia-seed")
     engine.begin_game(state)
     for player in state.alive_players:
-        engine.pass_turn(state, player.player_id)
+        engine.speak(state, player.player_id, "공개 주장을 비교해 볼게.")
     mafia = next(player for player in state.players if player.role is PlayerRole.MAFIA)
     doctor = next(player for player in state.players if player.role is PlayerRole.DOCTOR)
     detective = next(player for player in state.players if player.role is PlayerRole.DETECTIVE)
@@ -102,7 +116,7 @@ def test_day_vote_tie_uses_one_revote_then_no_execution():
     state = GameEngine.new_game(players(6), seed=b"tie-seed")
     engine.begin_game(state)
     for player in state.alive_players:
-        engine.pass_turn(state, player.player_id)
+        engine.speak(state, player.player_id, "공개 주장을 비교해 볼게.")
     mafia = next(player for player in state.players if player.role is PlayerRole.MAFIA)
     doctor = next(player for player in state.players if player.role is PlayerRole.DOCTOR)
     detective = next(player for player in state.players if player.role is PlayerRole.DETECTIVE)

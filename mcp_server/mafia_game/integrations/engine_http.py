@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Protocol
 from urllib.parse import quote, urlencode, urlsplit
 
@@ -12,7 +13,19 @@ from mafia_game.schemas.common import RESOURCE_SCOPE_ORDER, WireContractError, c
 
 
 class BackendContextError(RuntimeError):
-    """Backend HTTP 실패를 MCP 내부의 단일 오류로 표현한다."""
+    """Backend 실패를 외부 문구 없는 고정 코드로만 전달한다."""
+
+    def __init__(self, code: str = "MCP_BACKEND_ERROR") -> None:
+        """응답·URL·예외 원문이 실수로 들어와도 허용된 진단 코드만 남긴다."""
+
+        allowed = {
+            "MCP_BACKEND_ERROR", "MCP_BACKEND_TIMEOUT", "MCP_BACKEND_CONNECTION_ERROR",
+            "MCP_BACKEND_INVALID_JSON", "MCP_BACKEND_INVALID_RESPONSE",
+        }
+        self.code = code if isinstance(code, str) and (
+            code in allowed or re.fullmatch(r"MCP_BACKEND_HTTP_[1-5][0-9]{2}", code)
+        ) else "MCP_BACKEND_ERROR"
+        super().__init__(self.code)
 
 
 class BackendContextClient(Protocol):
@@ -60,13 +73,22 @@ class MinimalBackendContextClient:
                 content=body,
                 headers={"Content-Type": "application/json"},
             )
-            payload = response.json()
-        except (httpx.HTTPError, ValueError) as error:
-            raise BackendContextError from error
+        except httpx.TimeoutException:
+            raise BackendContextError("MCP_BACKEND_TIMEOUT") from None
+        except httpx.TransportError:
+            raise BackendContextError("MCP_BACKEND_CONNECTION_ERROR") from None
+        except (httpx.HTTPError, ValueError):
+            raise BackendContextError from None
+        # 상태를 먼저 확인해야 HTML 오류 페이지를 JSON 오류로 잘못 분류하지 않는다.
+        # 외부 예외 체인은 숨겨 FastMCP traceback에도 요청 URL과 본문이 남지 않게 한다.
         if response.status_code < 200 or response.status_code >= 300:
-            raise BackendContextError
+            raise BackendContextError(f"MCP_BACKEND_HTTP_{response.status_code}") from None
+        try:
+            payload = response.json()
+        except ValueError:
+            raise BackendContextError("MCP_BACKEND_INVALID_JSON") from None
         if not isinstance(payload, dict):
-            raise BackendContextError
+            raise BackendContextError("MCP_BACKEND_INVALID_RESPONSE") from None
         return payload
 
     async def read_resource(self, uri: str) -> dict[str, Any]:
@@ -87,8 +109,8 @@ class MinimalBackendContextClient:
                 if parts[7] not in RESOURCE_SCOPE_ORDER:
                     raise WireContractError
             parameters["scope"] = parts[7] if scoped else "public"
-        except WireContractError as error:
-            raise BackendContextError from error
+        except WireContractError:
+            raise BackendContextError from None
         return await self._request(
             "GET", f"/internal/mcp/context?{urlencode(parameters)}"
         )

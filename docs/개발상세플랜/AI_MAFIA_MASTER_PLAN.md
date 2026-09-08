@@ -95,8 +95,9 @@ Backend·MCP·DB와 파일 구조는 변경하지 않는다.
 ### 1.3 LLM 범위
 
 - MVP는 한 번에 하나의 Provider만 선택한다. 자동 Provider failover는 구현하지 않는다.
-- 앱 수준의 LLM timeout 설정, token 상한, token 사용량 저장·집계, 비용 저장·추정,
-  예산 경보와 관련 KPI는 구현하지 않는다.
+- 사용자·관리자 API의 LLM timeout 설정, token 사용량 저장·집계, 비용 저장·추정,
+  예산 경보와 관련 KPI는 구현하지 않는다. Backend 배포의 `LLM_TIMEOUT_SECONDS`는
+  기본 30초이며 실제 요청은 아래 작업·게임 마감 예산으로 더 짧아질 수 있다.
 - Provider 오류, 잘못된 구조화 응답, Agent worker lease 만료 또는 게임 `deadline`까지
   결과가 확정되지 않은 경우 Backend 규칙 기반 fallback을 사용한다. 고정된 짧은
   worker lease는 중단된 작업의 소유권 회수 장치이며 사용자·운영자가 조정하는 LLM
@@ -131,7 +132,23 @@ Resource schema, DB migration과 역할 판정 규칙은 추가하지 않는다.
 기존 `infrastructure/redis/cache.py`에 전체 공개 대화 캐시를 두고 Backend 읽기·Agent
 context에 연결한다. PostgreSQL은 영구 원본이며 비공개 context는 Redis에 쓰지 않는다.
 `LLM_MAX_OUTPUT_TOKENS`를 실제 Agent 요청에 연결하고 기본값을 8192로 상향한다.
-고정 15초 lease와 대사 200자 제한은 유지한다. 새 파일·DB migration은 추가하지 않는다.
+고정 lease는 후속 시간 예산 보완에 따라 40초이며 대사 200자 제한은 유지한다.
+새 파일·DB migration은 추가하지 않는다.
+
+후속 발언 넘김 재검토의 단일 WU-B6는 시간 예산 불일치를 수정한다. 기존 15초
+Provider 요청과 MCP 조회를 포함한 15초 lease를 함께 적용하던 구조 대신 고정 lease를
+40초로 하고 action window deadline을 상한으로 유지한다. Backend 배포 timeout을
+Agent 생성 모든 경로에 전달하며 MCP 조회와 최초·교정 요청은 같은 절대 마감 예산을
+공유한다. 완료 저장·MCP Tool 제출을 위해 3초를 남기고 각 Provider 호출에는
+`min(배포 timeout, 남은 작업 시간)`을 전달한다. 실제 경과 시간도 asyncio 제한으로
+강제하며 시간 여유가 없으면 새 Provider 호출·교정 없이 폐기한다. 기존 high 추론
+노력·출력 한도·fencing·상태·창 검증은 유지한다. 실패의 내부 고정 진단을 남기되
+lease 만료·fencing 거부로 폐기한 시도를 `FALLBACK PASS` 선택으로 기록하지 않는다.
+호출을 시작할 여유가 없을 때는 STALE로 폐기하고, 이미 시작한 외부 호출의 timeout은
+유효 예약에서 기존 fallback을 적용한다. 3초는 완료·제출 여유이며 DB·네트워크 대기의
+완료 보장은 아니다. 늦은 결과는 기존 마감·상태·fencing 검사로 계속 거부한다.
+DB schema와 공개 API를 변경하지 않고 팀 DB 세션 임시 테이블에서 예약·회수 경계를
+검증한다. vote-insights의 stale window 409는 별개 읽기 경쟁이라 이 수정에 섞지 않는다.
 
 후속 병렬 투표 요청은 WU-B6의 투표 scheduler·proposal 적용 경계를 보완한다.
 사용자 제출과 무관하게 투표 window가 열리면 모든 미제출 AI의 판단을 병렬로 시작하고,
@@ -292,7 +309,7 @@ ROLE_REVEAL
 ### 3.4 첫날 낮
 
 - AI GM이 고정 공개 사건 정보를 설명한다.
-- 생존자 전원이 좌석순으로 `SPEAK` 또는 `PASS`를 정확히 한 번 제출한다.
+- 첫날 낮에는 인간·AI 모두 `PASS`를 제출할 수 없고 `SPEAK`만 허용한다.
 - `SPEAK` 본문은 공백 정규화 후 1~200자다.
 - 첫 순환이 끝나면 발언 내용과 관계없이 첫날 밤으로 이동한다.
 
@@ -468,11 +485,11 @@ fencing 조건을 검증한 뒤에만 `PUBLIC` event로 반영한다. 잘못된 
 ### 5.3 페르소나
 
 매 발언에는 배정된 `speech_style`의 어미·문장 리듬과 `backstory`의 대화 태도를
-반영한다. 숫자 parameters는 참여도·단정 강도·의심·기만 성향·위험 감수·기억 활용·
-감정·협력·길이의 구체적인 표현 지침으로 바꾼다. 신중한 분석가는 유보적 근거 제시,
+반영한다. 검증된 숫자 parameters는 배정된 preset 원문과 함께 모델의 user 데이터로
+전달한다. 공통 코드가 수치를 구간별 정형 문구로 바꾸거나 증폭하지 않는다. 신중한 분석가는 유보적 근거 제시,
 토론가는 직접적 질문·반론, 기록자는 앞선 발언 비교, 반응가는 감정적 반응,
 조정자는 의견 연결로 구별한다. 직전 AI의 질문·문장 구조를 반복하지 않으며
-페르소나 소개문을 매번 말하지 않는다. 200자 상한과 같은 추론 능력은 유지한다.
+페르소나 소개문을 매번 말하지 않는다. 200자 상한과 동일한 정보 권한은 유지한다.
 
 2026-09-07 산장 게임 이력에 따른 조정값은 아래와 같다. 기존 말투·기만·의심·감정·
 발언 길이는 유지하며, 조정하지 않은 수치는 기존 seed 값을 사용한다.
@@ -499,13 +516,14 @@ fencing 조건을 검증한 뒤에만 `PUBLIC` event로 반영한다. 잘못된 
 | `deception` | 0.0~1.0, 마피아의 거짓 표현 경향 |
 | `risk_tolerance` | 0.0~1.0, 불확실한 선택 경향 |
 | `memory_recall` | 0.0~1.0, 공개 과거 정보를 활용하는 정도 |
-| `reasoning_skill` | 모든 MVP preset에서 같은 중간 값 |
+| `reasoning_skill` | 0.0~1.0의 페르소나 추론 성향, 현재 등록 목표는 0.60~0.80 |
 | `emotionality` | 0.0~1.0, 감정 표현 강도 |
 | `cooperativeness` | 0.0~1.0, 타인의 주장 수용 경향 |
 | `verbosity` | 0.0~1.0, 200자 범위 안의 발언 길이 경향 |
 
 `display_name`, `speech_style`, `backstory`는 서버 등록 preset만 사용한다. 페르소나는
-말투·감정·발언 성향을 바꿀 수 있지만 규칙, 정보 권한과 추론 능력을 바꿀 수 없다.
+말투·감정·발언·추론 성향을 바꿀 수 있지만 규칙과 정보 권한을 바꿀 수 없다.
+`reasoning_skill`은 모델에 전달하는 성향 데이터이며 Provider의 모델·추론 effort·토큰 예산은 바꾸지 않는다.
 
 ### 5.4 실패 처리
 
@@ -518,7 +536,7 @@ fencing 조건을 검증한 뒤에만 `PUBLIC` event로 반영한다. 잘못된 
 | Redis 장애 | 새 Agent turn을 열지 않고 PostgreSQL 원본으로 복구 가능 상태 유지 |
 | Provider 장애 | 자동 Provider 전환 없이 위 fallback으로 진행 |
 
-Agent job은 reservation부터 최대 15초인 고정 lease와 fencing token을 가진다. timed
+Agent job은 reservation부터 최대 40초인 고정 lease와 fencing token을 가진다. timed
 window의 남은 시간이 더 짧으면 그 deadline을 사용한다. lease가 끝난 job의 늦은
 결과는 반영하지 않고 scheduler가 원자적으로 fallback 소유권을 획득한다. 사용자에게
 보이는 발언 시간 제한을 추가하지 않으며 lease 값은 환경 설정이나 관리자 UI로
@@ -572,6 +590,16 @@ Browser
 오류 코드, schema version과 테스트 fixture를 함께 승인한다.
 
 ## 8. 작업 단위
+
+2026-09-08 첫날 PASS 금지는 사용자 확인(인간·AI 모두 금지)에 따른 단일 WU-B4다.
+Backend의 순수 규칙·공통 발언 transaction·legal action·Agent 출력 검증과 장애 대체,
+Front의 PASS 표시, MCP 지침·허용 Tool 계약 및 기존 테스트를 함께 맞춘다.
+첫날(`DAY_DISCUSSION`, `day_number=1`)의 새 PASS는 기존 오류 `ACTION_NOT_ALLOWED`로
+거부하고, AI 생성·MCP 제출 실패 시 없는 사실을 포함하지 않는 짧은 기본 SPEAK를 사용한다.
+둘째 날 이후 PASS, 105초 마감, 분당 7회 제한, 상태 버전·멱등성·fencing은 유지한다.
+기존 파일만 수정하며 DB schema·migration을 추가하지 않는다. 이 사용자 승인 범위가
+기존 첫날 PASS 허용·조건부 권장·장애 PASS 설명보다 우선하며, 섹터 경계의 상세 변경은
+API·MCP·화면 정본에 함께 기록한다.
 
 2026-09-08 저장 버전 제약 완화는 단일 WU-B5의 저장 API 동작과 Front 안내 보완이다.
 기존 lifecycle service·관련 테스트·정본·README만 변경하며 새 파일이나 migration은
@@ -759,7 +787,7 @@ receipt의 마지막 시각, receipt가 없으면 생성 시각으로 기준을 
 이번 단일 WU-M6는 사용자가 승인한 Backend·MCP 프롬프트 소유권 변경과 소비 연결이다.
 Backend 메인 system에는 짧은 마피아 공통 규칙만 두고, 역할별 승리 전략·현재 단계의
 행동 지침·페르소나 해석은 MCP `api/prompts/instructions.py`에서 관리한다. 기존 운영 Resource
-등록부가 검증된 본인 역할·phase로 해당 지침을 선택하고 성향 수치는 고정 표현으로 바꾼다.
+등록부가 검증된 본인 역할·phase로 해당 지침을 선택한다. 성향 수치는 원문 그대로 전달한다.
 실제 원문·성향·역할은 Backend가 소유하며 MCP는 DB·Redis·LLM을 직접 호출하지 않는다.
 Backend는 MCP 지침과 출력 계약을 developer 메시지, 게임 원문을 user 메시지로 분리한다.
 상세 wire 계약은 API 명세의 같은 날짜 절을 따른다. 사용자의 패키지 구조 분리 요청에 따라
@@ -775,6 +803,82 @@ PASS하지 않고 짧은 SPEAK를 우선한다. 첫 발언의 새로운 확인 �
 금지하며 새로 보탤 내용이 없으면 PASS할 수 있다. MCP가 이 조건부 지침을 소유하고,
 Backend의 대화 발췌 안내는 같은 PASS 기준을 따르도록 문구만 맞춘다. 기존 파일에서
 프롬프트만 수정하며 API·DB·게임 규칙·장애 fallback은 유지한다.
+
+### WU-M6 MCP 실패 PASS 조사·진단 보완 (2026-09-08)
+
+사용자의 이슈 해결 요청에 따라 기존 Backend·MCP 소비 연결에서 오류 발생 경계를
+확인한다. Backend의 MCP 연결·timeout·HTTP·RPC·응답 계약 실패와 MCP의 Backend
+HTTP 실패를 고정 코드로 구분한다. 내부 진단에는 scope·상태 코드와 기존 작업 식별자만
+남기며 URL·자격증명·응답 본문·예외 원문은 기록하지 않는다. 기존 공개
+`MCP_UNAVAILABLE` 및 결정적 fallback·fencing 계약은 유지한다. 같은 actor·게임의
+응답이 새 phase·window·버전으로 진행한 경우는 `STALE`로 폐기하며
+실행되지 않을 PASS proposal·FALLBACK 기록을 만들지 않는다. 다른 PC의 테스트는
+사용자 요청에 따라 이번 수정·검증 범위에서 제외한다. Backend와 MCP 양쪽
+계약 검증을 통과한 조합으로 재기동·왕복 확인하며, 공유 DB의 다른 실행 인스턴스는
+로컬 검증과 구분한다. 기존 파일 안에서 구현하고 합성 장애·정상 왕복과 회귀로 확인한다.
+
+후속 실제 게임 검증은 사용자가 명시한 테스트용 팀 DB에서 진행한다. 실제 `.env`의
+로컬 DB URL을 제거하고 `run_openai.sh`의 기본 모드를 `team`으로 변경한다.
+DB 조사·실행·통합 검증의 팀 DB 우선 원칙은 AGENTS.MD를 따른다. 기존 명시적
+`isolated` 선택 기능은 유지하되 자동으로 로컬 DB를 생성하거나 선택하지 않는다.
+이번 실게임은 기존 OpenAI 설정으로 생성하고 첫날 발언·PASS·오류와 이후 phase 진행을
+기록한다. 공유 DB의 다른 worker가 확정한 결과는 이 PC의 실행 로그와 구분한다.
+
+### WU-M6 공통 성향 변환 제거와 후속 계획 (2026-09-08)
+
+이번 사용자 요청의 구현 범위는 기존 `api/prompts/instructions.py`에서 8개 성향의
+3단계 문구 선택과 deception 2배 보정을 제거하고 관련 기존 테스트·정본·README를
+맞추는 것까지다. 이 절이 앞선 수치 변환·증폭 설명보다 우선한다. DB에 배정된
+`speech_style`, `backstory`, `parameters`를 따르라는 공통 안내와 정보 권한 경계,
+첫날 발언 우선 지침은 유지한다. MCP는 DB를 직접 읽지 않고 기존 Backend 응답의
+persona 원문을 그대로 전달한다. 운영 DB·배정 로직·API schema·파일 구조는 바꾸지 않는다.
+
+team DB 읽기 확인: 활성 6개 중 새 게임 버전 `agent-config-v1`에 맞는 것은 분석가·
+토론가·기록자·반응가·조정자 5개다. `BALANCED_OBSERVER`는 `mystery-v1`이므로 새 게임
+후보에서 제외된다. 현재 `.env`의 저장소 선택은 team이다. team의 수치는 5.3절에
+기록한 로컬 보강값과 다르며, 예를 들어 분석가의 주장/기억은 0.35/0.85,
+토론가의 주장/기억은 0.85/0.55다. seed 파일 수정만으로 team DB 값이 바뀌지는 않는다.
+
+후속 작업은 아래 순서로 각각 별도 WU에서 구체화하며 이번에는 계획만 기록한다.
+
+1. **WU-B6 페르소나 콘텐츠 정비:** 5개 preset의 기존 `speech_style`·`backstory`에
+   첫 질문, 답변, 반론 방식의 차이를 명시하고 team 수치와 로컬 보강값 중 목표값을
+   결정한다. DB의 정확한 수치와 문장을 기준으로 하며 공통 코드에 유형별 문구표를
+   다시 만들지 않는다. 기존 필드 길이는 유지하며 추론 수치는 아래 승인된 변경을 따른다.
+2. **WU-B6 배정·버전 정비:** 현재 AI 5명은 5종을 하나씩 받지만 AI 6~8명은 modulo로
+   재사용한다. 전원 다른 성격이 목표라면 활성 preset을 최소 8종으로 늘리고 새 게임의
+   무중복 배정을 검증한다. 기존 게임은 배정 ID로 매번 활성 preset을 다시 읽으므로
+   행의 version·active를 덮어쓰면 저장 게임도 영향을 받는다. `id` 단독 PK를 고려해
+   신규 ID·새 config version으로 이전 preset과 공존하는 방식을 우선 설계한다.
+3. **WU-M1B 데이터 반영:** Backend가 정한 persona 변경분만 적용하는 migration·
+   content_hash·검증·복구 절차를 준비한다. 시나리오도 덮어쓰는 기존 004 seed 전체를
+   team DB에 그대로 재실행하지 않는다. Backend는 데이터 변경을, MCP/Data는 실행과
+   health 확인을 담당하며 기존 게임 재개와 새 게임 후보를 각각 확인한다.
+4. **WU-M6 전달·품질 비교:** 같은 공개 상황에서 성격·역할별 원문 전달과 단계 구분을
+   합성 테스트로 확인한다. 이후 실제 모델 비교가 필요하면 첫날 자발적 PASS율,
+   반복 질문, 성격 구별 정도, 근거 날조를 함께 측정한다. 오류 fallback PASS는 별도
+   집계하고 단순 PASS율 감소를 대화 품질 개선으로 단정하지 않는다.
+
+### WU-B6 페르소나 추론 수치 조정 (2026-09-08)
+
+사용자의 0.6~0.8 요청에 따라 team DB의 등록 6개 preset을 아래 값으로 갱신한다.
+이 절은 앞선 전원 0.5·동일 추론 성향 제약보다 우선한다. Backend projection은 다른
+성향과 같은 유한 0~1 검증을 적용해 기존 0.5와 새 값을 모두 허용하고, 원문 전달·
+권한 경계·모델 effort는 유지한다. 기존 004 seed는 수정하지 않고 새
+`backend/migrations/009_update_persona_reasoning_skill.sql`로 해당 ID·version의
+`parameters.reasoning_skill`과 `content_hash`만 갱신한다. 다른 수치·말투·활성 상태·
+버전·게임 배정은 보존한다. 같은 ID를 쓰는 기존 게임도 다음 persona 조회에 새 값을 받는다.
+Backend 검증 배포를 먼저 확인한 뒤 team에 DML만 적용한다. 관련 거부·허용 경로,
+격리 QA의 migration 재실행·원문 보존 및 전체 Backend·MCP 회귀를 검증한다.
+
+| preset | version | reasoning_skill |
+|---|---|---:|
+| CAUTIOUS_ANALYST | agent-config-v1 | 0.80 |
+| OBSERVANT_NOTEKEEPER | agent-config-v1 | 0.80 |
+| ACTIVE_DEBATER | agent-config-v1 | 0.75 |
+| COOPERATIVE_MEDIATOR | agent-config-v1 | 0.70 |
+| BALANCED_OBSERVER | mystery-v1 | 0.70 |
+| EMOTIONAL_REACTOR | agent-config-v1 | 0.60 |
 
 ## 2026-09-07 자유 토론 변경 (사용자 승인 WU-B4)
 
@@ -1039,7 +1143,8 @@ READY 저장과 실제 모델 smoke를 확인했다. 인용 위치 보완 후 Ba
 후속 원격 이전 요청에서는 M9가 `TEAM_DATABASE_URL`의 `4team_db`에 006을 적용하고
 권한·원장 보존을 확인한다. B14는 기존 실행 스크립트에 명시적
 `AI_MAFIA_STORAGE_MODE=team` 선택을 추가해 Backend의 DB·Redis 실행 연결을
-팀 설정으로 전환한다. 기본 `isolated` 모드의 공유 DB 중복 사용 방지 검사는 유지한다.
+팀 설정으로 전환한다. 이후 팀 DB 우선 요청으로 기본값을 `team`으로 변경했으며,
+명시적 `isolated` 선택의 공유 DB 중복 사용 방지 검사는 유지한다.
 로컬 게임 원장과 분석 행을 원격으로 복제하는 작업은 포함하지 않는다.
 
 원격 적용 결과: 006 적용 전후 기존 23개 테이블의 데이터·ACL·owner를 보존했다.

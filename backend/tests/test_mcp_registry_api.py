@@ -378,7 +378,10 @@ def test_public_context_strips_unapproved_event_payload_and_reveals_only_execute
 
 @pytest.mark.parametrize("change", [
     {"parameters": {**PARAMETERS, "hidden": 0.5}},
-    {"parameters": {**PARAMETERS, "reasoning_skill": 0.9}},
+    {"parameters": {**PARAMETERS, "reasoning_skill": 1.1}},
+    {"parameters": {**PARAMETERS, "reasoning_skill": -0.1}},
+    {"parameters": {**PARAMETERS, "reasoning_skill": float("inf")}},
+    {"parameters": {**PARAMETERS, "reasoning_skill": True}},
     {"parameters": {**PARAMETERS, "suspicion": float("nan")}},
     {"parameters": {**PARAMETERS, "verbosity": True}},
     {"speech_style": ""},
@@ -387,6 +390,22 @@ def test_persona_rejects_unapproved_parameters_and_missing_content(change):
     reader = _reader()
     reader.personas[0].update(change)
     assert _context(reader, "persona").status_code == 403
+
+
+@pytest.mark.parametrize("reasoning_skill", [0.5, 0.6, 0.7, 0.75, 0.8])
+def test_persona_preserves_legacy_and_distinct_reasoning_values(reasoning_skill):
+    """기존 게임의 0.5와 새 성향을 허용하되 타인의 배정값과 원문을 바꾸지 않는다."""
+
+    reader = _reader()
+    reader.personas[0]["parameters"] = {**PARAMETERS, "reasoning_skill": reasoning_skill}
+    original = deepcopy(reader.personas)
+
+    response = _context(reader, "persona")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["parameters"] == {**PARAMETERS, "reasoning_skill": reasoning_skill}
+    assert _context(reader, "persona", OTHER_ID).json()["data"]["parameters"] == PARAMETERS
+    assert reader.personas == original
 
 
 @pytest.mark.parametrize("phase,kind,action", [

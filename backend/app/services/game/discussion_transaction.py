@@ -14,6 +14,7 @@ from psycopg.rows import dict_row
 from backend.app.core.errors import ApiError
 from backend.app.game_engine.engine import GameEngine
 from backend.app.game_engine.errors import RuleViolation
+from backend.app.game_engine.rules.discussion_rules import is_first_day_discussion
 from backend.app.infrastructure.transaction import lock_idempotency
 from backend.app.models.enums import GamePhase
 from backend.app.repositories.action_repository import ActionSubmissionInsert
@@ -58,6 +59,11 @@ def submit_discussion_transaction(service: Any, owner_user_id: UUID, game_id: UU
                 window = service._actions.current_window(cursor, game_id=game_id)
                 validate_discussion_actor(state=state, window=window, actor=current_actor, window_id=payload.window_id)
                 service.hydrate_discussion_state(cursor, state=state, window=window)
+                # 자유 토론은 순수 엔진의 차례 순환을 우회하므로 저장 전에 같은 금지를
+                # 적용한다. 이전 receipt 재응답은 위에서 끝나며 새 거부는 원장을 쓰지 않는다.
+                if payload.type == "PASS" and is_first_day_discussion(state.phase, state.day_number):
+                    raise ApiError(status_code=409, code="ACTION_NOT_ALLOWED",
+                                   message="첫날에는 발언을 PASS할 수 없습니다.")
                 accepted_version = state.state_version
                 discussion_phase = state.phase
                 timed = window.get("deadline_at") is not None

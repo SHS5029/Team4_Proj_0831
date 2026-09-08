@@ -328,14 +328,17 @@ def _render_discussion(*, game_id: str, snapshot: dict[str, Any]) -> None:
             st.session_state["game.command_pending"] = {
                 **pending, "speech_draft": {**draft, "restore": False},
             }
-        st.button(
-            "PASS",
-            key="action.PASS",
-            disabled=locked or "PASS" not in legal or speech_queue_busy(game_id),
-            use_container_width=True,
-            on_click=_capture_discussion_command,
-            kwargs={**callback_args, "command_type": "PASS"},
-        )
+        if snapshot.get("game", {}).get("day_number") == 1 and snapshot["game"].get("phase") == "DAY_DISCUSSION":
+            st.caption("첫날에는 PASS할 수 없습니다. 짧게라도 의견이나 질문을 남겨 주세요.")
+        else:
+            st.button(
+                "PASS",
+                key="action.PASS",
+                disabled=locked or "PASS" not in legal or speech_queue_busy(game_id),
+                use_container_width=True,
+                on_click=_capture_discussion_command,
+                kwargs={**callback_args, "command_type": "PASS"},
+            )
         st.caption("Enter로 발언 예약 · Shift+Enter로 줄바꿈 · 예약한 순서대로 전송합니다.")
 
 

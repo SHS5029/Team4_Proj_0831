@@ -148,8 +148,10 @@ seed loader와 테스트에서 검증한다.
 | `content_hash` | `char(64)` | NOT NULL |
 | `created_at` | `timestamptz` | NOT NULL |
 
-수치 field는 모두 0.0~1.0이며 `reasoning_skill`은 `mystery-v1` preset 전체에서 같은
-값이어야 한다. seed loader와 테스트가 key 누락·추가 및 범위를 검증한다.
+수치 field는 모두 0.0~1.0이며 key 누락·추가와 유한 수치 범위를 검증한다.
+`reasoning_skill`의 전원 동일 값 제약은 해제한다. 현재 등록 목표는 마스터플랜의
+WU-B6 추론 수치 표에 따른 0.60~0.80이다. 기존 004 seed의 0.5는 009 migration에서
+갱신하며, 다른 parameters는 보존하고 바뀐 내용에 맞춰 content_hash를 다시 계산한다.
 
 ### 4.5 `games`
 
@@ -475,8 +477,10 @@ normalized table과 event로 재구성하고 새 snapshot을 쓴다. 공개 API�
   때만 AI player proposal을 submission으로, GM narration을 `PUBLIC` event로 반영한다.
   GM 결과는 action submission이나 MCP Tool proposal로 저장하지 않는다. 검증에
   실패하거나 fencing 조건이 바뀌었으면 `STALE` 또는 정의된 fallback으로 끝낸다.
-- lease는 reservation 시각부터 15초 또는 action window deadline 중 이른 시각까지다.
+- lease는 reservation 시각부터 40초 또는 action window deadline 중 이른 시각까지다.
   이 값은 코드의 고정 안전 상수이며 환경 변수나 관리자 설정이 아니다.
+  Agent는 완료 저장·행동 제출에 3초를 남기고 MCP·모델·교정 호출에 남은 시간을
+  공유한다. 이는 schema 변경 없이 Backend 실행 상수와 호출 예산으로 적용한다.
 - scheduler는 만료된 lease 하나를 조건부 UPDATE로 인수해 fallback을 확정한다. 늦게
   돌아온 이전 worker는 fencing token이 달라 결과를 반영할 수 없다. lease는 고정된
   장애 복구 장치이며 환경에서 조정하는 LLM timeout이나 측정 KPI가 아니다.

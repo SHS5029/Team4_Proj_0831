@@ -690,7 +690,10 @@ Front는 `sync_url` 또는 game GET으로 현재 상태를 확인한다.
 }
 ```
 
-현재 인간 발언 차례에만 허용한다.
+첫날 낮(`DAY_DISCUSSION`, `day_number=1`)에는 인간·AI 모두 금지하며 새 요청은
+`409 ACTION_NOT_ALLOWED`로 거부한다. 이후 토론에는 기존 발언 권한을 적용한다.
+첫날 snapshot의 `legal_actions`에는 `PASS`를 넣지 않는다. 이미 확정된 receipt의
+멱등 재응답은 보존하며 거부된 새 요청은 상태·발언 원장·이벤트를 변경하지 않는다.
 
 #### `SUBMIT_NIGHT_ACTION`
 
@@ -1430,14 +1433,16 @@ target에만 자기 자신을 허용한다.
 
 | `window_kind` | `allowed_tools` | `valid_targets` |
 |---|---|---|
-| `SPEECH` | `propose_speech`, `propose_pass` | 빈 배열 |
+| `SPEECH` | 첫날 낮은 `propose_speech`만, 이후 토론은 `propose_speech`, `propose_pass` | 빈 배열 |
 | `NIGHT` | `propose_night_action` | Backend가 role·생존 상태로 확정한 대상 |
 | `VOTE`, `REVOTE`, `FINAL_VOTE` | `propose_vote` | Backend가 해당 투표에 확정한 후보 |
 
 `phase`와 `window_kind` 조합은 각각 `DAY_DISCUSSION|FINAL_DISCUSSION`→`SPEECH`,
 `NIGHT_ACTION`→`NIGHT`, `DAY_VOTE`→`VOTE`, `REVOTE`→`REVOTE`,
 `FINAL_ACCUSATION`→`FINAL_VOTE`만 허용한다. `allowed_tools`는 표의 순서로 중복 없이
-직렬화한다. `SPEECH`의 `valid_targets`는 비어 있고 나머지 window는 1~8개다.
+직렬화한다. 첫날 판정은 Backend의 `DAY_DISCUSSION`, `day_number=1`을 사용한다.
+MCP는 `SPEECH`의 두 허용 배열을 검증하며 최종 PASS 거부는 Backend가 담당한다.
+`SPEECH`의 `valid_targets`는 비어 있고 나머지 window는 1~8개다.
 `opened_state_version`은 envelope `state_version` 이하이고 timed window의
 `deadline_at`은 성공 응답의 `server_time`보다 뒤여야 한다.
 
@@ -1461,8 +1466,9 @@ MCP는 이 값을 근거로 게임 규칙을 다시 계산하지 않는다. capa
 `parameters`는 `sociability`, `assertiveness`, `suspicion`, `deception`,
 `risk_tolerance`, `memory_recall`, `reasoning_skill`, `emotionality`,
 `cooperativeness`, `verbosity`를 정확히 한 번씩 포함한다. 모든 값은 0.0~1.0의
-유한 number이고, `reasoning_skill`은 `mystery-v1`의 모든 preset에서 같은 승인 값이다.
-persona는 말투와 표현 성향만 바꾸며 규칙·정보 권한·추론 능력을 바꾸지 않는다.
+유한 number이다. `reasoning_skill`도 같은 범위를 허용하며 preset 간 동일 값 제약은 없다.
+현재 등록 목표는 0.60~0.80이고 기존 0.5도 호환을 위해 유효하다. persona는 말투·표현·
+추론 성향 데이터이며 규칙·정보 권한이나 Provider의 모델·추론 effort를 바꾸지 않는다.
 
 #### 8.2.5 `scope=gm-guide` data
 
@@ -1814,10 +1820,12 @@ LLM adapter가 AI player의 구조화 결과를 Agent Manager에 반환하는 �
 - schema 오류에는 교정을 한 번만 요청하고 이후 fallback한다.
 - 모델·추론·출력 계약은 Backend 배포 설정, 역할 전략·말투 지침은 MCP 코드에서 관리하며 사용자·관리자 API로 변경하지 않는다.
 - timeout, token 상한, token·비용 반환 field와 관련 endpoint는 MVP에 없다.
-- Agent Manager는 외부 호출과 별도로 reservation부터 최대 15초인 고정 worker
+- Agent Manager는 외부 호출과 별도로 reservation부터 최대 40초인 고정 worker
   lease와 fencing token을 사용한다. timed window의 남은 시간이 더 짧으면 그 시각을
   쓴다. lease 만료 뒤 결과는 버리고 scheduler가 `PASS`, 자동 선택 또는 고정 GM
   문구를 확정한다. 이 lease는 조정 가능한 LLM timeout API나 metric이 아니다.
+  Backend 배포의 `LLM_TIMEOUT_SECONDS`는 기본 30초이며, MCP·모델 최초/교정 호출은
+  lease와 window 마감에서 완료·제출 여유 3초를 뺀 예산 안에서만 진행한다.
 
 ### 10.2 AI GM 직접 반환 결과
 
@@ -1939,8 +1947,9 @@ round 0의 GAME_BEGAN 또는 현재 round와 일치하는 NIGHT_RESOLVED를 토�
 `agent_instruction` 문자열을 추가한다. me는 본인 역할·phase에 맞는 승리/행동 지침,
 persona는 토론 단계의 고정 말투 지침만 전달하며 토론 외에는 빈 문자열이다. 역할은
 `MAFIA|DETECTIVE|DOCTOR|CITIZEN` 중 하나여야 한다. 사용자 발언·이름·backstory를 지침에
-삽입하지 않는다. 성향은 유한한 0~1 수치만 고정 표현으로 변환하며 deception 증폭은
-마피아 전용 조건문으로 전달한다. 기존 public.data.rules의 게임 규칙과 공개 이력은 보존한다.
+삽입하지 않는다. persona 지침은 배정된 원문·수치를 따르라는 공통 안내만 담는다.
+성향의 구간별 정형 문구 변환과 deception 증폭은 하지 않으며, 검증된 0~1 수치는
+기존 persona.data.parameters로 보존한다. 기존 public.data.rules의 게임 규칙과 공개 이력은 보존한다.
 인증 Resource와 Backend 내부 API의 8.2 data schema는 변경하지 않는다.
 
 Backend 운영 MCP client는 me 지침의 비어 있지 않음과 두 지침의 최대 2400자·문자열

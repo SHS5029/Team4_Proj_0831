@@ -631,7 +631,8 @@ def legal_actions(record: CanonicalGameRecord) -> list[str]:
                     for event in record.public_events)
         return ["SPEAK", "SAVE_AND_EXIT"] if count < 7 else ["SAVE_AND_EXIT"]
     if state.phase in {GamePhase.DAY_DISCUSSION, GamePhase.FINAL_DISCUSSION} and (record.action_window and record.action_window.get("deadline_at") is not None or record.human_player_id not in state.speech_actors):
-        return ["SPEAK", "PASS", "SAVE_AND_EXIT"]
+        return (["SPEAK", "SAVE_AND_EXIT"] if state.phase is GamePhase.DAY_DISCUSSION
+                and state.day_number == 1 else ["SPEAK", "PASS", "SAVE_AND_EXIT"])
     if state.phase is GamePhase.NIGHT_ACTION and human.role is not PlayerRole.CITIZEN and record.human_player_id not in state.night_actions:
         return ["SUBMIT_NIGHT_ACTION", "SAVE_AND_EXIT"]
     if state.phase in {GamePhase.DAY_VOTE, GamePhase.REVOTE, GamePhase.FINAL_ACCUSATION} and record.human_player_id not in state.votes:
