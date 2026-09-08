@@ -17,17 +17,17 @@ from frontend_user.app_pages.creation_complete_page import (  # noqa: E402
 from frontend_user.app_pages.feedback_page import render as render_feedback  # noqa: E402
 from frontend_user.app_pages.game_create_page import render as render_create  # noqa: E402
 from frontend_user.app_pages.game_page import render as render_game  # noqa: E402
+from frontend_user.app_pages.game_page import finish_deleted_game  # noqa: E402
 from frontend_user.app_pages.home_page import load_games, should_load_games  # noqa: E402
 from frontend_user.app_pages.home_page import render as render_home  # noqa: E402
 from frontend_user.app_pages.result_page import render as render_result  # noqa: E402
 from frontend_user.app_pages.role_reveal_page import render as render_role_reveal  # noqa: E402
-from frontend_user.app_pages.settings_page import render as render_settings  # noqa: E402
 from frontend_user.components.identity_bridge import (  # noqa: E402
     IDENTITY_COMPONENT_CHANGED_SESSION_KEY,
     load_identity,
 )
 from frontend_user.components.theme import render_app_theme, sync_page_navigation  # noqa: E402
-from frontend_user.core.api_client import ApiClient  # noqa: E402
+from frontend_user.core.api_client import ApiClient, ApiResponseError  # noqa: E402
 from frontend_user.core.identity import parse_uuid_v4  # noqa: E402
 from frontend_user.core.session import (  # noqa: E402
     IDENTITY_PERSISTENCE_SESSION_KEY,
@@ -109,7 +109,14 @@ def main() -> None:
             if not isinstance(snapshot, dict) or not isinstance(snapshot.get("game"), dict):
                 raise ValueError("INVALID_RESPONSE")
             st.session_state["game.latest_snapshot"] = snapshot
-        except Exception:
+        except Exception as error:
+            # DELETE 응답 유실 뒤 첫 재조회가 404라면 팝업을 다시 그릴 snapshot이 없다.
+            # 이 게임에 사용자가 제출한 삭제 요청이 있을 때만 이탈 완료로 처리한다.
+            pending_delete = st.session_state.get("game.delete_pending")
+            if (isinstance(error, ApiResponseError) and error.status_code == 404
+                    and error.code == "GAME_NOT_FOUND" and isinstance(pending_delete, dict)
+                    and pending_delete.get("game_id") == game_id):
+                finish_deleted_game()
             st.error("게임 상태를 불러오지 못했어요.")
             if st.button("홈으로 이동", key="game.load_home"):
                 st.session_state["navigation.page"] = "home"
@@ -131,7 +138,6 @@ def main() -> None:
         if load_home_games and "home.games" not in st.session_state:
             st.session_state["home.games_loading"] = True
         render_home(client)
-    render_settings()
     # TTL 만료 때 먼저 rerun하면 이번 요청의 버튼 trigger가 초기화된다.
     # 카드·홈 이동·UUID 최종 확인을 먼저 처리하고, 남아 있는 목록 조회만 수행한다.
     if load_home_games:

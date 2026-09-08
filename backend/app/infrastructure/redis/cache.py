@@ -103,6 +103,14 @@ class RedisConversationHistory:
         except (RedisError, OSError, TypeError, ValueError):
             return False
 
+    def delete(self, game_id: str) -> bool:
+        """DB에서 정리된 게임의 공개 대화 cache를 최선형으로 삭제한다."""
+
+        try:
+            return bool(self._client.delete(self.key(game_id)))
+        except (RedisError, OSError, TypeError, ValueError):
+            return False
+
 
 class RedisPublicCache:
     """PostgreSQL에서 다시 만들 수 있는 공개 snapshot만 짧게 캐시한다.

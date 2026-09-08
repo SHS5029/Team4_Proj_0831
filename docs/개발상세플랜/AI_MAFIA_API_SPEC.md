@@ -80,7 +80,7 @@ envelope의 state_version/window_id를 검증하고 각 scope를 따로 조회�
 `http://127.0.0.1:8502`이며 배포 환경에서는 동일한 역할의 명시적 allowlist origin으로
 대체한다. Backend가 cross-origin으로 제공될 때는 다음 정책을 적용한다.
 
-- 허용 method: `GET`, `POST`, `OPTIONS`
+- 허용 method: `GET`, `POST`, `DELETE`, `OPTIONS`
 - 허용 request header: `X-User-Id`, `X-Request-Id`, `Idempotency-Key`,
   `Last-Event-ID`, `Content-Type`
 - 허용 credentials: 사용하지 않음
@@ -142,7 +142,7 @@ Backend까지 전달하고, Front에는 proxy origin만 Backend URL로 제공한
 | 403 | `ADMIN_ACCESS_DENIED` | 관리자 allowlist 불일치 |
 | 403 | `PLAYER_DEAD` | 사망한 인간의 발언·투표·밤 행동 command |
 | 403 | `ACTION_NOT_ALLOWED` | 현재 actor·role에 허용되지 않은 행동 |
-| 404 | `GAME_NOT_FOUND` | game 없음 또는 다른 UUID 소유, 구분하지 않음 |
+| 404 | `GAME_NOT_FOUND` | game 없음, 다른 UUID 소유 또는 15분 사용자 무동작으로 삭제됨, 구분하지 않음 |
 | 404 | `RESOURCE_NOT_FOUND` | 기타 리소스 없음 |
 | 409 | `STALE_STATE_VERSION` | expected version 불일치 |
 | 409 | `IDEMPOTENCY_KEY_REUSED` | 같은 key를 다른 요청에 사용 |
@@ -557,6 +557,12 @@ Response `201`:
 화면을 그리고 별도 `BEGIN_GAME`을 제출한다. create replay가 과거 snapshot을 반환하지
 않으므로 이미 진행된 game도 현재 상태로 열린다.
 
+생성은 첫 사용자 동작이다. 이후 성공한 공개 사용자 command가 없고 15분이 지나면
+`IN_PROGRESS` 게임과 종속 원장을 자동 삭제한다. GET·sync·SSE polling과 AI·자동 진행은
+사용자 동작 시간을 연장하지 않는다. `SAVE_AND_EXIT`가 성공한 `SAVED` 게임과 종료 상태는
+이 정책의 삭제 대상이 아니다. 삭제 시 생성 receipt도 함께 정리되므로 같은 생성
+`Idempotency-Key`를 15분 보존 경계 뒤 다시 제출하면 새 게임 생성 요청으로 처리한다.
+
 ### 4.2 `GET /api/v1/games`
 
 현재 UUID가 소유한 게임을 최신 갱신 순으로 반환한다.
@@ -588,14 +594,29 @@ Response `200` item:
 }
 ```
 
-알 수 없는 UUID는 `200` 빈 목록을 받는다.
+알 수 없는 UUID는 `200` 빈 목록을 받는다. 정리된 게임은 목록에 포함하지 않는다.
 
 ### 4.3 `GET /api/v1/games/{game_id}`
 
 현재 authoritative snapshot을 반환한다. 다른 UUID 소유 게임은 존재 여부를 숨기기
-위해 `404 GAME_NOT_FOUND`다.
+위해 `404 GAME_NOT_FOUND`다. 15분 사용자 무동작으로 정리된 진행 게임도 같은 응답을
+사용해 삭제 여부와 과거 존재를 별도로 공개하지 않는다. 삭제 전에 시작한 command의
+재전송도 receipt가 함께 정리된 뒤에는 replay하지 않고 같은 `404`를 반환한다.
 
 Response `200`: `data`는 2.4절 snapshot이다.
+
+### 4.3.1 `DELETE /api/v1/games/{game_id}`
+
+게임 이탈 팝업에서 사용자가 `게임 삭제`를 선택하면 호출한다. `X-User-Id`와
+양의 정수 query `expected_state_version`이 필수이며 body는 없다. 게임 행을
+잠근 뒤 소유권·버전을 확인하고 `IN_PROGRESS` 또는 `SAVED` 게임만 삭제한다.
+성공은 HTTP 200, 공통 envelope의 `data={"game_id":"<uuid>","deleted":true}`다.
+없는 게임·타인 소유는 동일한 404 `GAME_NOT_FOUND`, 버전 불일치는 409
+`STALE_STATE_VERSION`, 완료·실패 상태는 409 `INVALID_GAME_STATUS`다.
+DELETE는 별도 Idempotency-Key나 receipt를 생성하지 않는다. 응답 유실 시 동일
+game ID·버전으로 재시도하며, 이미 삭제됐다면 404를 반환한다. Front는 해당 삭제
+요청의 404도 더 이상 접근 가능한 게임이 없는 상태로 처리하고 홈으로 이동한다.
+DB commit 뒤 Redis 공개 이력을 정리하며, Redis 실패는 삭제 성공을 취소하지 않는다.
 
 ### 4.4 `POST /api/v1/games/{game_id}/commands`
 
@@ -1777,7 +1798,7 @@ LLM adapter가 AI player의 구조화 결과를 Agent Manager에 반환하는 �
 - 추가 field와 자연어 wrapper를 허용하지 않는다.
 - 내부 추론 전문을 요청하거나 field로 받지 않는다.
 - schema 오류에는 교정을 한 번만 요청하고 이후 fallback한다.
-- 모델·prompt 설정은 Backend 배포 설정이며 사용자·관리자 API로 변경하지 않는다.
+- 모델·추론·출력 계약은 Backend 배포 설정, 역할 전략·말투 지침은 MCP 코드에서 관리하며 사용자·관리자 API로 변경하지 않는다.
 - timeout, token 상한, token·비용 반환 field와 관련 endpoint는 MVP에 없다.
 - Agent Manager는 외부 호출과 별도로 reservation부터 최대 15초인 고정 worker
   lease와 fencing token을 사용한다. timed window의 남은 시간이 더 짧으면 그 시각을
@@ -1881,6 +1902,108 @@ window와 `state_version`을 다시 확인한 뒤에만 `PUBLIC` event로 저장
 
 현재 운영 `mafia://context/current/...`, `mafia://context/scoped/...` 등록부는 Backend 응답 후 모델 입력을 축약한다. Backend 내부 API와 인증 Resource의 8.2 schema는 그대로 유지한다. 운영 FastMCP 응답의 public.data.scenario는 scenario_id·title만 보존하고 public.data.rules는 고정 한국어 규칙 문자열 배열을 추가한다. me.data는 alibi·observation을 제외하며 그 밖의 필드는 보존한다. 공개 사건·발언·본인 private_events·turn·persona·gm-guide는 보존한다. rules는 마스터플랜 3절 규칙 설명이며 상태 판정이나 추가 비공개 정보가 아니다.
 
+## 2026-09-08 운영 MCP 역할별 프롬프트 계약 (WU-M6)
+
+기존 운영 `mafia://context/scoped/...`의 `me.data`와 `persona.data`에 MCP가 생성한
+`agent_instruction` 문자열을 추가한다. me는 본인 역할·phase에 맞는 승리/행동 지침,
+persona는 토론 단계의 고정 말투 지침만 전달하며 토론 외에는 빈 문자열이다. 역할은
+`MAFIA|DETECTIVE|DOCTOR|CITIZEN` 중 하나여야 한다. 사용자 발언·이름·backstory를 지침에
+삽입하지 않는다. 성향은 유한한 0~1 수치만 고정 표현으로 변환하며 deception 증폭은
+마피아 전용 조건문으로 전달한다. 기존 public.data.rules의 게임 규칙과 공개 이력은 보존한다.
+인증 Resource와 Backend 내부 API의 8.2 data schema는 변경하지 않는다.
+
+Backend 운영 MCP client는 me 지침의 비어 있지 않음과 두 지침의 최대 2400자·문자열
+형식을 검증한다. 지침이 없는 이전 MCP 응답은 추측한 역할 전략으로 대체하지 않고 기존
+MCP 실패 fallback으로 처리한다. MCP를 먼저 재시작한 뒤 Backend를 갱신해야 한다.
+검증한 지침은 developer 메시지에 한 번만 넣고 원본 user context에서는 해당 필드만
+제외한다. system은 공통 규칙, 출력 schema·한 번 교정 지시는 Backend 소유다.
+Local/Gemini는 developer 지침을 각 Provider의 system 입력에 합쳐 의미를 보존한다.
+
+MCP `agent_instruction` Prompt는 Backend prompt endpoint를 호출하지 않는다. 선택 인자
+`role`(기본 CITIZEN), `phase`(기본 DAY_DISCUSSION)로 같은 MCP 고정 템플릿을 조합한다.
+기존 game_id/user_id 인자는 호환을 위해 받지만 게임 정보를 조회하지 않는다. 임의 역할을
+선택해도 실제 플레이어의 비공개 정보는 반환되지 않는다. 실제 Agent 경로의 역할은 항상
+Backend가 검증한 me Resource에서 선택한다. Backend의 기존 고정 prompt endpoint는
+구형 클라이언트 호환용으로 남으며 역할별 전략을 소유하지 않는다.
+
 ## 2026-09-07 자유 토론 변경 (사용자 승인 WU-B4)
 
 이번 단일 WU-B4는 1분 45초 자유 토론과 연결되는 Front·MCP 표현의 변경이다. 이 절이 기존 좌석당 한 번 발언·전원 PASS 추가 순환 규칙보다 우선한다. 새 일반·최종 토론은 Backend deadline 105초까지 열리며 인간은 AI 처리 순서와 무관하게 발언한다. 플레이어별 최근 60초 SPEAK는 최대 7회이며 서버 게임 행 잠금 안에서 원장으로 검증한다. PASS는 조기 마감하지 않는다. AI 작업은 기존 단일 예약 창을 재사용해 공정하게 배분하고, 발언마다 새 window를 열되 토론 deadline은 보존한다. turn_player_id는 AI 스케줄링 힌트이며 인간의 발언 권한 제한이 아니다. SPEECH에도 deadline·remaining_ms가 제공된다. 저장 시 잔여 시간을 보존한다. 마감 뒤 첫날은 밤, 이후 낮은 투표, 최종 토론은 최종 지목으로 진행한다. 과거 deadline 없는 발언 창은 기존 방식으로 처리한다. DB 구조와 idempotency·게임 상태 버전 검증은 보존한다.
+
+## 2026-09-07 WU-B13 투표 보조 조회 계약
+
+후속 사용자 요청에 따라 발언 분석은 투표 직전 토론 마감 경계에서 실행한다. 분석이
+처리 중이면 기존 토론 phase와 마감된 SPEECH 창을 유지하며 새 발언·투표는 받지 않는다.
+양 분석 단계가 완료되거나 재시도 상한이 소진되면 투표 창을 열고 그때부터 기존 투표
+제한 시간을 계산한다. 준비 중 투표 보조 조회는 비투표 상태로 409이며 공개 응답 schema는
+바꾸지 않는다. 분석 비활성·초기화/저장소 장애 시 기존 게임 진행을 유지한다.
+
+`GET /api/v1/games/{game_id}/vote-insights?window_id=UUID&scope=current_discussion|game`
+는 기존 `X-User-Id`·성공/오류 envelope를 사용한다. scope 기본값은
+`current_discussion`이다. data는 다음 필드만 포함한다.
+
+- `game_id`, `window_id`, `scope`, `cutoff_sequence`(원장 sequence 정수),
+  `analysis_version`, `revision`(공개 결과 SHA-256), `generated_at`(UTC),
+  `status`(`PENDING|PARTIAL|READY|UNAVAILABLE`)
+- `coverage`: `total`, `embedding_ready`, `claims_ready`, `failed` 정수
+- `similar_claims`: `{player_ids,target_player_id,claim,evidence:[Evidence]}` 배열
+- `suspicion_ranking`: `{target_player_id,rank,accuser_count,speech_count,evidence:[Evidence]}` 배열
+- `candidate_evidence`: `{target_player_id,suspicion:[Evidence],defense:[Evidence],questions:[Evidence]}` 배열
+- `Evidence`: `{event_id,player_id,message,created_at,sequence}`. message는 공개 원문
+  전문이며 모델의 proposition·quote·벡터·유사도·역할·내부 추론은 반환하지 않는다.
+
+분석 입력의 B12 Provider 응답 수신부는 정수 offset이 정확한 quote와 불일치할 때만
+원문 내 유일한 정확 인용의 Python 문자 반개구간으로 위치를 복구한다. 기존 span이
+정확하면 반복 인용도 허용하지만, 복구 대상 인용의 반복·겹침 출현, 허구·비문자열·빈
+quote, boolean 등 비정수 offset은 거부한다. 정규화 후 기존 `validate_claims`의
+폐쇄형 schema·같은 게임 대상·입장·근거 검증을 그대로 적용하며 저장/공개 계약은
+완화하지 않는다. 분석 버전은 파서 revision을 포함한 `claims-ko-v2`로 구분한다.
+
+읽기 전용 REPEATABLE READ transaction 안에서 소유권, IN_PROGRESS, 생존 인간,
+현재 OPEN 투표 phase/window, 서버 deadline을 검증한다. 타 소유/없는 게임은
+`404 GAME_NOT_FOUND`, 비투표·저장·사망 인간·지난 window·마감은
+`409 VOTE_INSIGHTS_STALE_WINDOW`, 저장소/잘못된 원장은
+`503 VOTE_INSIGHTS_UNAVAILABLE` 고정 문구만 반환한다. disabled도 같은 검증 후
+`UNAVAILABLE`과 빈 카드/0 coverage를 반환하며 분석 테이블은 읽지 않는다. 앱의 `speech_analysis_start_failed`도 요청별 disabled
+설정으로 동일하게 처리하고 공유 설정은 바꾸지 않는다.
+서버의 생존·자기 제외·확정 동률 재투표 후보 규칙과 동일한 현재 후보만 표시한다.
+
+cutoff는 같은 window의 PUBLIC SET_ACTION_WINDOW **최초** 개설 sequence다.
+저장/재개가 같은 window를 다시 게시해도 확대하지 않는다. current_discussion은
+cutoff 직전 마지막 DAY_DISCUSSION/FINAL_DISCUSSION SPEECH window의 phase:round이며
+현재 투표 round를 과거 발언 round에 덮어쓰지 않는다. game은 cutoff 이전 두 토론
+phase의 공개 AI 발언 전체다. 사망 AI의 기간 내 과거 근거도 보존한다.
+원본 PUBLIC PLAYER_SPOKE를 기준으로 분석을 LEFT JOIN하여 미발견 발언도 total에
+포함한다. 게임·발언·발화자·sequence·segment·hash·모델·버전·차원이 불일치하면
+미처리로 취급한다. max sequence로 완전성을 추정하지 않는다.
+
+유사 주장 후보 검색은 저장된 전문 임베딩의 정확 cosine 비교를 사용한다. 한 묶음의 모든 쌍이 threshold를 만족하는 complete-link를
+사용하여 중간 발언만 통해 다른 주장이 합쳐지는 것을 방지한다. 초기
+상수 threshold는 0.88이며 실제 한국어 품질은 B14에서 아직 측정되지 않았다.
+같은 대상·입장이고 원문과 proposition에서 모두 확인되는 동일 논점(알리바이,
+역할 주장, 진술 변화)에 한해 표현이 다른 paraphrase도 묶는다. 이름·입장·논점·숫자·역할/시간/장소 표지
+근거가 모호하거나 다중 대상·인용·부정·철회인 문장은 보류한다. 알리바이 설명이
+수상하다는 주장과 앞뒤가 맞지 않는다는 주장은 후보가 될 수 있지만 역할 주장과는
+묶지 않는다. 검색된 유사도는 진실 확률이 아니며 사용자에게 수치를 노출하지 않는다.
+모델 proposition이나 생성 요약을 원문처럼 공개하지 않고 논점별 고정 설명과 실제
+공개 원문 근거를 반환한다. 동일 AI끼리의 쌍은 제외한다. 지원 논점 밖의 발언은
+순위·근거에는 포함될 수 있지만 유사 묶음은 보류한다. 이 명시적 보류는 미검증
+threshold의 품질 보장이 아니며 기능 기본 비활성 상태에서 B14 평가가 필요하다.
+
+대상은 공개 이름 및 `좌석번호번`/`좌석번호번 플레이어`를 UUID로 해소하며
+알 수 없는 좌석·다중 대상은 보류한다. `마피아가 아니야` 같은 명시적 역할 부정은
+DEFENSE 근거로 보존하되 SUSPICION으로 세지 않고 전언·인용은 계속 보류한다.
+지목 순위도 명시적 원문 대상·입장을 검증한 SUSPICION만 집계하며 고유 AI 수가
+기준이다. 동일 event/target은 한 번만 세고 질문·옹호·인용을 제외한다. 동수는 공동
+competition rank(1,1,3), 동수 표시 순서는 좌석순이다. 기간중 지목 이력이며 현재
+투표 의향·마피아 확률이 아니다. 후보 최대 8명, 유사 카드 최대 8개, 각 카드/각
+후보의 입장별 근거 최대 5개를 sequence 오름차순으로 반환한다. 유사 카드 근거는
+화자별 첫 원문을 우선하여 동일 AI의 반복이 다른 화자의 근거를 가리지 않게 한다. 집계 수와 coverage는
+표시 잘림 이전 전체값이다. READY는 모든 발언의 두 분석 단계가 준비되었다는 뜻이며
+품질 인증이나 카드 존재 보장이 아니다. 일부 준비는 PARTIAL, 준비 없음은 PENDING,
+전부 실패면 UNAVAILABLE이다. 빈 기간은 READY와 빈 카드다.
+
+GET은 외부 모델·색인·DB 쓰기·게임 version/event cursor 갱신을 수행하지 않는다.
+revision은 generated_at을 제외한 공개 응답에서 계산하므로 private 변경이나 같은
+결과의 반복 조회로 변하지 않는다. 앱별 `app.state.vote_insight_service`를 주입할 수
+있으며 기본 router는 `app.state.settings`로 service/repository를 지연 생성한다.

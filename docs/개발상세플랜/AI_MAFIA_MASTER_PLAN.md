@@ -547,6 +547,12 @@ Browser
 
 ## 8. 작업 단위
 
+2026-09-08 뒤로가기 저장·삭제 팝업 요청은 단일 WU-B5의 게임 이탈 API와
+Front 연결 보완으로 수행한다. Backend는 소유권·상태 버전을 검증하는 수동 삭제
+API와 기존 transaction·repository를, Front는 역할 공개·진행·관전 화면의
+뒤로가기 확인 팝업과 API client를 변경한다. 기존 파일만 사용하며 DB schema와
+MCP runtime은 변경하지 않는다. 저장·삭제는 팝업에서 사용자가 선택한 뒤에만 실행한다.
+
 `AGENTS.MD`에 따라 coding AI agent 한 세션은 아래 WU 한 개 이하만 수행한다. 한 WU의
 신규 파일이나 책임이 바뀌면 먼저 이 절을 갱신한다.
 
@@ -582,6 +588,7 @@ Browser
 | `WU-B8` | read-only 관리자 API와 audit, 관리자 센터 확장 및 기존 Front API 연결 | allowlist fail-closed, 비공개 응답 redaction, 직업별 AI 집계·피드백/감사 커서 조회·화면 연결 테스트 |
 | `WU-B9` | 시뮬레이션·회귀·운영 보강 | 6~9명 heuristic bot 회귀와 장애 복구 검증 |
 | `WU-B10` | 승인 운영 자료 검색과 근거 중심 관리자 도우미 | pgvector 혼합 검색, 답변·근거·신뢰도 응답, 질문 감사 기록, 자동 변경 차단 |
+| `WU-B15` | 15분 사용자 무동작 진행 게임 정리 | 사용자 command와 정리 경쟁을 직렬화하고 `IN_PROGRESS`만 연쇄 삭제하는 migration·worker 검증 |
 
 ### 8.3 MCP Server·Data Infrastructure
 
@@ -684,8 +691,380 @@ LLM token·비용과 LLM timeout 지표는 MVP 수집 대상이 아니다.
 
 이번 WU-B6 프롬프트 보완은 사용자 요청에 따라 진영 승리 우선·인간/AI 동일 증거 평가와 마피아 deception 성향의 런타임 2배 해석(상한 1.0)을 포함한다. 거짓 역할 주장과 의심·투표 유도 강도에 적용하며 DB seed·실제 역할·공개 사실·승패 규칙은 변경하지 않는다. 실제 발언 발생 비율은 모델 선택에 달려 있다.
 
+## 2026-09-08 진행 게임 무동작 정리 (사용자 승인 WU-B15)
+
+이번 단일 WU-B15는 사용자가 승인한 진행 게임 보존 정책 변경이다. 게임 생성과 성공한
+공개 사용자 command를 사용자 동작으로 보고 `games.last_user_action_at`에 DB transaction
+시각을 저장한다. AI·자동 마감·분석 worker와 읽기 요청은 이 시각을 갱신하지 않는다.
+마지막 사용자 동작 후 15분이 지난 `IN_PROGRESS` 게임은 Backend 중앙 worker가 잠근
+소량의 행부터 삭제하며 모든 종속 게임 원장은 기존 FK로 함께 삭제한다. 사용자 command가
+먼저 행을 잠그면 갱신된 시각을 재확인해 보존하고, 정리가 먼저 확정되면 기존 존재 은닉
+계약에 따라 후속 조회·command는 `404 GAME_NOT_FOUND`를 반환한다. `SAVED`, `COMPLETED`,
+`FAILED`, 사용자와 관리자 감사 기록은 자동 삭제하지 않는다. 기존 게임은 사용자 command
+receipt의 마지막 시각, receipt가 없으면 생성 시각으로 기준을 초기화한다. Front·MCP runtime
+코드는 바꾸지 않으며 MCP·Data 담당자는 Backend 소유 순방향 migration 적용만 담당한다.
+
+## 2026-09-08 역할별 프롬프트 이관 (사용자 승인 WU-M6)
+
+이번 단일 WU-M6는 사용자가 승인한 Backend·MCP 프롬프트 소유권 변경과 소비 연결이다.
+Backend 메인 system에는 짧은 마피아 공통 규칙만 두고, 역할별 승리 전략·현재 단계의
+행동 지침·페르소나 해석은 MCP `api/prompts/instructions.py`에서 관리한다. 기존 운영 Resource
+등록부가 검증된 본인 역할·phase로 해당 지침을 선택하고 성향 수치는 고정 표현으로 바꾼다.
+실제 원문·성향·역할은 Backend가 소유하며 MCP는 DB·Redis·LLM을 직접 호출하지 않는다.
+Backend는 MCP 지침과 출력 계약을 developer 메시지, 게임 원문을 user 메시지로 분리한다.
+상세 wire 계약은 API 명세의 같은 날짜 절을 따른다. 사용자의 패키지 구조 분리 요청에 따라
+`api/prompts/instructions.py`, `api/prompts/registry.py`, `api/resources/registry.py`,
+`api/tools/registry.py`를 추가하고 세 API 패키지의 `__init__.py`는 설명만 남긴다.
+생성·등록 로직과 import 위치만 옮기며 프롬프트·공개 계약·DB migration 변경은 없다.
+gpt-5.6-luna를 유지하고 현재 역할·단계에 무관한 전략과 반복 예문을
+제거한다. 실제 모델의 승률·발언 품질 개선은 합성 계약 테스트 결과와 구분한다.
+
 ## 2026-09-07 자유 토론 변경 (사용자 승인 WU-B4)
 
 이번 단일 WU-B4는 1분 45초 자유 토론과 연결되는 Front·MCP 표현의 변경이다. 이 절이 기존 좌석당 한 번 발언·전원 PASS 추가 순환 규칙보다 우선한다. 새 일반·최종 토론은 Backend deadline 105초까지 열리며 인간은 AI 처리 순서와 무관하게 발언한다. 플레이어별 최근 60초 SPEAK는 최대 7회이며 서버 게임 행 잠금 안에서 원장으로 검증한다. PASS는 조기 마감하지 않는다. AI 작업은 기존 단일 예약 창을 재사용해 공정하게 배분하고, 발언마다 새 window를 열되 토론 deadline은 보존한다. turn_player_id는 AI 스케줄링 힌트이며 인간의 발언 권한 제한이 아니다. SPEECH에도 deadline·remaining_ms가 제공된다. 저장 시 잔여 시간을 보존한다. 마감 뒤 첫날은 밤, 이후 낮은 투표, 최종 토론은 최종 지목으로 진행한다. 과거 deadline 없는 발언 창은 기존 방식으로 처리한다. DB 구조와 idempotency·게임 상태 버전 검증은 보존한다.
 
 WU-B6 말투 보완: 사용자 요청에 따라 AI 발언은 반말을 허용한 자연스러운 게임 채팅 구어체로 작성한다. 페르소나의 격식보다 구어체를 우선하고, 과도한 논리 보고·검증 용어·상황 요약을 줄인다. 실제 근거 판단과 진영 승리 우선순위는 유지한다.
+
+## 투표 보조 정보 확장 계획 (2026-09-07)
+
+**상태: 계획 원안과 후속 구현 결정을 함께 기록.** 최초 계획 작성 뒤 사용자가
+구현을 승인했으며 실제 착수 범위·조정은 아래 8절과 영역별 정본을 따른다.
+1~7절의 테이블·필드 후보와 품질 목표를 구현 완료 사실로 간주하지 않는다.
+검증된 현재 범위와 운영 활성화 절차는 루트 README를 따른다.
+
+### 목적과 현재 연결 지점
+
+확정된 AI 공개 발언 전부를 임베딩해 저장하고, 투표 시점에 사용자가 발언의
+공통점과 의심의 흐름을 빠르게 확인하게 한다. 모든 정보에 원문 근거를 연결하며
+마피아 확률, 진실 판정, 자동 투표 추천은 제공하지 않는다.
+
+- AI 발언은 `backend/app/services/game/agent_discussion.py`에서 공통
+  `discussion_transaction.py`로 제출되고 `game_events`에 저장된다.
+- `event_repository.py`와 `game_read_service.py`는 확정된 공개 이력을 읽고
+  `PLAYER_SPOKE`를 `player_id`, `message`로 제한한다. 이 공개 projection을
+  분석 입력 경계로 재사용한다. Redis 공개 대화 캐시는 영구 원본이 아니다.
+- `backend/app/services/admin_knowledge.py`의 기존 임베딩은 의미 학습 모델이
+  아닌 64차원 토큰 해싱이다. 관리자 승인 지식 테이블에 게임 발언을 섞지 않는다.
+- `frontend_user/components/action_panel.py`의 `_render_vote_summary`는 현재
+  최근 밤 결과를 안내한다. 이 영역을 확장하되 후보 선택·제출·타이머를 우선한다.
+
+### 1. 사용자에게 제공할 정보
+
+| 우선순위 | 카드 | 계산·표시 기준 | 합성 예시 |
+|---|---|---|---|
+| MVP | 유사한 주장을 한 플레이어 | 서로 다른 AI의 발언에서 대상·입장·핵심 주장까지 일치한 묶음과 원문 | “2번·5번이 3번의 알리바이를 의심했어요.” |
+| MVP | 가장 많이 의심 대상으로 지목된 플레이어 | 명시적 의심·처형 지지의 고유 AI 발언자 수를 우선 집계 | “3번: AI 3명이 의심 대상으로 지목, 관련 발언 5개” |
+| MVP | 후보별 근거 발언 | 해당 후보에 대한 의심·옹호·질문 원문을 분리하고 시점 표시 | “3번 관련 의심 3명 / 옹호 1명 · 원문 보기” |
+| 후속 | 입장 변화 | 동일 발언자의 같은 대상·논점에 대한 시간순 입장 변화 | “2번이 3번을 옹호한 뒤 의심으로 바꿨어요.” |
+
+MVP 기본 분석 범위는 **현재 토론 구간의 AI 공개 발언**이다. 일반 투표·재투표는
+직전 낮 토론, 최종 지목은 최종 토론을 사용한다. 사용자는 **게임 전체 누적**으로
+전환할 수 있다. 첫날도 전부 색인해 이후 누적 조회에 포함한다. 인간 발언까지의
+확장은 별도 후속 범위이며 화면에 “AI 발언 기준”을 항상 표시한다.
+
+모든 AI 플레이어의 정상·대체 처리로 확정된 `PLAYER_SPOKE`를 포함한다. 원문이
+없는 PASS, GM 안내, 거부된 응답, 미확정 LLM 출력, 내부 사고·밤 비공개 대화는
+대상이 아니다. 사망자의 과거 발언은 보존하고 생존 여부를 표시한다. 투표 후보
+카드는 서버가 허용한 현재 후보만 보여주며, 사망자 관련 과거 주장은 기록에서만
+볼 수 있게 한다. 재투표는 같은 근거 집합을 재사용하고 동률 후보로 좁힌다.
+
+### 2. 임베딩과 구조화 분석을 분리
+
+1. **전문 임베딩:** 최대 200자의 발언은 잘라 버리지 않고 한 발언당 하나의 벡터로
+   저장한다. 발언이 반복돼도 각각의 event 연결을 보존한다. 한국어 구어체용 모델은
+   합성 평가 자료로 선정하며 Provider·모델 revision·차원을 고정한다. 현재 계획에서
+   특정 유료 모델이나 신규 API 사용은 확정하지 않는다.
+2. **주장 추출:** 공개 원문과 같은 게임의 공개 좌석·이름 대응표만 전달하는 별도
+   분석기로 `target_player_id`, `stance`(의심·옹호·질문·중립), 핵심 주장,
+   원문의 시작·끝 위치를 추출한다. 여러 주장은 각각 보존한다. 대명사 해소에는
+   같은 게임의 이전 공개 발언만 제한적으로 사용하고 해당 문맥 event도 근거로
+   연결한다. 대상을 확정할 수 없으면 미상으로 남겨 순위에서 제외한다.
+3. **유사 후보 검색:** 같은 game·분석 구간·모델의 벡터에 대해 cosine 유사도로
+   후보를 찾는다. 같은 화자끼리는 사용자용 유사 주장 묶음에서 제외한다.
+4. **의미 확인:** 대상·찬반·핵심 주장과 근거 원문을 다시 비교한다. “3번이 마피아다”와
+   “3번은 마피아가 아니다”는 유사도가 높아도 같은 주장으로 묶지 않는다. 애매한
+   경우 카드 생성을 보류한다. A↔B, B↔C만 비슷한 경우 A·B·C 전체가 일치한다고
+   표시하지 않고 묶음 내 모든 쌍을 확인하거나 쌍 단위로 보여준다.
+5. **지목 집계:** 임베딩 점수가 아니라 추출된 의심·처형 지지 관계를 집계한다.
+   단순 언급, 질문, 옹호, 타인의 주장을 인용한 문장은 의심 수에 포함하지 않는다.
+   인용에 본인이 동의한 경우에만 해당 발언자의 의심으로 센다.
+
+`고유 지목자 수 = 범위 안에서 해당 대상을 명시적으로 의심한 서로 다른 AI 수`,
+`관련 발언 수 = 해당 의심 관계를 포함하는 서로 다른 event 수`로 정의한다.
+같은 발언의 동일 대상 반복은 한 번만 센다. 한 AI가 7번 반복해도 지목자는 1명이다.
+고유 지목자 수가 같으면 공동 순위를 표시하고 좌석순으로 정렬한다. 과거 의심 후
+철회한 발언도 “기간 중 지목 이력”에는 남으므로, 현재 투표 의향으로 표현하지 않는다.
+
+유사도는 진실성·마피아 확률이나 모델 confidence가 아니다. MVP 화면에는 점수 대신
+근거를 제공한다. 검증되지 않은 고정 threshold로 동일 주장을 확정하지 않고,
+한국어 부정·반어·인용·동명이름·좌석 번호·다중 주장 사례로 기준을 조정한다.
+
+### 3. 처리 흐름과 장애 복구
+
+`발언 transaction 확정 → 공개 발언 탐색 → 비동기 임베딩·주장 추출 → 파생 결과 저장
+→ 투표 window별 근거 범위 확정 → 조회 API → 투표 보조 카드`
+
+- 토론 중부터 처리한다. 게임 transaction이나 행 잠금을 유지한 채 모델을 호출하지
+  않는다. 분석 worker는 AI 발언·투표 worker와 별도 실행·동시성 한도를 사용한다.
+- 최초 MVP는 확정된 공개 event와 처리 원장을 비교하는 DB polling으로 누락을 찾는다.
+  기존 `event_outbox` publisher나 Redis 알림을 필수 의존성으로 만들지 않는다.
+  commit 직후 프로세스가 죽어도 재탐색할 수 있어야 한다.
+- `(game_id, event_id, analysis_version)`를 처리 단위로 삼는다. 짧은 DB transaction에서
+  작업을 선점하고, 호출은 밖에서 수행한 뒤 소유 토큰·원문 hash·분석 버전을 확인해
+  결과를 저장한다. 선점 만료 후 재시도할 수 있지만 늦은 이전 응답은 덮어쓰지 못한다.
+  이 상태는 게임 Agent의 기존 job·lease 계약과 분리된 파생 분석 전용이다.
+- 투표를 여는 transaction에서 분석 대상의 마지막 확정 event sequence를 고정한다.
+  카드 계산은 그 상한 이내만 읽는다. 분석 완료로 게임 `state_version`, 공개 cursor,
+  deadline 또는 투표 원장을 변경하지 않는다.
+- 최신 이벤트 일부가 실패했다고 그 뒤 성공한 이벤트를 누락하지 않는다. event별 처리
+  상태와 범위 내 전체/완료/실패 수로 완전성을 계산하며 최고 sequence만으로 완료를
+  판정하지 않는다. 임베딩과 주장 추출의 완료 상태도 각각 유지한다.
+- 장애에는 제한된 재시도·재기동 복구를 적용하고 실패를 영구적으로 숨기지 않는다.
+  저장·재개는 확정된 발언의 분석을 보존하고 복원된 window에 연결한다. 과거 게임의
+  backfill은 선택한 게임만 대상으로 같은 멱등 경로를 사용하며 원장을 수정하지 않는다.
+
+### 4. 저장 구조 제안과 책임
+
+Backend가 전용 파생 테이블·repository·migration을 소유한다. 다음은 논리 구조
+후보이며 정확한 SQL·FK·nullable·인덱스는 WU-B11에서 DB 정본으로 확정한다.
+
+| 논리 테이블 후보 | 저장 내용·주요 제약 |
+|---|---|
+| `speech_analysis` | game·원본 event·AI player, 원본 sequence·토론 구간, content hash, 분석 버전, 단계별 상태·시도 수·다음 재시도·선점 정보, 안전한 오류 코드. event·player는 같은 game의 FK로 제한 |
+| `speech_embeddings` | 분석 ID, 모델·revision·차원, 전문 vector. 동일 분석·모델 중복 저장 방지, 유한 수·정확한 차원·0벡터 거부 |
+| `speech_claims` | 분석 ID·주장 순번, 대상·입장·핵심 주장·근거 구간·문맥 event ID. 대상은 같은 game만 허용하고 원문 substring 검증 |
+| `vote_insight_snapshots` | game·window·범위·cutoff·분석 버전별 카드, 카드 revision, 단계별 처리 수·생성 시각. 같은 입력은 동일 집계 결과 |
+
+원문은 `game_events`에 그대로 남기고 파생 테이블은 참조·필요한 근거 위치를 저장한다.
+round·토론 구간은 당시 확정 이벤트/행동 창 관계에서 복원하며 처리 시점의 현재
+round를 과거 발언에 붙이지 않는다. 벡터와 추출 정보도 동일 게임 접근 경계를 적용한다.
+모델 교체는 새 버전으로 병행 색인한 뒤 전환하며 차원이 다른 벡터를 비교하지 않는다.
+삭제·보존 정책은 원본 게임 정책을 따르도록 DB 정본에서 확정하고 파생 데이터가
+삭제된 원문을 계속 노출하지 않게 한다. 새로운 원본 삭제 기능은 이번 범위가 아니다.
+
+저장소에는 관리자용 pgvector migration이 있지만 실제 배포 DB 설치·권한은 별도로
+확인한다. MCP·Data 담당자가 Backend migration을 실행하고 extension·권한·health를
+검증한다. MCP runtime은 DB에 접근하지 않으며 새 Resource도 MVP에는 추가하지 않는다.
+게임별 발언 수가 작으므로 먼저 game·구간 B-tree 필터와 정확 검색으로 측정하고,
+HNSW 도입은 실제 성능 측정 후 결정한다. Redis 결과 캐시는 MVP 필수 범위에서 제외한다.
+
+### 5. 조회 API와 화면 제안
+
+조회 후보는 `GET /api/v1/games/{game_id}/vote-insights?window_id=...&scope=current_discussion|game`다.
+읽기 요청은 저장된 결과만 조회하고 모델 호출·색인 작업을 시작하지 않는다. API 정본에
+다음 내용을 확정한 뒤 구현한다.
+
+- 기존 `X-User-Id` 게임 소유권 검사와 공개 projection 검증을 그대로 적용한다.
+  강한 인증으로 간주하지 않으며 임의 event ID로 다른 게임 근거를 조회할 수 없게 한다.
+- 응답은 game·window·scope·cutoff, 분석 버전·카드 revision·생성 시각,
+  `PENDING/PARTIAL/READY/UNAVAILABLE`, 대상 발언 수·단계별 완료/실패 수,
+  유사 주장·지목 순위·후보별 근거로 구성한다. 빈 범위는 `READY`와 0건으로 구분한다.
+- 근거에는 공개 event ID·AI player ID·원문·시점만 포함한다. 벡터, private context,
+  실제 직업, 미해소 투표·밤 행동, 모델 내부 출력은 반환하지 않는다. “탐정이라고
+  발언함”은 공개 주장으로만 표시하고 DB 역할을 조회해 확인하지 않는다.
+- 현재 phase/window 불일치·종료된 window의 요청은 명시적 stale 오류로 거부하고
+  Front는 snapshot을 다시 읽는다. 저장 상태에서는 카드를 비활성화하고 재개 후
+  window를 다시 확인한다. 보조 API 오류는 기존 게임 API의 성공 여부와 분리한다.
+- 카드별 최대 개수와 원문 근거 pagination·다음 cursor를 정본에 확정한다. 화면에서
+  일부만 펼쳐도 집계는 범위 전체를 사용하고 총건수와 구분한다.
+
+투표 영역에 “AI 발언 돌아보기”를 접을 수 있는 보조 패널로 둔다. 기본은 지목 순위와
+유사 주장 각 최대 3개, 후보 선택 시 의심·옹호·질문 근거를 보여준다. 원문을 누르면
+타임라인의 해당 발언으로 이동한다. 카드에는 “공개 발언을 분석한 참고 정보이며
+사실 판정이 아닙니다”와 범위·분석 완료 수를 표시한다. 부분 결과의 순위는
+“분석된 발언 기준”으로 표시하고 완성된 전체 순위처럼 표현하지 않는다.
+
+Front는 투표 진입 시 조회하고 `PENDING/PARTIAL` 동안만 기존 갱신 주기에 맞춰
+재조회한다. 다른 window의 늦은 응답은 버린다. 선택한 후보·입력 상태는 갱신해도
+보존한다. 장애 시 “발언 분석을 사용할 수 없어요”와 기존 타임라인을 제공한다.
+투표 마감·자동 선택·미해소 표의 비공개 경계는 유지한다.
+
+### 6. 세션별 구현 순서와 완료 기준
+
+아래 WU-B11~B14·WU-M9·WU-F9는 이 확장에 예약하는 신규 작업 단위 제안이다.
+WU-B11 착수 전에 Front·Backend·MCP/Data가 제공 범위·모델 선정 기준·예상 신규
+파일과 비용 운영 기준을 합의한다. 파일은 기존 `backend/app`, `backend/migrations`,
+`backend/tests`, `frontend_user` 구조 안에서 최소한으로 추가하고 구체 경로를 정본과
+README에 먼저 반영한다. 신규 디렉터리나 migration 번호를 현재 단계에서 확정하지 않는다.
+
+| 순서·WU | 담당·범위 | 선행조건·완료 기준 |
+|---|---|---|
+| 1 · WU-B11 | Backend: DB/API/화면 정본 상세화, 전용 migration·repository | 섹터 합의 후 저장 계약·권한·복합 FK·멱등성·버전 분리 테스트 및 격리 DB migration 검증 |
+| 2 · WU-M9 | MCP/Data: 대상 DB extension·계정 확인과 migration 실행 | B11 산출물 인수, 기동·재실행·최소 권한·health 증거, MCP runtime 변경 없음 |
+| 3 · WU-B12 | Backend: 공개 발언 탐색·비동기 임베딩/주장 추출·복구 | B11, 운영 연결 전 M9. fake Provider로 중복·누락·재시작·timeout·지연 응답·다른 게임 혼입 거부 검증 |
+| 4 · WU-B13 | Backend: 유사 주장·지목 집계·window별 조회 API | B12. cutoff 고정·소유권·private 비간섭성·부분 결과·stale window 계약 통과 |
+| 5 · WU-F9 | Front: 보조 카드·원문 연결·후보별 근거 | B13 계약. 합성 응답으로 loading·empty·partial·error·재투표·최종 지목·저장/재개·타이머/선택 보존 검증 |
+| 6 · WU-B14 | Backend 주관: 품질 평가·통합·운영 조정 | F9 연결 완료. 데이터량·지연·재시도·재기동 회복 측정, 기본 비활성 기능 설정에서 단계적 활성화 |
+
+각 세션의 구현은 해당 WU 한 개로 제한한다. 데이터 migration·공개 API·동시성·정보
+격리 작업은 실패·거부 경로 테스트를 먼저 또는 함께 작성하고 완료 시 전체 회귀를
+1회 수행한다. 유료 API 통합은 기본 테스트에서 fake로 대체한다. 기존 무관한 실패는
+별도로 보고하며 기능 구현 완료로 숨기지 않는다.
+
+### 7. 품질·성능·출시 판단 기준
+
+- 한국어 합성 발언 최소 100개와 주장 쌍 최소 50개를 수작업으로 라벨링하고,
+  threshold 조정용과 최종 평가용을 분리한다. 부정·인용·철회·별칭·여러 대상·반복을
+  포함한다. 의심 대상 추출 및 유사 주장 정밀도 90% 이상을 초기 목표로 두고,
+  재현율·보류율도 함께 보고해 모든 결과를 숨기는 방식으로 목표를 맞추지 않는다.
+- 반대 입장을 같은 주장으로 묶는 지정 반례, 다른 게임·private 필드 유출은 평가에서
+  0건이어야 한다. 동일 AI 반복 지목·재처리·재투표로 고유 지목자 수가 증가하면 실패다.
+- 전체 AI 공개 발언은 처리 원장에 빠짐없이 등록한다. 정상 Provider·부하 조건에서는
+  모두 임베딩 완료되어야 하며 실패분은 수·원인 코드·재처리 상태를 확인할 수 있어야 한다.
+- 초기 성능 목표는 저장된 보조 정보 조회 p95 300ms 이내, 정상 조건에서 투표 준비 시작 후
+  분석 완료 p95 5초 이내다. 보장 수치가 아니라 B14에서 측정할 목표이며 투표 시점의
+  처리율도 함께 기록한다. 9인·최대 밤 수·자유 토론 발언 제한에 맞춘 합성 부하로 검증한다.
+- 모델 비용·차원·라이선스/외부 전송 조건·한국어 품질을 비교한 후 모델을 확정한다.
+  분석 전용 동시성·batch·timeout·재시도 상한과 비활성 설정을 정하고, 발언·투표
+  Provider 자원을 고갈시키지 않는지 측정한다. 새 환경 변수는 README에 문서화한다.
+- 장애 주입 시 분석이 멈춰도 발언 저장·투표 제출·마감·저장/재개가 진행되어야 한다.
+  출시 중단은 분석 기능을 비활성화하는 방식으로 하고 원본 발언·게임 원장은 보존한다.
+
+**계획상 첫 구현 작업자의 범위는 WU-B11만**이다. 인간 발언 포함, AI의 투표 판단에 분석 결과
+재주입, 모순 자동 판정·플레이어 관계 그래프는 MVP 결과를 확인한 뒤 별도로 계획한다.
+
+### 8. 구현 착수 결정 (2026-09-07)
+
+사용자는 계획 구현과 Orca orchestration, 기존 OpenAI 키 재사용을 승인했다.
+coordinator는 WU-B14 통합·검증을 맡고 각 구현 작업자는 하나의 WU만 맡는다.
+WU-B11 저장 계약, WU-B12 분석, WU-B13 조회, WU-F9 화면, WU-M9 환경 검증을
+서로 다른 작업자 세션으로 수행한다. 현재 작업 트리에서 파일 소유권을 분리한다.
+프론트엔드는 이후 디자인 전면 교체를 고려해 접이식 텍스트와 API adapter만 추가한다.
+
+현재 DB의 pgvector 미지원 기록을 고려하여 `006_create_speech_analysis.sql`은
+표준 PostgreSQL `double precision[]`에 실제 의미 임베딩을 저장한다. 게임별 정확
+cosine 비교를 사용하며 토큰 해싱으로 대체하지 않는다. 관리자용 005 migration은
+이 기능의 선행조건이 아니다. 기존 migration은 수정하지 않고 006만 독립 적용 가능하게 한다.
+MVP는 분석·임베딩·주장을 `speech_analysis`에 통합한다. `speech_analysis_versions`는
+버전별 최초 활성 시점을 보존해 아직 분석 행이 없는 게임이 먼저 종료되어도 누락분을
+발견하게 한다. 각 단계의 상태,
+재시도·선점 토큰, 모델·차원·버전과 원본 참조를 유지한다. 공개 event 원장에 저장된
+window 개설 sequence를 cutoff로 재사용하여 별도 window snapshot 테이블·게임
+transaction 변경을 최초 구현에서는 생략한다. 후속 B14의 투표 대기는 기존 마감된
+SPEECH window로 표현하고 별도 테이블은 추가하지 않는다. 조회는 저장된 분석 결과로 결정적 카드를 조합하며
+외부 모델 호출·색인·DB 쓰기를 하지 않는다. 낮은 부하의 MVP 경계이며 향후 측정 후
+물리 테이블 분리·pgvector 인덱스·카드 materialization을 결정한다.
+
+신규 파일 소유권은 다음과 같다. 기존 디렉터리만 사용하고 각 WU의 전용 테스트를
+같은 테스트 디렉터리에 추가한다. root README는 coordinator가 통합 갱신한다.
+
+| WU | 신규 파일과 기존 변경 경계 |
+|---|---|
+| B11 | `backend/migrations/006_create_speech_analysis.sql`, `backend/app/repositories/speech_analysis_repository.py`, `backend/tests/test_speech_analysis_repository.py`; DB 정본 |
+| B12 | `backend/app/services/game/speech_analysis_worker.py`, `backend/app/llm_provider/speech_analysis_provider.py`, `backend/tests/test_speech_analysis_worker.py`, `backend/tests/test_speech_analysis_provider.py`; `core/config.py`, `main.py`, `.env.example` |
+| B13 | `backend/app/repositories/vote_insight_repository.py`, `backend/app/services/game/vote_insight_service.py`, `backend/tests/test_vote_insights.py`; `routers/game_router.py`, API 정본 |
+| F9 | `frontend_user/components/vote_insights.py`, `frontend_user/tests/test_vote_insights_f9.py`; 기존 API client·action panel, 화면 정본 |
+| M9 | 격리 DB에서 006 적용·재실행·권한·health 확인, 실제 서비스 DB 변경은 대상 확인 후 수행 |
+| B14 | 위 계약 간 연결 확인·필요한 통합 수정·회귀, 기존 `runtime_factory.py`·`main.py`에서 조회 서비스 조립, `backend/tests/test_vote_insight_integration.py`·기존 migration 목록 검사, 새 테스트 추적용 `.gitignore`, `README.md`, 기존 정본의 실제 결과·제약 갱신 |
+
+기본 기능 설정은 비활성이고 `SPEECH_ANALYSIS_ENABLED=true`로 활성화한다.
+임베딩 기본 모델은 `text-embedding-3-small`, 차원은 1536으로 고정하고 주장 분석은
+별도 구조화 OpenAI 요청으로 처리한다. 모델 계약은
+[OpenAI 임베딩 공식 문서](https://developers.openai.com/api/docs/guides/embeddings#how-to-get-embeddings)를 확인했다.
+게임 Agent의 private context·추론은 재사용하지 않는다. 비용이 발생하는 실호출을
+자동 회귀에 넣지 않으며 기존 사용자 키·실제 env 파일은 수정하거나 출력하지 않는다.
+
+후속 활성화 요청에 따라 기존 `run_openai.sh`의 `AI_MAFIA_DATABASE_URL` 대상인
+로컬 `127.0.0.1:55432/mafia_qa`에 M9가 006과 runtime 권한을 적용한다.
+B14는 Git 제외 `.env`의 `SPEECH_ANALYSIS_*` 설정과 기존 실행 스크립트 기동을
+완료한다. OpenAI 키는 기존 승인대로 재사용하고 값은 변경·출력하지 않는다.
+활성화 smoke에서 한국어 인용문은 맞지만 모델의 문자 offset이 틀린 사례가 재현됐다.
+후속 B12는 Provider 응답 수신부에서 원문에 정확히 한 번 존재하는 인용문에 한해
+offset을 재계산하고 기존 엄격 validator를 거치도록 보완한다. 존재하지 않는 인용과
+위치가 모호한 반복 인용은 거부하며 DB에 저장하는 원문·span 계약은 바꾸지 않는다.
+
+후속 활성화 결과: 로컬 006 적용 전후 기존 게임 19개와 원장·권한을 보존했고 기존
+QA owner 계정을 재사용했다. 이 로컬 환경의 runtime/DDL 최소 권한 분리는 미적용이다.
+기존 실행 스크립트로 세 서버를 기동했으며, 최초 대상 공개 발언 30개의 임베딩·주장
+READY 저장과 실제 모델 smoke를 확인했다. 인용 위치 보완 후 Backend 전체 회귀는
+751 통과·기존 14 실패·8 건너뜀이며 자세한 환경·검증 기록은 README를 따른다.
+
+후속 원격 이전 요청에서는 M9가 `TEAM_DATABASE_URL`의 `4team_db`에 006을 적용하고
+권한·원장 보존을 확인한다. B14는 기존 실행 스크립트에 명시적
+`AI_MAFIA_STORAGE_MODE=team` 선택을 추가해 Backend의 DB·Redis 실행 연결을
+팀 설정으로 전환한다. 기본 `isolated` 모드의 공유 DB 중복 사용 방지 검사는 유지한다.
+로컬 게임 원장과 분석 행을 원격으로 복제하는 작업은 포함하지 않는다.
+
+원격 적용 결과: 006 적용 전후 기존 23개 테이블의 데이터·ACL·owner를 보존했다.
+명시적 team 모드로 재기동한 Backend가 원격 분석 버전을 등록하고 공개 발언 2개를
+임베딩·주장 READY로 저장했다. 서버 health·MCP 초기화 및 설정 선택 8건이 통과했고,
+격리 QA의 Backend 전체 회귀는 751 통과·기존 14 실패·8 건너뜀이다.
+
+#### WU-B12 분석 실행 계약
+
+전용 Provider는 공식 `AsyncOpenAI`의 재시도를 0으로 고정한다. 임베딩 요청은
+`text-embedding-3-small`, `dimensions=1536`, `encoding_format=float`로 원문 전문을
+전달한다. 주장 분석은 별도 `gpt-4.1-mini` Responses 구조화 요청이며 `store=False`와
+명시적 timeout을 사용한다. 입력에는 원문과 같은 게임의 공개 player ID·좌석·이름만
+포함하고 숨은 직업·내부 사고·원장 전체를 전달하지 않는다. 반환 주장은 폐쇄형
+`target_player_id`(nullable), `stance`(`SUSPICION|DEFENSE|QUESTION|NEUTRAL`),
+`proposition`, `evidence_start`, `evidence_end`, `quote`로 검증한다. 대상 미확정은 null,
+부정·인용·단순 언급은 의심으로 자동 승격하지 않으며 근거는 Python 문자 기준
+반개구간 `[start,end)`의 실제 원문과 일치해야 한다. Provider 응답 경계에서 정수
+오프셋만 잘못된 경우 비어 있지 않은 정확 인용이 원문에 유일하게 존재할 때만 위치를
+재계산한다. 정확한 기존 span은 반복 인용이어도 유지하며, 불일치 span의 반복·겹침
+출현, 허구·비문자열 인용, boolean 등 비정수 offset은 거부한다. 정규화 후 기존
+`validate_claims`로 schema·대상·입장·근거를 엄격 검증하고 DB 계약은 유지한다.
+파서 변경을 분석 버전에 반영하여 `PROMPT_VERSION=claims-ko-v2`로 구분한다.
+모델 자유 출력·예외 원문은 기록하지 않는다.
+
+설정은 `SPEECH_ANALYSIS_ENABLED=false`, 임베딩 모델·차원, 주장 모델, 분석 버전,
+polling 주기·batch·concurrency·timeout·max attempts를 독립 검증한다. 유효 분석 버전은
+운영 revision과 두 모델·차원·프롬프트 revision을 함께 포함하여 서로 다른 분석을 섞지 않는다.
+worker는 앱별로 생성하며 AI worker와 별도로 시작·중지한다. 테스트의
+`enable_background_worker=False`는 분석 worker도 시작하지 않는다. DB 작업은 짧은
+repository 호출 단위로 `asyncio.to_thread`에 보내고 모델 호출 중 transaction을 유지하지 않는다.
+단계별 lease token을 저장 완료 조건으로 전달하고 성공한 임베딩은 주장 실패 후에도
+다시 호출하지 않는다. 종료 시 새 선점을 중단하고 진행 중 호출을 제한된 시간 내 정리하며,
+중단된 작업은 lease 만료 뒤 repository 재선점으로 복구한다.
+
+B12 런타임의 합성 분석 버전은 최대 128자로 검증하며 DB의 256자 저장 한도 안에 둔다.
+분석 전용 PostgreSQL 연결은 connect timeout 5초·statement timeout 5초·lock timeout
+1초를 적용한다. 종료 중 thread 자체를 강제 종료하지 않고 이 제한 안에서 transaction을
+수거하며, 호출자 취소 후 발생한 DB 예외도 원문 로그 없이 수거한다.
+
+#### WU-B14 검증 결과와 미측정 항목
+
+2026-09-08 실게임 점검에서는 분석이 미완료인 상태에서 투표가 열린 현상을 관측했다.
+현재 준비 SQL은 대기를 반환했고 해당 전환은 로컬 프로세스 로그에 없었다. Backend
+scheduler가 instance·소유자 구분 없이 공유 DB의 모든 게임을 처리하고 분산 lease나
+호환 버전 fencing을 사용하지 않으므로, 분석 비활성·초기화 실패 또는 이전 코드의 별도
+Backend가 먼저 전환하면 현재 instance의 대기 계약을 우회할 수 있다. 실제 원장에서는
+마감 뒤 로컬 분석이 두 임베딩을 선점했지만 3.197초 뒤 별도 전환으로 SPEECH 창이 닫혀
+나머지 임베딩과 모든 주장 분석의 선점 조건이 사라졌다. 원격 DB의 statement·connection
+log와 commit timestamp가 비활성이라 과거 전환 instance의 호스트·설정은 사후 특정하지
+못한다. 운영에서는 공유 DB의 scheduler 실행 주체를 하나로 맞추고 모든 실행본의 분석
+설정·코드 버전을 일치시켜야 한다. 다중 instance를 지원하려면 후속 WU에서 DB 기반
+scheduler lease와 호환 버전 fencing을 정본·migration에 먼저 확정한다.
+이번 B14 진단 보강은 기존 runtime의 운영 로그에 게임·행동 창·프로세스와 준비/우회
+사유를 기록하는 범위다. 예외 원문·발언·접속 정보는 기록하지 않으며 공개 API,
+분석 실행 시점, DB 구조와 장애 시 게임 진행 정책은 유지한다.
+
+후속 B14 수정(2026-09-07, 사용자 요청)은 기존 토론 원장 복원 오류와 분석 실행 시점의
+통합 보완으로 한정한다. 같은 round·cycle을 재사용한 구형 게임도 현재 날짜의 토론
+기록만 복원하며, 정상 중복 제출 거부는 유지한다. worker 오류는 비밀값 없는 고정
+원인 코드로 기록한다. 발언 분석은 토론 중 매 발언마다 호출하지 않고 투표로 넘어가는
+경계에서 누적 공개 발언을 처리한다. 사용자는 분석 완료까지 투표 대기를 명시했다.
+마감된 SPEECH window 상태에서 분석하며, 완료 또는 단계별 재시도 소진 후 투표 창을
+열고 그때부터 투표 제한 시간을 계산한다. 첫날 밤 전환은 분석 대기 대상이 아니다.
+구형 순차 토론의 마지막 행동은 즉시 마감된 SPEECH window를 남겨 동일한 준비 경로를
+거친다. 분석 초기화·저장소 장애는 고정 코드로 기록하고 게임 진행을 영구 차단하지 않는다.
+분석 준비 sweep은 기존 투표 scheduler와 분리하여 다른 게임의 제출·마감 처리를 지연시키지 않는다.
+기존 결과·단계별 재시도·원장·공개 API 계약은
+보존하고 Front 디자인과 기존 migration은 변경하지 않는다. coordinator는 정본·README·
+실행 연결·회귀를 소유하며, 복원·로깅과 분석 시점은 파일 소유권을 나눠 보완한다.
+후속 검증 결과는 focused 124 통과, Backend 전체 806 통과·기존 14 실패·8 건너뜀이다.
+원격 읽기 전용으로 복원 오류 해소를 확인하고 재기동 후 기존 중단 게임의 정상 진행과
+토론 중 분석 PENDING·시도 0을 확인했다. 006·게임 원장 직접 보정·Front 디자인 변경은 없다.
+
+격리 PostgreSQL에서 006 재실행·권한·원본 계약·동시 선점·lease 소진과 종료 게임
+누락 복구 등 108개 assertion을 확인했다. 합성 Provider로 실제 원장→repository→worker→
+HTTP 조회를 연결한 검사와 worker 초기화·종료 오류 격리 검사를 포함해 통합 테스트
+5개가 통과했다. HTTP router는 앱에 주입된 조회 서비스만 호출하고 실제 조립은 기존
+`runtime_factory.py`에서 수행한다. 최종 전체 회귀 수치와 기존 실패는 README에 기록한다.
+
+이는 실제 모델 품질 목표나 부하·지연 SLO 달성의 근거가 아니다. 현재 유사 주장은
+알리바이·역할 주장·진술 변화의 같은 대상·입장에 한해 cosine 0.88 이상 및 숫자·직업
+근거 일치로 보수적으로 표시한다. 유료 한국어 평가셋과 프로세스 강제 종료를 포함한
+실게임 부하 검증은 별도 측정 항목으로 남긴다. 실제 서비스는 migration과 권한 준비 후
+기능 설정을 켜고 재시작해야 하며 이번 구현에서 실제 env와 서비스 DB는 변경하지 않았다.

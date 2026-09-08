@@ -80,8 +80,28 @@ print(value.strip(), end="")
 PY
 }
 
-RUNTIME_DATABASE_URL="$(read_required_env_value AI_MAFIA_DATABASE_URL)"
-RUNTIME_REDIS_URL="$(read_required_env_value AI_MAFIA_REDIS_URL)"
+STORAGE_MODE="$("${PYTHON_BIN}" - "${ENV_FILE}" <<'PY'
+from pathlib import Path
+import sys
+
+from dotenv import dotenv_values
+
+mode = dotenv_values(Path(sys.argv[1])).get("AI_MAFIA_STORAGE_MODE", "isolated")
+if mode not in {"isolated", "team"}:
+    raise SystemExit("오류: AI_MAFIA_STORAGE_MODE는 isolated 또는 team이어야 합니다.")
+print(mode, end="")
+PY
+)"
+
+# 공유 원장으로의 전환은 명시적 team 모드에서만 허용하고, DB와 Redis를 같은
+# 설정 묶음에서 선택해 로컬 게임 cache와 원격 게임 데이터를 섞지 않는다.
+if [[ "${STORAGE_MODE}" == "team" ]]; then
+    RUNTIME_DATABASE_URL="$(read_required_env_value TEAM_DATABASE_URL)"
+    RUNTIME_REDIS_URL="$(read_required_env_value REDIS_URL)"
+else
+    RUNTIME_DATABASE_URL="$(read_required_env_value AI_MAFIA_DATABASE_URL)"
+    RUNTIME_REDIS_URL="$(read_required_env_value AI_MAFIA_REDIS_URL)"
+fi
 
 # 자격증명이 달라도 host·port·database가 같으면 동일한 worker 원장을 공유한다.
 # 접속 URL 원문은 셸 출력이나 명령행 인자로 보내지 않고 .env 안에서만 비교한다.
@@ -100,7 +120,9 @@ def target(value: str) -> tuple[str, str | None, int, str]:
     parsed = urlsplit(value)
     return parsed.scheme.lower(), parsed.hostname, parsed.port or 5432, unquote(parsed.path)
 
-if isinstance(isolated, str) and isinstance(shared, str) and target(isolated) == target(shared):
+if (values.get("AI_MAFIA_STORAGE_MODE", "isolated") == "isolated"
+        and isinstance(isolated, str) and isinstance(shared, str)
+        and target(isolated) == target(shared)):
     raise SystemExit("오류: AI_MAFIA_DATABASE_URL은 TEAM_DATABASE_URL과 다른 격리 DB여야 합니다.")
 PY
 
@@ -139,11 +161,11 @@ try:
     finally:
         redis_client.close()
 except Exception:
-    raise SystemExit("오류: 격리 PostgreSQL·Redis 연결과 migration 상태를 확인하세요.") from None
+    raise SystemExit("오류: 선택한 PostgreSQL·Redis 연결과 migration 상태를 확인하세요.") from None
 if not all((games_ready, scenarios_ready, personas_ready)):
-    raise SystemExit("오류: 격리 DB에 AI 마피아 migration과 seed가 필요합니다.")
+    raise SystemExit("오류: 선택한 DB에 AI 마피아 migration과 seed가 필요합니다.")
 print(f"OpenAI 실행 설정 확인 완료: provider={settings.llm_provider}, model={settings.openai_model}")
-print("격리 저장소 확인 완료: PostgreSQL, Redis 설정")
+print("선택한 저장소 확인 완료: PostgreSQL, Redis 설정")
 PY
     "${PYTHON_BIN}" -c 'import openai, streamlit, uvicorn'
     (
@@ -264,6 +286,7 @@ CHILD_PIDS+=("$!")
 CHILD_NAMES+=("Front")
 
 echo "Backend: ${BACKEND_URL} (OpenAI Provider)"
+echo "저장소 모드: ${STORAGE_MODE}"
 echo "MCP:     ${MCP_URL}"
 echo "Front:   ${FRONTEND_URL}"
 echo "종료하려면 Ctrl+C를 누르세요."

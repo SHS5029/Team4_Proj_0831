@@ -188,14 +188,23 @@ class FastMcpGameContextClient:
             if str(window) != payload["window_id"] or type(version) is not int or version < 1 or (self._state_version is not None and version != self._state_version and not vote_increment) or (self._window_id is not None and window != self._window_id):
                 raise ValueError
             data = payload["data"]
-            # 운영 MCP 축약 응답과 기존 응답을 함께 허용해 재기동 순서에 따른 실패를 막는다.
+            # 서사 필드의 유무는 호환하되 MCP 소유 지침은 아래에서 필수로 확인한다.
             allowed_shapes = [data_keys[scope]]
             if scope == "public":
                 allowed_shapes.append(data_keys[scope] | {"rules"})
             elif scope == "me":
                 allowed_shapes.append(data_keys[scope] - {"alibi", "observation"})
+            if scope in {"me", "persona"}:
+                # 역할 전략을 모르는 구형 MCP와 조합하면 조용히 무전략 행동을 만들지
+                # 않고 기존 MCP 장애 경로로 종료한다. 새 MCP를 먼저 배포해야 한다.
+                allowed_shapes = [shape | {"agent_instruction"} for shape in allowed_shapes]
             if not isinstance(data, dict) or set(data) not in allowed_shapes:
                 raise ValueError
+            if scope in {"me", "persona"}:
+                instruction = data["agent_instruction"]
+                if (not isinstance(instruction, str) or len(instruction) > 2400
+                        or (scope == "me" and not instruction.strip())):
+                    raise ValueError
             if "rules" in data and (not isinstance(data["rules"], list) or not data["rules"]
                                     or any(not isinstance(rule, str) or not rule.strip() for rule in data["rules"])):
                 raise ValueError

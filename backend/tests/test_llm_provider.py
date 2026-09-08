@@ -241,7 +241,11 @@ def _llm_request() -> LLMRequest:
     """Local Provider 호출에 사용할 최소 synthetic request를 만든다."""
 
     return LLMRequest(
-        messages=(({"role": "user", "content": "synthetic context"}),),
+        messages=(
+            {"role": "system", "content": "합성 공통 규칙"},
+            {"role": "developer", "content": "합성 MCP 역할 지침"},
+            {"role": "user", "content": "synthetic context"},
+        ),
         response_schema=agent_proposal_schema(),
         max_output_tokens=128,
         timeout_seconds=3,
@@ -281,6 +285,10 @@ async def test_local_provider_sends_openai_compatible_request(monkeypatch: pytes
     assert payload["max_tokens"] == 128
     assert payload["think"] is False
     assert payload["response_format"] == {"type": "json_object"}
+    assert payload["messages"] == [
+        {"role": "system", "content": "합성 공통 규칙\n\n합성 MCP 역할 지침"},
+        {"role": "user", "content": "synthetic context"},
+    ]
 
 
 @pytest.mark.asyncio
@@ -338,11 +346,34 @@ async def test_openai_reasoning_has_room_for_final_json_and_classifies_incomplet
     assert calls[0]["reasoning"] == {"effort": "high"}
     assert calls[0]["max_output_tokens"] >= 4096
     assert calls[0]["store"] is False
+    assert calls[0]["input"] == list(_llm_request().messages)
     response.status = "incomplete"
     response.incomplete_details = SimpleNamespace(reason="max_output_tokens")
     with pytest.raises(LLMResponseError) as caught:
         await provider.generate(_llm_request())
     assert caught.value.code == "LLM_INCOMPLETE"
+
+
+@pytest.mark.asyncio
+async def test_gemini_preserves_mcp_instruction_in_system_config(monkeypatch):
+    """developer role이 없는 공급자도 역할 지침을 user 데이터로 낮추지 않는다."""
+
+    from types import SimpleNamespace
+    from backend.app.llm_provider.gemini_provider import GeminiProvider
+
+    calls = []
+
+    async def generate_content(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(text='{"type":"PASS"}')
+
+    monkeypatch.setattr("google.genai.Client", lambda **kwargs: SimpleNamespace(
+        aio=SimpleNamespace(models=SimpleNamespace(generate_content=generate_content)),
+    ))
+    response = await GeminiProvider("synthetic-key", "synthetic-model").generate(_llm_request())
+    assert response.output == {"type": "PASS"}
+    assert calls[0]["config"].system_instruction == "합성 공통 규칙\n\n합성 MCP 역할 지침"
+    assert calls[0]["contents"] == [{"role": "user", "parts": [{"text": "synthetic context"}]}]
 
 
 @pytest.mark.parametrize("basis", ["PUBLIC_EVIDENCE", "NO_NEW_INFORMATION"])

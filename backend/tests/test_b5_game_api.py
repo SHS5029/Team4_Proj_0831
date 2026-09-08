@@ -59,6 +59,95 @@ def _create(client: TestClient) -> tuple[UUID, dict]:
     return UUID(body["data"]["game_id"]), body
 
 
+@pytest.mark.parametrize("saved", [False, True])
+def test_b5_delete_owned_game_and_cascade_without_touching_other_game(saved) -> None:
+    """생성된 합성 게임 하나만 삭제하고 원장 연쇄 삭제·반복 요청·소유권을 확인한다."""
+
+    client = _client()
+    game_id, _ = _create(client)
+    other_game_id, _ = _create(client)
+    version = 1
+    if saved:
+        response = client.post(
+            f"/api/v1/games/{game_id}/commands", headers=_headers(uuid4()),
+            json={"type": "SAVE_AND_EXIT", "expected_state_version": version},
+        )
+        assert response.status_code == 200
+        version = response.json()["data"]["result_state_version"]
+    path = f"/api/v1/games/{game_id}?expected_state_version={version}"
+    assert client.delete(path, headers=_headers(user=uuid4())).status_code == 404
+    assert client.delete(f"/api/v1/games/{game_id}", headers=_headers()).status_code == 422
+    assert client.delete(path).status_code == 400
+    assert client.delete(f"/api/v1/games/{game_id}?expected_state_version={version + 1}", headers=_headers()).status_code == 409
+    assert client.get(f"/api/v1/games/{game_id}", headers=_headers()).status_code == 200
+    deleted = client.delete(path, headers=_headers())
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["data"] == {"game_id": str(game_id), "deleted": True}
+    assert client.delete(path, headers=_headers()).status_code == 404
+    assert client.get(f"/api/v1/games/{game_id}", headers=_headers()).status_code == 404
+    assert client.get(f"/api/v1/games/{other_game_id}", headers=_headers()).status_code == 200
+    with psycopg.connect(get_settings().effective_database_url) as connection:
+        with connection.cursor() as cursor:
+            for table in ("game_players", "game_events", "command_receipts", "game_snapshots", "speech_analysis"):
+                cursor.execute(psycopg.sql.SQL("SELECT count(*) FROM public.{} WHERE game_id = %s").format(psycopg.sql.Identifier(table)), (game_id,))
+                assert cursor.fetchone()[0] == 0
+            cursor.execute("SELECT count(*) FROM public.users WHERE id = %s", (USER_ID,))
+            assert cursor.fetchone()[0] == 1
+
+
+def test_b5_delete_waits_for_game_lock_and_rejects_updated_version() -> None:
+    """다른 transaction이 먼저 진행한 게임을 오래된 화면의 삭제 요청으로 지우지 않는다."""
+
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from unittest.mock import patch
+    from backend.app.core.errors import ApiError
+
+    client = _client()
+    game_id, _ = _create(client)
+    runtime = client.app.state.game_runtime
+    entered = Event()
+    original_lock = runtime._games.lock_game
+
+    def observed_lock(cursor, target):
+        entered.set()
+        return original_lock(cursor, target)
+
+    with ThreadPoolExecutor(max_workers=1) as pool, patch.object(runtime._games, "lock_game", side_effect=observed_lock):
+        with psycopg.connect(get_settings().effective_database_url) as connection:
+            connection.execute("SELECT id FROM public.games WHERE id = %s FOR UPDATE", (game_id,))
+            future = pool.submit(runtime.delete_game, USER_ID, game_id, expected_state_version=1)
+            assert entered.wait(2)
+            assert not future.done()
+            connection.execute("UPDATE public.games SET state_version = 2 WHERE id = %s", (game_id,))
+        with pytest.raises(ApiError) as error:
+            future.result(timeout=3)
+        assert error.value.code == "STALE_STATE_VERSION"
+    assert client.get(f"/api/v1/games/{game_id}", headers=_headers()).status_code == 200
+
+
+def test_b5_delete_failure_rolls_back_game_and_children() -> None:
+    """삭제 SQL 뒤 장애를 주입해 게임과 종속 플레이어가 함께 복원되는지 확인한다."""
+
+    from unittest.mock import patch
+
+    client = _client()
+    game_id, _ = _create(client)
+    repository = client.app.state.game_runtime._games
+    original_delete = repository.delete_owned_game
+
+    def fail_after_delete(*args, **kwargs):
+        original_delete(*args, **kwargs)
+        raise RuntimeError("합성 transaction 장애")
+
+    with patch.object(repository, "delete_owned_game", side_effect=fail_after_delete):
+        response = client.delete(f"/api/v1/games/{game_id}?expected_state_version=1", headers=_headers())
+    assert response.status_code == 503
+    restored = client.get(f"/api/v1/games/{game_id}", headers=_headers()).json()["data"]
+    assert restored["game"]["state_version"] == 1
+    assert len(restored["players"]) == 6
+
+
 def test_b5_create_snapshot_command_and_sync() -> None:
     """생성부터 첫 발언과 delta sync까지의 PostgreSQL 흐름을 검증한다."""
 

@@ -1,4 +1,4 @@
-"""게임 시작·저장·재개 command service의 공개 조합 경계.
+"""게임 시작·저장·재개 command와 수동 삭제 service의 공개 조합 경계.
 
 트랜잭션의 순서와 상태 변경은 이 모듈에 두고, 저장소와 공통 복원·이벤트
 도우미는 service 객체가 제공하도록 한다. 이렇게 하면 command별 orchestration이
@@ -23,6 +23,38 @@ from backend.app.schemas.command_schema import GameCommandRequest
 from backend.app.services.game.helpers import request_hash as _request_hash, window_id as uuid5_for_window
 from backend.app.services.game.service_errors import rule_error
 from backend.app.services.game.postgres_helpers import find_replay, restore_locked_game
+
+
+def delete_game(
+    service: Any, owner_user_id: UUID, game_id: UUID, *, expected_state_version: int,
+) -> dict[str, Any]:
+    """사용자가 확인한 게임만 잠금 안에서 삭제하고 실패 시 종속 원장도 되돌린다.
+
+    command와 동일한 게임 행 잠금으로 AI 진행·저장과 직렬화한다. 존재하지 않는
+    게임과 타인 소유 게임은 같은 오류로 반환해 삭제 여부를 외부에 구분하지 않는다.
+    """
+
+    if type(expected_state_version) is not int or expected_state_version < 1:
+        raise ApiError(status_code=422, code="INVALID_REQUEST", message="게임 상태 버전이 올바르지 않습니다.")
+    try:
+        with service._transactions.transaction() as connection:
+            with connection.cursor(row_factory=dict_row) as cursor:
+                game = service._games.lock_game(cursor, game_id)
+                if game is None or UUID(str(game["owner_user_id"])) != owner_user_id:
+                    raise ApiError(status_code=404, code="GAME_NOT_FOUND", message="게임을 찾을 수 없습니다.")
+                if game["state_version"] != expected_state_version:
+                    raise ApiError(status_code=409, code="STALE_STATE_VERSION", message="게임 상태가 변경되었습니다. 최신 상태를 다시 확인하세요.")
+                if game["status"] not in {"IN_PROGRESS", "SAVED"}:
+                    raise ApiError(status_code=409, code="INVALID_GAME_STATUS", message="진행 중이거나 저장된 게임만 삭제할 수 있습니다.")
+                service._games.delete_owned_game(
+                    cursor, game_id=game_id, owner_user_id=owner_user_id,
+                    expected_state_version=expected_state_version,
+                )
+    except ApiError:
+        raise
+    except Exception as exc:
+        raise ApiError(status_code=503, code="DEPENDENCY_UNAVAILABLE", message="게임을 삭제하지 못했습니다. 다시 확인해 주세요.", retryable=True) from exc
+    return {"game_id": str(game_id), "deleted": True}
 
 
 def _route_scope(game_id: UUID) -> str:
@@ -87,7 +119,9 @@ def begin_game(service: Any, owner_user_id: UUID, game_id: UUID, payload: GameCo
                     GameEngine().begin_game(state)
                 except RuleViolation as exc:
                     raise rule_error(exc) from exc
-                service._games.update_game_state(cursor, state=state, expected_state_version=accepted_version)
+                service._games.update_game_state(
+                    cursor, state=state, expected_state_version=accepted_version, user_action=True,
+                )
                 front_sequence = service._games.next_front_sequence(cursor, game_id)
                 from backend.app.services.game.window_service import next_window
                 service._actions.open_window(cursor, next_window(state, datetime.now(UTC)))
@@ -131,7 +165,9 @@ def save_game(service: Any, owner_user_id: UUID, game_id: UUID, payload: GameCom
                     GameEngine().save(state, remaining_ms)
                 except RuleViolation as exc:
                     raise rule_error(exc) from exc
-                service._games.update_game_state(cursor, state=state, expected_state_version=accepted_version)
+                service._games.update_game_state(
+                    cursor, state=state, expected_state_version=accepted_version, user_action=True,
+                )
                 if window is not None:
                     service._actions.pause_window(cursor, window_id=UUID(str(window["id"])), remaining_ms=remaining_ms)
                 front_sequence = service._games.next_front_sequence(cursor, game_id)
@@ -173,7 +209,9 @@ def resume_game(service: Any, owner_user_id: UUID, game_id: UUID, payload: GameC
                     GameEngine().resume(state, current_time)
                 except RuleViolation as exc:
                     raise rule_error(exc) from exc
-                service._games.update_game_state(cursor, state=state, expected_state_version=accepted_version)
+                service._games.update_game_state(
+                    cursor, state=state, expected_state_version=accepted_version, user_action=True,
+                )
                 if window is not None:
                     service._actions.resume_window(cursor, window_id=UUID(str(window["id"])), deadline_at=state.deadline_at)
                 front_sequence = service._games.next_front_sequence(cursor, game_id)

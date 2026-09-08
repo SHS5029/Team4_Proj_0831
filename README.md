@@ -24,6 +24,281 @@
 
 ## 현재 구현 범위
 
+### 역할별 AI Agent 프롬프트 (WU-M6)
+
+시민·탐정·의사·마피아의 세부 지침과 승리 계획은 MCP의
+[`ROLE_PLANS`](mcp_server/mafia_game/api/prompts/instructions.py)에서 관리합니다.
+각 Agent에는 Backend가 검증한 본인 역할과 현재 단계(토론·밤·투표)에 해당하는
+전략만 제공합니다. 성격 수치는 MCP가 고정 말투 지침으로 변환하고, 토론 외에는
+말투 지침을 생략합니다. 마피아 기만 성향의 2배 증폭(상한 1)은 마피아 조건에서만
+적용하며 행동 확률을 뜻하지 않습니다.
+
+Backend의 메인 system 메시지는 짧은 공통 마피아 규칙으로 축소했습니다. MCP가
+운영 `me`·`persona` Resource에 추가한 `agent_instruction`과 Backend의 출력 JSON
+계약은 developer 메시지에 한 번 전달합니다. 페르소나 원문·플레이어 발언은 user
+데이터에 남기며 지시문으로 삽입하지 않습니다. Local·Gemini는 developer 지침을
+해당 공급자의 system 영역에 합칩니다. 추가 MCP 왕복이나 DB 조회는 없습니다.
+
+MCP API의 `prompts`·`resources`·`tools` 패키지는 `__init__.py`에 설명 docstring만
+둡니다. 프롬프트 내용과 생성은 `prompts/instructions.py`, FastMCP 등록은 각 패키지의
+`registry.py`가 담당하며 composition root와 소비자는 구현 모듈을 직접 import합니다.
+이 구조 분리 후 독립 MCP의 등록·지침·ASGI 왕복·Backend adapter 테스트 85개가
+통과했습니다. 동작을 유지한 모듈 이동이므로 전체 Backend 회귀·실제 DB·유료 API
+재검증은 생략했습니다.
+
+사용 모델 `gpt-5.6-luna`, 추론 강도와 출력 토큰 예산은 유지했습니다.
+[공식 프롬프트 가이드](https://developers.openai.com/api/docs/guides/prompt-guidance-gpt-5p6)에
+따라 중복 설명·예시와 현재 단계에 불필요한 전략을 줄였습니다. 과거 공개 발언과
+본인 비공개 조사 기록은 길이 축소를 위해 자르지 않습니다.
+공통 system은 262자입니다. 9개 표현 성향을 모두 0.5로 둔 합성 입력에서 출력 계약을
+포함한 system·developer 문자 수는 토론 4,463~4,687자에서 2,162~2,215자,
+밤·투표 4,341~4,573자에서 1,563~1,646자로 감소했습니다. 토큰 수·승률·응답 품질의
+실측 결과는 아닙니다.
+
+MCP를 먼저 갱신한 뒤 Backend를 갱신해야 합니다. 기존 MCP에는 자동 reload가
+없으므로 `run_openai.sh`를 사용 중이면 스크립트를 재시작합니다. 구버전 MCP가
+역할 지침을 보내지 않으면 Backend는 기존 MCP 오류 경로로 처리합니다.
+자세한 운영 응답 계약은 [API 명세 WU-M6 절](docs/개발상세플랜/AI_MAFIA_API_SPEC.md)을
+참고하세요. 인증 세션 Resource의 8.2 스키마와 DB 스키마는 변경하지 않았습니다.
+
+관련 검증 명령(루트 가상환경, 격리 QA DB, `LLM_PROVIDER=dummy`):
+
+```bash
+PYTHONPATH=.:mcp_server .venv/bin/python -m pytest -q \
+  backend/tests/test_b6_agent_manager.py backend/tests/test_fastmcp_agent_client.py \
+  backend/tests/test_llm_provider.py mcp_server/tests/test_fastmcp_registration.py \
+  mcp_server/tests/test_fastmcp_roundtrip.py mcp_server/tests/test_process_backend_roundtrip.py
+```
+
+2026-09-08 검증: 역할·페르소나·공급자 전달 테스트와 실제 Backend↔MCP 프로세스
+통합 테스트가 통과했습니다. Backend·MCP 전체 회귀는 917개 통과·기존 실패 14개·
+명시적 `B6_LOCAL_QA=1`이 필요한 SQL 테스트 8개 건너뜀입니다. 기존 실패는 Agent
+activity 테스트 대역의 설정·상태 누락, Agent/Redis/SQL 계층 경계와 MCP 공개 context
+대역 문제이며 이번 범위에서 수정하지 않았습니다. 통합 테스트용 격리 QA DB에는
+기존 007 마이그레이션을 적용했습니다. 변경하지 않은 Front 회귀와 유료 Luna 게임
+재실행은 생략했으며, 프롬프트 축소의 실제 승률·대화 품질은 아직 측정하지 않았습니다.
+
+### AI 발언 분석 구현 범위
+
+AI 공개 발언의 투표 직전 임베딩·주장 저장, 투표 보조 조회 API와 최소 Front 연결을
+추가했습니다. [마스터플랜의 구현 착수 결정](docs/개발상세플랜/AI_MAFIA_MASTER_PLAN.md#8-구현-착수-결정-2026-09-07)과
+아래 활성화 절차를 따릅니다. 배포 기본값은 비활성이며, 현재 실행 환경은 후속
+요청에 따라 활성화했습니다. 관리자용 64차원 해싱과 분리된 실제 의미 임베딩을 사용합니다.
+
+### AI 발언과 투표 보조 정보
+
+확정된 AI `PUBLIC / PLAYER_SPOKE` 전문만 별도 worker가 분석합니다. 인간 발언,
+PASS, 미확정 모델 응답, private context·내부 사고는 분석하지 않습니다. 투표·재투표·
+최종 지목에서 **AI 발언 돌아보기**를 열면 현재 토론/게임 누적 범위의 지목 순위,
+유사 주장과 후보별 의심·옹호·질문 원문을 확인할 수 있습니다. 지목 순위는 고유 AI 수로
+집계하므로 한 AI의 반복 지목은 한 명입니다. 기간 중 지목 이력이며 실제 투표 의향이나
+마피아 확률을 뜻하지 않습니다.
+
+**발언 분석은 투표 직전에 실행합니다.** 토론 중에는 원문 참조만 등록하고 모델을
+호출하지 않습니다. 토론이 마감되면 누적 공개 발언의 임베딩·주장 추출을 처리하며,
+처리가 끝날 때까지 마감된 토론 상태로 대기합니다. 분석 완료 후 투표 창을 열고
+그 시점부터 30초를 계산합니다. 첫날의 밤 전환은 대기하지 않으며 첫날 발언도 이후
+첫 투표 준비에 포함합니다. 재투표에는 저장된 결과를 재사용합니다. 단계별 재시도를
+모두 소진하면 가용 결과로 진행하고, 분석 비활성·초기화·DB 장애 시 게임 진행을 유지합니다.
+
+유사 주장은 같은 대상·입장·논점의 다른 AI 발언을 전문 임베딩 cosine 0.88 이상에서
+묶습니다. 현재 논점은 알리바이·역할 주장·진술 변화이며, 숫자나 직업 근거가 다르거나
+부정·인용이 불명확하면 묶음을 생략합니다. 따라서 모든 유사 표현이 표시되지는 않습니다.
+
+Front는 이후 디자인 교체를 고려해 CSS 없이 별도 component의 텍스트·expander만
+사용합니다. 원문은 event ID·시점과 함께 펼쳐 보며 타임라인 직접 이동은 구현하지
+않았습니다. 보조 요청은 최대 0.75초이고 매초 타이머에서는 호출하지 않습니다.
+부분 결과는 처리 수를 표시하며, 보조 API 오류가 투표 선택·제출을 취소하지 않습니다.
+
+Backend는 `speech_analysis`에 단계별 결과·재시도·선점 토큰을 저장합니다.
+`speech_analysis_versions`에 최초 분석 활성 시점을 보존해 대기 중 먼저 끝난 게임도
+발견하며, 활성 시점 이전의 종료 게임은 명시적 game ID로 원문 참조만 역채움합니다.
+모델 선점은 마감된 투표 직전 토론에만 허용하므로 종료 게임에 모델을 자동 호출하지 않습니다.
+마지막 허용 시도 중 프로세스가 종료된 작업은 만료 후 `FAILED / LEASE_EXPIRED`로
+정리해 무기한 대기와 구분합니다. 공개 발언
+원문은 기존 `game_events`가 보존합니다. 임베딩 성공 후 주장 분석이 실패해도 성공한
+벡터는 재호출하지 않으며, 임베딩 장애 시에도 주장 집계는 독립 처리합니다. 같은
+window의 최초 공개 개설 sequence를 근거 상한으로 고정하고 GET 요청은 DB 쓰기나
+모델 호출 없이 저장된 결과를 조합합니다. 분석 저장소는 게임 원장을 변경하지 않으며,
+게임 runtime이 준비 완료를 확인한 뒤 상태 전환·투표 창 개설을 담당합니다. 이미 열린
+투표의 마감·미해소 표는 변경하지 않습니다. 모델 입력은 공개 player ID·좌석·이름과 원문으로 제한합니다.
+조회 서비스와 DB 연결 설정은 기존 `runtime_factory.py`에서 조립하고 앱에 주입합니다.
+HTTP router는 입력 검증과 서비스 호출만 담당합니다.
+
+기존 001~004 스키마가 있는 DB에 Backend 소유의
+`backend/migrations/006_create_speech_analysis.sql`을 적용해야 합니다. 006은
+PostgreSQL `double precision[]`를 사용해 pgvector와 관리자용 005에 의존하지 않습니다.
+전체 migration runner는 기존처럼 005도 실행하므로, pgvector가 없는 기존 DB에는
+MCP/Data 담당자가 검증된 DDL DSN으로 006만 적용합니다. 실행 위치는 저장소 루트입니다.
+
+```bash
+backend/.venv/bin/python - <<'PY'
+from pathlib import Path
+import psycopg
+from backend.app.core.config import Settings
+
+try:
+    settings = Settings.from_migration_env()
+    with psycopg.connect(settings.effective_migration_database_url, autocommit=True) as connection:
+        connection.execute(Path("backend/migrations/006_create_speech_analysis.sql").read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit("006 migration failed; verify the DDL target and permissions") from None
+print("006 migration applied")
+PY
+```
+
+DDL 대상과 runtime 대상은 같은 DB여야 합니다. runtime은 `speech_analysis`에
+SELECT/INSERT/UPDATE, `speech_analysis_versions`에 SELECT/INSERT만 필요하며
+DDL·원본 삭제 권한은 필요하지 않습니다. 실행 환경의
+계정 분리가 적용돼 있다면 MCP/Data 담당자가 새 테이블 권한도 함께 부여해야 합니다.
+설정은 [.env.example](.env.example)의 `SPEECH_ANALYSIS_*`를 따릅니다.
+
+| 환경 변수 | 기본값·의미 |
+|---|---|
+| `SPEECH_ANALYSIS_ENABLED` | `false`, migration·권한 준비 후 `true`로 활성화하고 Backend 재시작 |
+| `SPEECH_ANALYSIS_EMBEDDING_MODEL` / `SPEECH_ANALYSIS_DIMENSIONS` | `text-embedding-3-small` / `1536`, 현재 지원 조합 고정 |
+| `SPEECH_ANALYSIS_CLAIMS_MODEL` | `gpt-4.1-mini`, 공개 주장 추출 전용 |
+| `SPEECH_ANALYSIS_VERSION` | `v1`, 두 모델·차원·프롬프트 revision과 합쳐 저장 버전 구분 |
+| `SPEECH_ANALYSIS_POLL_SECONDS` | `1`, 원문 발견 및 마감된 투표 직전 토론의 분석 조회 주기 |
+| `SPEECH_ANALYSIS_BATCH_SIZE` / `SPEECH_ANALYSIS_CONCURRENCY` | `16` / `2`, 한 주기의 단계 처리 수 / 동시 모델 호출 수 |
+| `SPEECH_ANALYSIS_TIMEOUT_SECONDS` / `SPEECH_ANALYSIS_MAX_ATTEMPTS` | `30` / `3`, 단계별 timeout / 최대 시도 수 |
+
+기존 `OPENAI_API_KEY`를 재사용하되 게임 Agent와 별도 요청이므로 활성화하면 추가
+API 사용량이 발생합니다. 분석 DB 연결·명령·잠금 대기는 각각 5초·5초·1초로 제한합니다.
+초기화나 종료 실패도 고정 오류 코드만 기록하고 게임 lifespan과 분리합니다.
+`enable_background_worker=False`인 테스트 앱에서는 분석 worker도 기동하지 않습니다.
+실제 한국어 모델 분류 품질·처리 지연 목표는 유료 호출 없이 입증할 수 없으므로
+합성 회귀 결과와 구분하며, 사용자에게 표시하는 분석은 항상 원문 확인용 참고 정보입니다.
+
+**현재 원격 연결(2026-09-07):** 후속 요청으로 원격 `4team_db`에 006을 적용하고
+`.env`의 `AI_MAFIA_STORAGE_MODE=team`으로 현재 Backend 연결을 전환했습니다.
+`run_openai.sh`는 `TEAM_DATABASE_URL`과 `REDIS_URL`을 사용하며 분석 설정은 켜져 있습니다.
+원격 `public.speech_analysis.embedding`에 1536차원 벡터를 저장하고, 기동 직후
+공개 발언 2개의 임베딩·주장 `READY` 저장을 확인했습니다. 로컬의 기존 게임·분석 데이터는
+보존했으며 원격으로 복제하지 않았습니다. 다음 실행도 `./run_openai.sh`를 사용합니다.
+
+원격 DDL은 기존 계정의 소유권·DDL 권한과 대상을 확인한 별도 관리 연결에서 006만
+적용했습니다. 적용 전후 게임 118개를 포함한 기존 23개 테이블의 행수·내용 집계·권한·
+소유자가 일치했고 새 제약·인덱스 6개·트리거·함수가 정상입니다. 현재 원격 접속 계정도
+기존 superuser를 재사용하므로 운영용 runtime/DDL 최소 권한 분리는 미적용입니다.
+서버 전환 후 Backend health/readiness와 Front health는 200이며 DB·Redis 연결이 정상입니다.
+스크립트의 설정 선택·누락값·격리 보호 8건과 `bash -n`, 실제 `--check`를 확인했습니다.
+MCP 초기화·도구 목록 조회도 통과했습니다. 별도 격리 QA에서 실행한 Backend 전체 회귀는
+751 통과·기존 14 실패·8 건너뜀이며, 변경 없는 Front·MCP 전체 회귀는 직전 결과를
+재사용했습니다. 원격에서는 합성 테스트 데이터 작성과 전체 회귀를 수행하지 않았습니다.
+
+**브라우저 실게임 점검(2026-09-08, WU-B14):** 기존 원격 연결과 모델로 09:06~09:11 KST에
+6인 게임 한 판을 진행하여 2일차 낮 투표 후 시민 승리·COMPLETED를 확인했습니다.
+브라우저에서 다른 AI 발언 수신 후 채팅 초안이 유지되고 Enter keydown으로 인간 발언이
+공개 원장에 등록됨을 확인했습니다. OS 키 입력 자체의 검증과는 구분합니다. 투표 제출은
+반영되지 않아 인간 표가 시간 만료 자동 선택으로 처리됐으며 직접 투표 성공으로 집계하지 않습니다.
+
+투표 개설 직후 게임 누적 AI 발언 8개 중 임베딩 2개(1536차원), 주장 분석 0개만 준비됐고
+게임 종료 때도 같은 상태였습니다. 현재 토론 범위는 4개 모두 미처리였으며 지목 순위·유사
+주장은 비어 있었습니다. 투표 보조 API는 두 범위에서 HTTP 200, 관측한 최초 응답 시간은
+각각 369ms·455ms였습니다. 이 단일 표본으로 지연 목표나 한국어 검색 품질을 판정하지 않습니다.
+현재 임베딩은 인간의 투표 참고 조회용이며 AI 판단에 검색 결과를 재주입하는 RAG는 미구현입니다.
+
+종료 후 원격 DB에서 준비 판정 SQL만 읽기 전용으로 실행하면 미완료에 대해 `False`를
+반환했습니다. 원장의 투표 전환 transaction은 토론 마감 3.197초 뒤 실행됐지만 로컬
+진행 로그에는 해당 state version의 전환이 없고, 로컬 프로세스는 2.4초 뒤 열린 투표를
+처음 관측했습니다. 로컬 Backend 재시작 뒤 진행된 다른 게임에서도 투표 전환은 로컬 로그에
+없고 후속 투표 처리만 기록됐습니다. 각 Backend의 scheduler가 소유자나 배포 instance 구분
+없이 공유 DB의 모든 마감 게임을 조회하며, 이를 직렬화하거나 호환 버전을 강제하는 분산
+lease가 없습니다. 따라서 다른 Backend instance가 분석 비활성·초기화 실패 또는 B14 이전
+코드로 먼저 전환하면 현재 instance의 대기 판정을 우회합니다. 실제 게임에서는 마감 뒤 두
+임베딩이 선점됐지만 외부 전환으로 SPEECH 창이 닫혀, 완료된 두 벡터 외 나머지 임베딩과
+모든 주장 분석이 더 이상 선점되지 않았습니다. 조기 활성화의 원인 범주는 **공유 DB에 연결된
+호환되지 않는 별도 Backend scheduler**로 확정했으며, 과거 DB statement/connection log와
+commit timestamp가 비활성이라 해당 원격 프로세스의 호스트·설정은 사후 특정할 수 없습니다.
+
+분석 버전 활성화 뒤 열린 투표 창 37개를 읽기 전용으로 점검하면 29개에 분석 대상이 있고,
+그중 21개는 개설 시점에 모든 분석이 READY가 아니었습니다. 재시도 소진 실패도 허용되므로
+21개 전체를 오류로 단정하지 않지만, 이번 게임처럼 시도 0인 PENDING 행이 남은 최근 사례는
+대기 계약 위반입니다. 후속 진단을 위해
+기존 runtime 운영 로그의 `SPEECH_ANALYSIS_PRE_VOTE_FAILED`에 게임·행동 창·PID와 고정
+실패 사유를 추가하고, 이 프로세스가 실제 확정한 전환만 `DISCUSSION_TRANSITION_APPLIED`에
+분석 준비/비활성/불필요/실패 상태로 기록합니다. 예외 원문·발언·접속 정보는 기록하지 않습니다.
+분석 실행 시점·장애 우회 정책·DB 원장은 변경하지 않았습니다.
+
+격리 PostgreSQL과 fake Provider로 원문→양 분석 단계→투표 개설→근거 조회, 전환 경쟁과
+비밀정보 비노출을 포함한 focused 검증 **22개가 통과**했습니다. Backend 전체 회귀는
+**811 통과·기존 14 실패·8 건너뜀**으로 기존 실패 목록과 같습니다. 실패는 activity fixture
+8개, Agent/Redis import 경계 각 1개, MCP fake 3개, action SQL 경계 1개입니다.
+8개는 별도 B6 opt-in 검증이며 변경 없는 Front·MCP 전체 회귀와 추가 유료 게임은 생략했습니다.
+원격 합성 데이터 작성·migration·commit·push는 하지 않았습니다.
+
+**후속 로그 점검(2026-09-07):** 점검 시 원격 공개 발언 31개가 임베딩·주장 모두
+`READY`였고 분석 실패는 없었습니다. 기존 게임 한 개는 4일차 `DAY_DISCUSSION`,
+`state_version=35`에서 `FAILED`·`WORKER_FAILED`를 반복했습니다. 읽기 전용 DB 조회와
+메모리 엔진 재현으로, 3일차와 4일차에 같은 `round=3`, `cycle=1`을 사용한 기존 게임의
+과거 발언이 현재 토론 상태에 섞여 현재 AI의 `PASS`가 `DUPLICATE_ACTION`으로
+거부되는 경로를 확인했습니다. 당시 저장된 판단 재적용이 반복됐고 worker 실패 로그는
+원인 코드를 보존하지 않았습니다. 후속 수정은 현재 날짜·연속 phase 진입 버전의 제출만
+복원하고 운영 로그에 허용된 고정 원인 코드를 남깁니다. 진입 이벤트가 없는 불완전
+이력은 과거 발언을 임의로 섞지 않고 빈 발언 이력으로 복원합니다. 원격 DB 읽기 전용
+조회에서도 해당 AI가 이미 행동한 것으로 잘못 복원되지 않음을 확인했습니다.
+
+투표 준비 sweep을 별도 작업으로 분리해 분석 DB 지연이 다른 게임의 기존 투표 처리를
+막지 않도록 했습니다. 구형 순차 토론도 마지막 행동을 한 번 저장한 뒤 마감된 SPEECH
+창에서 분석을 기다리며, 저장·재개와 재시작 후 같은 원장으로 복구합니다. 추가 migration과
+직접 게임 데이터 보정은 필요하지 않습니다. 변경 관련 focused 검증은 격리 PostgreSQL의
+원장→분석→투표 개설→조회 연결을 포함해 124건 통과했습니다.
+
+후속 Backend 전체 회귀는 **806 통과·기존 14 실패·8 건너뜀**이며 직전 결과와 비교한
+새 실패는 없습니다. 기존 실패는 activity fixture 누락 8건, Agent/Redis import 경계
+각 1건, MCP fake cache 3건, 기존 action SQL 경계 1건입니다. 변경 없는 Front·MCP
+전체 회귀와 유료 모델 자동 테스트는 재실행하지 않았습니다. 006 파일 hash와 diff를
+확인했고 commit·push는 하지 않았습니다. 같은 원격 연결로 서버를 재기동한 뒤
+Backend health/readiness·Front health가 200이고 실제 MCP 요청도 성공했습니다.
+기존 중단 게임은 상태 버전 35에서 37 이후로 진행했으며 점검 구간의 실패 로그는 0건입니다.
+새 토론 발언의 양 분석 단계는 PENDING·시도 횟수 0으로 유지됨을 원격 읽기 전용으로 확인했습니다.
+
+**이전 로컬 활성화 기록(2026-09-07):** 기존 `run_openai.sh`가 사용하는
+`127.0.0.1:55432/mafia_qa`에 006을 적용하고 Git 제외 `.env`의 분석 설정을 켰습니다.
+기존 OpenAI 키와 다른 설정은 보존했습니다. Orca의 **AI 마피아 실행** 터미널이
+Backend `http://127.0.0.1:18000`, MCP `http://127.0.0.1:18100/mcp`,
+사용자 화면 `http://127.0.0.1:18501`을 관리합니다. 주소는 원격 전환 뒤에도 같습니다.
+
+마이그레이션 전후 기존 게임 19개와 이벤트·플레이어·행동창, 기존 객체 권한의 보존을
+확인했습니다. 이 로컬 QA는 기존 `qa` owner/superuser 계정을 그대로 사용하므로 위의
+운영용 최소 권한 계정 분리는 적용되지 않았습니다. 당시에는 공유 원격 DB를 변경하지 않았습니다.
+기동 후 Backend health/readiness와 Front health는 200, MCP 초기화·도구 목록 조회는
+정상이었으며 당시 진행·저장 게임의 공개 AI 발언 **30개가 임베딩·주장 모두 READY**였습니다.
+활성화 이전 종료 게임은 자동 역채움 대상에서 제외됩니다.
+
+실제 OpenAI 임베딩 1536차원과 합성 발언의 주장 추출도 확인했습니다. 이 과정에서
+모델이 한국어 인용문의 글자 위치를 잘못 계산하는 문제를 재현해 수신부에서 보완했습니다.
+정확한 인용이 원문에 한 번만 있을 때 위치를 재계산하고 엄격 검증하며, 모호한 반복
+인용이나 없는 문장은 거부합니다. 분석 revision은 `claims-ko-v2`입니다. 이 보완 후
+Backend 전체 회귀는 **751 통과·기존 14 실패·8 건너뜀**입니다. 변경 없는 Front·MCP
+회귀는 아래 결과를 재사용했으며 별도 실게임 플레이 E2E와 대규모 품질·부하 평가는 생략했습니다.
+
+최초 구현 단계의 발언 분석 검증(2026-09-07)은 모델 호출을 fake로 대체했습니다. 격리 PostgreSQL에서
+006 재적용·재실행, 기존 행 보존, 최소 권한, 동시 선점, 종료 게임 탐색, lease 만료와
+위조 원본 거부 등 108개 assertion을 확인했습니다. API·worker·원장 연결을 포함한
+통합 테스트 5개와 마지막 조립 수정의 관련 회귀 129개가 통과했습니다.
+전체 회귀는 Backend **729 통과·기존 14 실패·8 건너뜀**, 사용자 Front
+**388 통과·기존 8 실패**, 관리자 Front **18 통과**, MCP **44 통과**입니다.
+Backend의 남은 실패는 아래 병합 검증에 기록한 기존 14건과 동일하며, 건너뛴 8건은
+별도 고정 QA DB를 사용하는 B6 opt-in 검사입니다. 사용자 Front의 타이머·투표 안내
+3건과 UUID 설정·결과 CTA 5건도 새 연결을 제외한 기존 코드에서 동일하게 재현했습니다.
+이 기존 실패들은 이번 기능 범위에서 수정하지 않았습니다. 유료 모델 품질·부하 측정과 실제
+서비스 DB migration·프로세스 재시작·브라우저 실게임 E2E는 수행하지 않았습니다.
+
+새 기능의 focused 검증 명령은 다음과 같습니다. DB 통합 3개는
+`VOTE_INSIGHT_TEST_DATABASE_URL`에 loopback의 `mafia_vote_insights_qa_`로 시작하는
+격리 DB를 지정할 때만 실행됩니다. 해당 DB에 001~004·006을 먼저 적용해야 합니다.
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -p pytest_asyncio.plugin -p anyio.pytest_plugin \
+  backend/tests/test_speech_analysis_repository.py backend/tests/test_speech_analysis_provider.py \
+  backend/tests/test_speech_analysis_worker.py backend/tests/test_vote_insights.py \
+  backend/tests/test_vote_insight_integration.py -q
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 frontend_user/.venv/bin/python -m pytest -c pyproject.toml \
+  frontend_user/tests/test_vote_insights_f9.py -q
+```
+
 2026-09-07 병합 기준: `frontend_user`는 `Hwanseok`의 `c96821d`를 유지하고,
 `frontend_admin`은 수신한 `origin/chd2`의 `5027155`를 반영했습니다. 관리자 확장에
 필요한 Backend·정본 문서는 자동 병합 결과를 유지합니다. 후속 WU-F8 접속 오류 수정에서 Backend 주소 환경 변수와 관리자 UUID 입력·복구를
@@ -46,7 +321,7 @@ Backend 전용 환경 때문에 실패한 관리자 화면 연동 1개는 루트
 - Backend 소유 PostgreSQL migration 실행 코드(MCP 섹터가 실제 실행)
 - 독립 관리자 Streamlit 앱과 후속 MCP 서버 예약 구조(`mcp_server/mcp_2`)
 - FastMCP 기반 `/mcp`와 최소 Resource·Prompt·Tool 등록부
-- FastMCP 등록부에서 Backend 게임 context·prompt·action endpoint로 전달하는 HTTP adapter
+- FastMCP의 역할별 Prompt와 Backend 게임 context·action endpoint로 전달하는 HTTP adapter
 
 개발 섹터 역할은 코드 소유권과 실행 환경 책임을 분리합니다. Backend 섹터는
 DB schema·migration SQL·repository와 Redis client·lock 코드를 작성하고, MCP
@@ -148,6 +423,32 @@ Frontend snapshot과 AI public context가 같은 전체 이력을 읽습니다. 
 소유권·현재 DB 버전을 확인한 후 공개 필드를 재검증하고, 캐시 누락·손상·장애 시
 PostgreSQL 전체 원장에서 복구합니다. PostgreSQL은 영구 원본이며 개인 정보 scope와
 비공개 역할 원장·모델 내부 추론은 이 캐시에 넣지 않습니다.
+
+AI의 멀티턴 입력도 매 행동마다 `Agent → MCP Resource → Backend 내부 context API`
+경로로 재구성합니다. Backend는 DB에서 소유권·현재 상태를 확인하고,
+`read_public_history()`에서 버전·cursor가 일치하는 Redis 공개 이력을 우선 사용합니다.
+캐시를 쓸 수 없으면 `game_events`의 해당 시점까지 공개 사건·발언 전체를 읽어 복구한 뒤
+Redis를 갱신합니다. 본인의 비공개 조사 기록은 DB에서 별도로 읽습니다. 프로세스 메모리의
+dict·list는 이번 요청을 조합하는 용도이며 Agent별 누적 대화 저장소로 재사용하지 않습니다.
+모델에는 매번 system·developer 지침과 전체 context JSON을 다시 보내며,
+`previous_response_id`·대화 세션 연결을 사용하지 않습니다. 현재 Agent 대화 경로에는
+과거 발언의 임베딩 검색·요약·최근 N개 절단을 적용하지 않습니다. Redis는 DB 이력 조회를
+줄이는 캐시이므로 모델에 보내는 전체 이력 길이까지 줄여 주지는 않습니다.
+
+멀티턴 효율 개선 검토안(미구현): PostgreSQL 원본과 Redis 캐시를 유지하면서 모델
+입력을 현재 상태·본인 확정 정보, 최근 원문, 출처가 있는 공개 주장 기록, 관련 과거 원문으로
+구성하는 방향을 권장합니다. 먼저 동일 기록에서 입력량·응답 시간·질문 누락·판단 오류를
+비교하고, 중복 메타데이터 축소와 고정 지침의 프롬프트 캐시 경계를 적용한 뒤 이력 선별을
+검증합니다. 이후 화자·대상·키워드와 임베딩을 함께 사용하는 검색을 추가합니다. 현재 분석은
+AI 발언만 투표 직전에 처리하므로 인간 발언과 최신 발언을 포함하는 Agent용 색인이 별도로
+필요합니다. 색인 미준비 시 최근 원문으로 진행하며 기존 투표 준비 판정은 변경하지 않습니다.
+공개 요약은 여러 AI가 공유할 수 있지만 타인의 역할 주장과 서버 확정 사실을 구분하고,
+모든 항목에 원문 event ID를 보존해야 합니다. 비공개 조사 기록은 공유 요약·검색에서 제외하고
+actor별 권한 조회로만 전달합니다. Redis에는 DB 원문에서 복구 가능한 공개 파생 자료만 둡니다.
+[OpenAI 프롬프트 캐시 안내](https://developers.openai.com/api/docs/guides/prompt-caching)에
+따라 재사용할 접두부의 경계와 최소 길이를 확인하고 실제 캐시 읽기·쓰기 비용을 비교합니다.
+`previous_response_id`로 연결하더라도 이전 입력은 과금되므로 입력 축소와 별도로 평가합니다.
+근거는 [대화 상태 문서](https://developers.openai.com/api/docs/guides/conversation-state)입니다.
 
 같은 게임의 승패·투표 원장 검토 결과는 다음과 같습니다. 투표 실행 문제는 아래 후속
 병렬 투표 수정에 반영했고, 승패·최종 처형 상태 문제는 검토만 했습니다.
@@ -334,7 +635,7 @@ Front·MCP 연결까지 완료됐다는 뜻은 아닙니다. 규칙 수준의 �
 │   │   └── game/                     # 게임 업무 Service·Repository 조합·공용 계약
 │   │       ├── postgres_helpers.py   # PostgreSQL 상태 복원·replay 공통 helper
 │   │       ├── service_errors.py     # 엔진 오류·API 오류 변환
-│   │       ├── runtime_factory.py    # 게임 runtime·Agent adapter composition root
+│   │       ├── runtime_factory.py    # 게임 runtime·Agent adapter·투표 조회 서비스 조립
 │   │       ├── postgres_runtime.py   # router·worker가 호출하는 PostgreSQL facade
 │   │       ├── turn_order_service.py # 다음 행동 주체·순서·cycle 계산
 │   │       ├── action_timer_service.py # 행동 deadline·잔여 시간 계산
@@ -342,15 +643,22 @@ Front·MCP 연결까지 완료됐다는 뜻은 아닙니다. 규칙 수준의 �
 │   │       ├── actor_context.py      # HUMAN·AGENT 공통 행동 주체 계약
 │   │       ├── game_read_service.py  # 게임 목록·snapshot 조회와 row 변환
 │   │       ├── event_sync_service.py # event 변환·sync envelope 조합
+│   │       ├── speech_analysis_worker.py # 공개 AI 발언의 비동기 임베딩·주장 분석
+│   │       ├── vote_insight_service.py # 투표 범위별 지목·유사 주장 집계
 │   ├── app/models/identity.py        # UUID 내부 사용자 모델
 │   ├── app/repositories/             # PostgreSQL CRUD·row 변환 저장소
+│   │   ├── speech_analysis_repository.py # 발언 발견·단계별 선점·분석 결과 저장
+│   │   └── vote_insight_repository.py # 소유권·window cutoff를 고정한 공개 분석 조회
 │   ├── app/infrastructure/           # migration·PostgreSQL·내부 HMAC 구현
 │   ├── app/agent/                    # Agent 정책·projection·orchestration (DB·Engine 런타임 import 없음)
 │   │   └── activity.py               # 공개 AI 진행 메모리와 비밀정보 없는 순차 로그
 │   ├── app/game_engine/               # 순수 게임 규칙·phase·결정적 RNG 정본 package (현재 phase가 행동 실행 포함)
 │   ├── app/llm_provider/             # 현재 LLM Provider adapter
+│   │   └── speech_analysis_provider.py # 공개 원문 임베딩·구조화 주장 전용 Provider
 │   ├── app/mcp/                      # Backend Agent용 MCP context client·registry
 │   ├── migrations/                   # Backend 작성 SQL migration(MCP 실행)
+│   │   ├── 006_create_speech_analysis.sql # pgvector 없는 DB의 발언 분석 파생 저장소
+│   │   └── 007_add_stale_game_cleanup.sql # 15분 사용자 무동작 진행 게임 정리 기준·index
 │   ├── logs/                         # 실행 시 생성되는 순환 진행 로그 (Git 제외)
 │   ├── tests/
 │   └── README.md
@@ -360,6 +668,7 @@ Front·MCP 연결까지 완료됐다는 뜻은 아닙니다. 규칙 수준의 �
 │   ├── app_pages/game_create_page.py  # 새 게임·인원 선택·생성 UI
 │   ├── app_pages/settings_page.py    # UUID 확인·복구·교체 화면
 │   ├── components/identity_bridge.py # 브라우저 local storage UUID bridge
+│   ├── components/vote_insights.py   # 교체하기 쉬운 최소 투표 보조 정보 표시
 │   ├── components/theme.py           # 사용자 화면 공통 시각 토큰·접근성 스타일
 │   ├── components/browser_components/identity/ # 정적 UUID bridge
 │   ├── core/identity.py              # UUID v4 검증·생성
@@ -371,6 +680,12 @@ Front·MCP 연결까지 완료됐다는 뜻은 아닙니다. 규칙 수준의 �
 ├── mcp_server/
 │   ├── pyproject.toml, uv.lock        # Python 3.12·MCP SDK 1.29.1 독립 실행 환경
 │   ├── mafia_game/                   # 최소 FastMCP 등록부·Backend HTTP adapter
+│   │   └── api/
+│   │       ├── prompts/              # __init__.py는 패키지 설명만 포함
+│   │       │   ├── instructions.py   # 역할별 전략·단계별 지침·성향 해석
+│   │       │   └── registry.py       # FastMCP Prompt 등록
+│   │       ├── resources/registry.py # 모델 context 가공·Resource 등록
+│   │       └── tools/registry.py     # Backend 행동 위임·Tool 등록
 │   ├── tests/                        # 등록·adapter·ASGI 왕복 테스트
 │   └── mcp_2/                        # 후속 MCP 독립 예약 패키지
 ├── docs/
@@ -450,6 +765,14 @@ Backend의 현재 게임 API는 canonical `mystery-v1` 계약을 사용하고, B
 Frontend의 Scaffold 전용 실행 경로와 client는 제거되었으며, Backend의 게임 API는
 PostgreSQL 정본 runtime만 사용합니다. 따라서 화면 확인과 API 테스트 전에 PostgreSQL
 migration과 연결 환경을 준비해야 합니다.
+
+`IN_PROGRESS` 게임은 생성 또는 마지막 성공 사용자 command 뒤 15분 동안 새 사용자
+command가 없으면 중앙 worker가 30초마다 최대 100개씩 삭제합니다. AI·자동 마감·발언
+분석과 GET·sync·SSE 조회는 보존 시간을 연장하지 않습니다. `SAVED`, `COMPLETED`,
+`FAILED` 게임은 자동 삭제하지 않습니다. 사용자 command와 정리는 같은 게임 행 잠금을
+사용하며, 정리된 게임의 종속 원장은 FK cascade로 함께 삭제되고 이후 API는 기존
+`404 GAME_NOT_FOUND`를 반환합니다. Redis 공개 대화 cache는 DB commit 뒤 함께 지우되
+Redis 장애가 DB 삭제를 되돌리지는 않습니다.
 관리자 운영 분석은 완료된 게임 결과를 기준으로 분석하며, 결과가 없을 때는 빈 통계를 오류로
 표시하지 않고 안내 문구를 보여줍니다.
 
@@ -633,6 +956,43 @@ seed 파일을 함께 두지 않습니다. `001`·`002` migration은 legacy `use
 포함하지 않으며, 적용된 migration 파일은 수정하지 않고 이후 번호의 순방향
 migration으로 확장합니다.
 
+`007_add_stale_game_cleanup.sql`은 `games.last_user_action_at`을 추가하고 기존 행을 마지막
+성공한 USER command receipt 시각 또는 생성 시각으로 초기화합니다. 보정 중에는 같은 DDL
+transaction에서 게임 갱신 트리거만 잠시 끄고 복구하여 기존 `updated_at`을 보존합니다.
+Backend 새 코드를 기동하기
+전에 007을 적용해야 하며, DML runtime 계정에는 `games.last_user_action_at` UPDATE와
+`games` DELETE 권한이 필요합니다. 종속 테이블 직접 DELETE 권한은 요구하지 않고 FK
+cascade를 사용합니다. 삭제된 게임의 command receipt도 정리되므로 해당 생성 요청의
+`Idempotency-Key`는 게임이 삭제된 뒤에는 새 게임 생성으로 처리됩니다.
+
+**팀 DB 적용(2026-09-08, WU-B15):** 사용자 요청에 따라 `TEAM_DATABASE_URL`의 `4team_db`에
+007을 적용했습니다. 대상·소유권·DDL/DML 권한을 검증한 기존 계정으로 실행했으며, 권한이나
+접속 설정은 변경하지 않았습니다. 적용 시점 게임 157개의 기존 모든 컬럼 값과 `updated_at`을
+보존했고, 마지막 사용자 동작 시각 보정 불일치는 0건입니다. 재실행의 무변경성과 NOT NULL·
+CHECK·부분 index·갱신 트리거 정상 상태를 확인했습니다. migration 자체는 게임을 삭제하지
+않으며, 적용 직후 15분 무동작 진행 게임 후보는 66개였습니다.
+
+팀 DB에서 새 합성 사용자·게임을 사용하는 생성·시작·저장·재개·AI PASS와 사용자 동작 시각
+검증 5개가 통과했고, 해당 테스트 사용자·게임은 종료 시 삭제했습니다. 격리 PostgreSQL에서는
+15분 경계·연쇄 삭제·잠금 경합·rollback·migration 재실행을 확인했습니다. 루트 가상환경의
+Backend 전체 회귀는 **830 통과·기존 14 실패·11 건너뜀**입니다. 기존 실패는 Agent activity
+대역의 설정·상태 누락, Agent/Redis/SQL 계층 경계와 MCP context 대역 문제입니다.
+건너뛴 테스트는 명시적 QA 환경이 필요한 Agent SQL 8개와 발언 분석 통합 3개입니다.
+Front·MCP 전체 회귀와 유료 모델 호출은 이번 DB 변경과 무관하여 생략했습니다.
+
+팀 DB smoke 검증 명령(합성 테스트 데이터 생성·정리 포함):
+
+```bash
+LLM_PROVIDER=dummy SPEECH_ANALYSIS_ENABLED=false PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+  .venv/bin/python -m pytest -p pytest_asyncio.plugin -p anyio.pytest_plugin \
+  backend/tests/test_postgres_game_flow.py -q
+```
+
+자동 정리는 WU-B15 Backend의 다음 기동부터 시작합니다. 공유 DB의 모든 Backend instance도
+같은 코드로 갱신해야 합니다. 구버전은 사용자 동작 시각을 기록하지 않으므로 혼합 배포하면
+활동 중인 게임을 만료로 오인할 수 있습니다. 이번 migration·테스트에서는 상시 서버를
+기동하거나 기존 게임에 정리 sweep을 실행하지 않았습니다.
+
 ## Frontend 설정
 
 Frontend는 Google 로그인 없이 브라우저 localStorage에 UUID v4를 저장하고,
@@ -701,10 +1061,37 @@ Backend/MCP는 각각 18000/18100 포트입니다. 모두 loopback에서 실행�
 [UI·UX 플레이테스트 보고서](docs/AI_MAFIA_UI_UX_PLAYTEST_REPORT.md)에 기록했습니다.
 
 홈을 제외한 새 게임 설정·생성 완료·역할 공개·게임 진행·결과·일반 및 게임별 피드백
-화면에는 공통 `뒤로가기`와 `홈` 버튼이 표시됩니다. 뒤로가기는 검증된 앱 내부 방문
-기록을 따르고 기록이 없으면 홈으로 이동합니다. 홈 이동은 진행 게임·작성 중 입력과
-결과 불명 요청을 보존하고 홈 목록 cache만 무효화해 최신 게임 상태를 다시 조회합니다.
-두 버튼은 모바일에서도 유지됩니다.
+화면에는 공통 `뒤로가기` 버튼이 표시됩니다. 진행 중인 역할 공개·게임·관전 화면에서
+누르면 `저장하고 나가기 / 게임 삭제 / 계속 플레이` 팝업이 자동으로 열립니다.
+팝업을 닫거나 계속 플레이를 선택하면 게임 화면에 남으며, 화면 갱신 중에도 선택 전까지
+팝업을 유지합니다. 저장은 기존 `SAVE_AND_EXIT`로 처리하고, 삭제는 해당 게임의
+진행 상황과 기록을 복구할 수 없다는 안내 후 선택한 경우에만 실행합니다.
+
+수동 삭제는 `DELETE /api/v1/games/{game_id}?expected_state_version=<확인한 버전>`을
+사용합니다. Backend는 `X-User-Id` 소유권·버전·진행/저장 상태를 게임 행 잠금 안에서
+검증하며, 기존 FK cascade로 종속 기록을 함께 삭제합니다. 새 migration은 없습니다.
+성공 후 홈으로 이동하고 게임 cache와 목록을 새로 읽습니다. 실패·응답 유실은 화면에
+남아 같은 대상·버전으로 재확인하며, 버전 변경은 최신 화면에서 다시 선택해야 합니다.
+유실 뒤 같은 삭제 요청의 `GAME_NOT_FOUND`도 홈으로 이동합니다. 다른 사용자 게임과
+완료·실패 게임은 삭제할 수 없습니다. 이 API를 사용하려면 Backend도 변경 코드로
+실행해야 합니다.
+
+이미 저장된 게임·결과와 일반 화면의 뒤로가기는 검증된 앱 내부 방문 기록을 따르고
+기록이 없으면 홈으로 이동합니다. 일반 홈 이동은 진행 게임·작성 중 입력과 결과 불명
+요청을 보존하고 홈 목록 cache만 무효화합니다. 뒤로가기 버튼은 모바일에서도 유지됩니다.
+
+2026-09-08 뒤로가기 팝업 검증: 추가 회귀 33건이 통과했습니다. Streamlit AppTest로
+역할 공개·진행·관전의 팝업 유지·취소·저장·삭제·재시도·후속 404 복구를 확인했습니다.
+별도 임시 PostgreSQL에는 합성 게임만 생성해 소유권·버전 거부, 실제 FK 연쇄 삭제,
+다른 게임·사용자 보존, 게임 행 잠금 경쟁과 삭제 후 장애 rollback을 검증하고 정리했습니다.
+전체 회귀는 Front `411 passed / 7 failed`, Backend `842 passed / 15 failed / 11 skipped`입니다.
+Front 실패는 기존 타이머·최종 지목 문구·UUID 교체·결과 새 게임 버튼 기대값 불일치이며,
+Backend 실패는 기존 Agent 대역의 누락 필드, MCP 응답·계층 경계 검사와 Backend
+가상환경의 Streamlit 미설치입니다. 요청 범위 밖의 실패는 수정하지 않았습니다.
+11건은 별도 QA 설정을 요구하는 기존 테스트이며, 유료 모델 호출과 실제 사용자 데이터
+검증은 생략했습니다. 이번 변경의 주요 검증 파일은
+`frontend_user/tests/test_view_models_f3.py`, `frontend_user/tests/test_api_client.py`,
+`backend/tests/test_b3_infrastructure.py`, `backend/tests/test_b5_game_api.py`입니다.
 
 ### 직접 실행
 
@@ -717,10 +1104,12 @@ LLM_PROVIDER=dummy .venv/bin/python -m uvicorn backend.app.main:app --reload --p
 ```
 
 OpenAI Provider로 실행할 때는 루트 `.env`에 `OPENAI_API_KEY`와 `OPENAI_MODEL`을
-설정하고, migration·seed가 준비된 격리 저장소를 `AI_MAFIA_DATABASE_URL`과
-`AI_MAFIA_REDIS_URL`에 지정한 뒤 전용 스크립트를 사용합니다. 팀 공유
-`TEAM_DATABASE_URL`과 같은 DB는 여러 Backend worker가 한 게임을 선점할 수 있으므로
-스크립트가 시작을 거부합니다. 스크립트는 키와 접속 URL을 하드코딩하거나 출력하지 않고
+설정한 뒤 전용 스크립트를 사용합니다. `.env`의 `AI_MAFIA_STORAGE_MODE` 기본값은
+`isolated`이며 migration·seed가 준비된 `AI_MAFIA_DATABASE_URL`과
+`AI_MAFIA_REDIS_URL`을 사용합니다. 이 모드에서는 `TEAM_DATABASE_URL`과 같은 DB를
+거부합니다. 명시적 `team` 모드는 `TEAM_DATABASE_URL`과 `REDIS_URL`을 함께 사용합니다.
+공유 DB에서는 다른 Backend worker가 같은 게임을 선점할 수 있으므로 실행 담당자를
+조율해야 합니다. 스크립트는 키와 접속 URL을 하드코딩하거나 출력하지 않고
 루트 `.env`를 `python-dotenv`로 읽으며, Backend에만 `LLM_PROVIDER=openai`를 적용합니다.
 Backend·MCP·일반 사용자 Front를 함께 실행하고, `Ctrl+C` 또는 한 프로세스의 종료 시
 나머지 프로세스도 정리합니다. Front와 MCP에는 OpenAI·DB 비밀 환경 변수를 전달하지
@@ -1042,6 +1431,10 @@ OpenAI 실행의 루트 `.env` 모델은 `OPENAI_MODEL=gpt-5.6-luna`로 설정�
 AI는 규칙 안에서 자기 진영 승리를 최우선으로 판단하고 인간·AI 주장에 동일한 증거 기준을 적용합니다. 마피아의 거짓 역할 주장·의심 및 투표 유도 성향은 기존 deception 값의 2배(최대 1.0)로 프롬프트에 반영합니다. 저장값은 유지하며 실제 거짓말 발언 비율을 2배로 보장하는 설정은 아닙니다.
 
 새 토론은 1분 45초 자유 채팅이며 플레이어별 최근 1분에 최대 7회 발언할 수 있습니다. 인간은 AI 처리 순서와 무관하게 발언하고, 발언해도 마감 시간이 연장되지 않습니다. 마감 시 첫날은 밤, 이후 낮은 투표, 최종 토론은 최종 지목으로 넘어갑니다. 저장·재개 시 남은 시간을 보존합니다.
+
+발언 입력 중 다른 플레이어의 메시지가 도착해도 작성 중인 내용은 유지됩니다. Enter로
+발언을 전송하고 Shift+Enter로 줄바꿈을 입력할 수 있으며, 화면의 전송 버튼도 사용할 수
+있습니다.
 
 자유 토론 검증: 실제 PostgreSQL에서 7회 상한·동시 제출·idempotency·AI 반복 발언·저장/재개·일반/최종 마감을 확인했습니다. 관련 API·Front 입력·Backend↔MCP 통합 테스트 67개 통과. 전체 회귀에서 남은 fixture·계층 경계 실패 14개는 기존 HEAD에서도 동일하게 재현됩니다. 유료 모델 호출은 검증에 사용하지 않았습니다.
 

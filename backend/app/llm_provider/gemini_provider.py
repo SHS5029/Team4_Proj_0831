@@ -32,14 +32,15 @@ class GeminiProvider(LLMProvider):
                 "google-genai types are required for the gemini provider"
             ) from error
         started = time.perf_counter()
-        system_instruction = next(
-            (message["content"] for message in request.messages if message.get("role") == "system"),
-            None,
-        )
+        # MCP developer 지침도 시스템 영역에 보존하고 게임 원문만 user로 전달한다.
+        system_instruction = "\n\n".join(
+            message["content"] for message in request.messages
+            if message.get("role") in {"system", "developer"}
+        ) or None
         contents = [
             {"role": "user", "parts": [{"text": message["content"]}]}
             for message in request.messages
-            if message.get("role") != "system"
+            if message.get("role") not in {"system", "developer"}
         ]
         try:
             response = await asyncio.wait_for(
