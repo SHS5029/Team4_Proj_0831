@@ -31,6 +31,51 @@ def test_admin_403_is_fail_closed() -> None:
     assert error.value.code == "ADMIN_ACCESS_DENIED"
 
 
+def test_admin_timeout_is_scoped_to_speech_analytics() -> None:
+    """분석 GET 전후에도 일반 GET과 질문 POST의 5초 제한이 유지되어야 한다."""
+
+    captured = []
+
+    def transport(request, timeout):
+        captured.append((request.get_method(), timeout))
+        return 200, b'{"data":{}}'
+
+    client = AdminApiClient(user_id=ADMIN_ID, transport=transport)
+    client.metrics()
+    client.speech_analytics()
+    client.metrics()
+    client.games()
+    client.game_detail(ADMIN_ID)
+    client.role_win_rates()
+    client.persona_win_rates()
+    client.feedback()
+    client.audit_logs()
+    client.insights_query("최근 운영 지표를 알려 주세요")
+
+    assert captured == [("GET", 5.0), ("GET", 30.0)] + [("GET", 5.0)] * 7 + [("POST", 5.0)]
+
+
+@pytest.mark.parametrize("failure", ["timeout", "forbidden"])
+def test_admin_speech_analytics_failure_is_closed_without_retry(failure) -> None:
+    """분석 시간 초과와 권한 거부는 재시도나 부분 응답 반환 없이 기존 오류로 닫는다."""
+
+    captured = []
+
+    def transport(request, timeout):
+        captured.append((request.get_method(), timeout))
+        if failure == "timeout":
+            raise TimeoutError("합성 분석 요청 시간 초과")
+        return 403, b'{"error":{"code":"ADMIN_ACCESS_DENIED"},"data":{"topics":[]}}'
+
+    client = AdminApiClient(user_id=ADMIN_ID, transport=transport)
+    with pytest.raises(AdminApiError) as error:
+        client.speech_analytics()
+
+    expected = (503, "DEPENDENCY_UNAVAILABLE") if failure == "timeout" else (403, "ADMIN_ACCESS_DENIED")
+    assert (error.value.status_code, error.value.code) == expected
+    assert captured == [("GET", 30.0)]
+
+
 def test_live_dashboard_revoked_access_returns_to_identity_flow(monkeypatch) -> None:
     """주기 조회의 403도 권한 표시를 지우고 UUID bridge가 있는 전체 화면으로 복귀한다."""
 

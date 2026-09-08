@@ -570,6 +570,13 @@ class PostgresGameRuntime:
         snapshot = self._read.snapshot(owner_user_id, game_id)
         return {**snapshot, "agent_activity": self._activity.recent(owner_user_id, game_id)}
 
+    def special_roles(self, owner_user_id: UUID, game_id: UUID) -> dict[str, Any]:
+        """공개 조회도 내부 MCP와 동일한 읽기 검증·최소 projection만 사용한다."""
+
+        from backend.app.services.game.game_read_service import read_special_roles
+
+        return read_special_roles(self._read, owner_user_id=owner_user_id, game_id=game_id)
+
     def delete_game(
         self, owner_user_id: UUID, game_id: UUID, *, expected_state_version: int,
     ) -> dict[str, Any]:

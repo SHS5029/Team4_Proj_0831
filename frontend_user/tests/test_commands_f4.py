@@ -1049,3 +1049,152 @@ def test_speech_queue_success_then_new_phase_counts_success_and_cancels_follower
     assert queue.view()["pending"] == []
     assert len(client.calls) == 1
     assert snapshots[-1]["game"]["phase"] == "NIGHT_ACTION"
+
+
+def _custom_night_snapshot():
+    """B16 본인 능력별 대상 계약을 외부 Backend 없이 재현한다."""
+
+    snapshot = _action_snapshot("NIGHT_ACTION")
+    snapshot["game"]["mode"] = "CUSTOM_ROLE"
+    snapshot["me"].update(role_name="감식관", faction="CITIZEN",
+        ability_ids=["night.investigate.v1", "night.protect.v1"], ability_options=[
+            {"ability_id": "night.investigate.v1", "label": "조사", "valid_targets": [{"player_id": TARGET, "display_name": "후보"}]},
+            {"ability_id": "night.protect.v1", "label": "보호", "valid_targets": [{"player_id": HUMAN, "display_name": "나"}]},
+        ])
+    return snapshot
+
+
+def test_custom_command_requires_owned_ability_and_standard_omits_it():
+    snapshot = _custom_night_snapshot()
+    with pytest.raises(ValueError):
+        build_command(snapshot=snapshot, command_type="SUBMIT_NIGHT_ACTION", target_player_id=TARGET)
+    with pytest.raises(ValueError):
+        build_command(snapshot=snapshot, command_type="SUBMIT_NIGHT_ACTION", target_player_id=TARGET, ability_id="night.attack.v1")
+    command = build_command(snapshot=snapshot, command_type="SUBMIT_NIGHT_ACTION", target_player_id=TARGET, ability_id="night.investigate.v1")
+    assert command["ability_id"] == "night.investigate.v1"
+    snapshot["game"]["mode"] = "STANDARD"
+    assert "ability_id" not in build_command(snapshot=snapshot, command_type="SUBMIT_NIGHT_ACTION", target_player_id=TARGET, ability_id="night.investigate.v1")
+
+
+def test_custom_night_switch_uses_only_selected_ability_targets_and_survives_rerun():
+    app = AppTest.from_function(_action_app, args=(_custom_night_snapshot(), Mock())).run()
+    assert not app.exception
+    ability_key = app.radio[0].key
+    app.radio(key=ability_key).set_value("night.investigate.v1").run()
+    target_key = next(item.key for item in app.radio if item.label == "대상 선택")
+    assert app.radio(key=target_key).options == ["🔵 후보"]
+    app.radio(key=target_key).set_value(TARGET).run()
+    app.run()
+    assert app.radio(key=target_key).value == TARGET
+    app.radio(key=ability_key).set_value("night.protect.v1").run()
+    target = next(item for item in app.radio if item.label == "대상 선택")
+    assert target.options == ["🔵 나"]
+    assert target.value is None
+    assert not app.exception
+
+
+def test_custom_queue_rejects_target_from_other_ability(panel_state):
+    snapshot = _custom_night_snapshot()
+    action_panel._queue_command(game_id=GAME, snapshot=snapshot, command_type="SUBMIT_NIGHT_ACTION",
+                                ability_id="night.investigate.v1", target_player_id=HUMAN, rerun=False)
+    assert panel_state.get("game.command_pending", {}).get("status") != "PENDING_TO_RENDER"
+
+
+@pytest.mark.parametrize("value", ["", "가" * 41, "줄\n바꿈", "숨김\x00"])
+def test_custom_role_name_rejects_invalid_input(value):
+    from frontend_user.core.commands import normalize_role_name
+
+    with pytest.raises(ValueError):
+        normalize_role_name(value)
+
+
+def test_custom_night_save_resume_preserves_choice_and_submits_one_ability():
+    """같은 행동 창의 저장·재개에서 선택을 유지하고 결과 불명 요청을 고정한다."""
+
+    snapshot = _custom_night_snapshot()
+    client = Mock()
+    client.submit_command.side_effect = ApiUnavailableError(status_code=503, code="DEPENDENCY_UNAVAILABLE")
+    app = AppTest.from_function(_action_app, args=(snapshot, client)).run()
+    ability_key = app.radio[0].key
+    app.radio(key=ability_key).set_value("night.protect.v1").run()
+    target_key = next(item.key for item in app.radio if item.label == "대상 선택")
+    app.radio(key=target_key).set_value(HUMAN).run()
+    app.session_state["test.snapshot"]["game"]["status"] = "SAVED"
+    app.run()
+    assert app.radio(key=target_key).value == HUMAN
+    assert app.radio(key=target_key).disabled
+    app.session_state["test.snapshot"]["game"]["status"] = "IN_PROGRESS"
+    app.run()
+    assert app.radio(key=target_key).value == HUMAN
+    app.button(key="action.SUBMIT_NIGHT_ACTION").click().run()
+    assert client.submit_command.call_args.kwargs["command"]["ability_id"] == "night.protect.v1"
+    assert client.submit_command.call_args.kwargs["command"]["target_player_id"] == HUMAN
+    assert app.session_state["game.command_pending"]["status"] == "RETRYABLE_UNKNOWN"
+    assert not app.exception
+
+
+def _triple_snapshot(phase="DAY_VOTE"):
+    """HUMAN 소유 능력과 공개 좌석을 같은 합성 snapshot에 묶는다."""
+
+    snapshot = _action_snapshot(phase)
+    snapshot["game"]["mode"] = "CUSTOM_ROLE"
+    snapshot["me"].update(role_name="투표관", faction="CITIZEN", ability_ids=["vote.triple.v1"])
+    snapshot["players"][0]["kind"] = "HUMAN"
+    return snapshot
+
+
+@pytest.mark.parametrize("phase", ["DAY_VOTE", "REVOTE"])
+@pytest.mark.parametrize("choice", ["일반 1표", "능력 3표"])
+def test_triple_vote_explicit_choice_rerun_and_unknown_request_lock(phase, choice):
+    snapshot = _triple_snapshot(phase)
+    client = Mock()
+    client.submit_command.side_effect = ApiUnavailableError(status_code=503, code="DEPENDENCY_UNAVAILABLE")
+    app = AppTest.from_function(_action_app, args=(snapshot, client)).run()
+    target_key = f"form.vote_target.{GAME}.{snapshot['action_window']['window_id']}"
+    ability_key = f"form.vote_ability.{GAME}.{snapshot['action_window']['window_id']}"
+    app.radio(key=target_key).set_value(TARGET).run()
+    assert app.button(key="action.SUBMIT_VOTE").disabled
+    app.radio(key=ability_key).set_value(choice).run()
+    app.run()
+    assert app.radio(key=ability_key).value == choice
+    app.button(key="action.SUBMIT_VOTE").click().run()
+    assert not app.exception
+    first = deepcopy(client.submit_command.call_args.kwargs)
+    assert first["command"].get("ability_id") == ("vote.triple.v1" if choice == "능력 3표" else None)
+    assert "weight" not in first["command"]
+    assert app.radio(key=ability_key).disabled
+    app.run()
+    assert client.submit_command.call_count == 1
+    retry = next(button for button in app.button if "다시" in button.label)
+    retry.click().run()
+    assert client.submit_command.call_args.kwargs == first
+
+
+@pytest.mark.parametrize("denied", ["final", "standard", "unowned", "dead", "ai"])
+def test_triple_vote_denied_ui_and_command(denied):
+    snapshot = _triple_snapshot()
+    if denied == "final":
+        snapshot = _triple_snapshot("FINAL_ACCUSATION")
+    elif denied == "standard":
+        snapshot["game"]["mode"] = "STANDARD"
+    elif denied == "unowned":
+        snapshot["me"]["ability_ids"] = []
+    elif denied == "dead":
+        snapshot["me"]["alive"] = False
+    else:
+        snapshot["players"][0]["kind"] = "AI"
+    app = AppTest.from_function(_action_app, args=(snapshot, Mock())).run()
+    assert not app.exception
+    assert all(radio.label != "투표 방식" for radio in app.radio)
+    assert not any("투표 조작" in item.value or "vote.triple.v1" in item.value for item in app.text)
+    with pytest.raises(ValueError):
+        build_command(snapshot=snapshot, command_type="SUBMIT_VOTE", target_player_id=TARGET, ability_id="vote.triple.v1")
+    assert "ability_id" not in build_command(snapshot=snapshot, command_type="SUBMIT_VOTE", target_player_id=TARGET)
+
+
+def test_day_only_custom_has_no_night_ability_options():
+    from frontend_user.core.commands import custom_ability_options
+
+    snapshot = _triple_snapshot("NIGHT_ACTION")
+    snapshot["me"]["ability_options"] = [{"ability_id": "vote.triple.v1", "label": "投票", "valid_targets": []}]
+    assert custom_ability_options(snapshot) == []

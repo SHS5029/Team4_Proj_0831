@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 from backend.app.game_engine.errors import RuleViolation
-from backend.app.models.enums import NightActionType, PlayerRole
+from backend.app.models.enums import NightActionType, PlayerKind, PlayerRole
 from backend.app.models.game_state import GameState, PlayerState
+
+ABILITY_ACTIONS = {
+    "night.attack.v1": NightActionType.ATTACK,
+    "night.investigate.v1": NightActionType.INVESTIGATE,
+    "night.protect.v1": NightActionType.PROTECT,
+}
 
 
 def role_action(state: GameState, actor_id) -> NightActionType:
@@ -13,6 +19,12 @@ def role_action(state: GameState, actor_id) -> NightActionType:
     actor = state.player_by_id.get(actor_id)
     if actor is None:
         raise RuleViolation("PLAYER_NOT_FOUND")
+    if actor.custom_ability_ids:
+        # 저장 순서는 기본 밤 능력 선택에만 사용하고 낮·조회 능력은 건너뛴다.
+        for ability_id in actor.custom_ability_ids:
+            if ability_id in ABILITY_ACTIONS:
+                return ABILITY_ACTIONS[ability_id]
+        raise RuleViolation("ROLE_ACTION_NOT_ALLOWED")
     actions = {
         PlayerRole.MAFIA: NightActionType.ATTACK,
         PlayerRole.DETECTIVE: NightActionType.INVESTIGATE,
@@ -22,6 +34,24 @@ def role_action(state: GameState, actor_id) -> NightActionType:
         return actions[actor.role]
     except KeyError as exc:
         raise RuleViolation("ROLE_ACTION_NOT_ALLOWED") from exc
+
+
+def ability_action(state: GameState, actor_id, ability_id: str | None) -> NightActionType:
+    """CUSTOM_ROLE은 저장 snapshot의 능력만 내부 행동으로 변환한다."""
+
+    actor = state.player_by_id.get(actor_id)
+    if actor is None:
+        raise RuleViolation("PLAYER_NOT_FOUND")
+    if state.mode == "STANDARD" or actor.kind is not PlayerKind.HUMAN:
+        if ability_id is not None:
+            raise RuleViolation("ABILITY_ID_INVALID")
+        return role_action(state, actor_id)
+    if ability_id is None or ability_id not in actor.custom_ability_ids:
+        raise RuleViolation("ABILITY_ID_INVALID")
+    try:
+        return ABILITY_ACTIONS[ability_id]
+    except KeyError as exc:
+        raise RuleViolation("ABILITY_ID_INVALID") from exc
 
 
 def required_actors(state: GameState) -> list[PlayerState]:
@@ -34,5 +64,9 @@ def required_actors(state: GameState) -> list[PlayerState]:
     return [
         player
         for player in state.alive_players
-        if player.role in {PlayerRole.MAFIA, PlayerRole.DETECTIVE, PlayerRole.DOCTOR}
+        if (
+            any(ability_id in ABILITY_ACTIONS for ability_id in player.custom_ability_ids)
+            if player.custom_ability_ids
+            else player.role in {PlayerRole.MAFIA, PlayerRole.DETECTIVE, PlayerRole.DOCTOR}
+        )
     ]

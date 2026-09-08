@@ -155,6 +155,7 @@ PUBLIC_EVENT_FIELDS = {
 def render(snapshot: dict[str, Any]) -> None:
     """COMPLETED는 Backend result만 상세 표시하고 FAILED는 공개 안내로 제한한다."""
 
+    st.session_state.pop("game.special_roles", None)
     # Backend가 확정한 result만 역할·행동·투표 공개의 근거로 사용한다. Front는
     # public event나 생존자 수를 조합해 승패 또는 숨은 역할을 다시 판정하지 않는다.
     game = snapshot.get("game") if isinstance(snapshot.get("game"), dict) else {}
@@ -226,7 +227,10 @@ def _render_players(*, result: dict[str, Any], me: Any = None) -> None:
     st.markdown("## 전체 역할")
     if isinstance(me, dict):
         my_role = ROLE_PRESENTATION.get(str(me.get("role")))
-        if my_role:
+        if isinstance(me.get("role_name"), str) and me.get("faction") in {"CITIZEN", "MAFIA"}:
+            with st.container(key="result-my-role", border=True):
+                st.text(f"내 역할 · {me['role_name']} · {'시민 진영' if me['faction'] == 'CITIZEN' else '마피아 진영'}")
+        elif my_role:
             role_name, role_icon, _ = my_role
             with st.container(key="result-my-role", border=True):
                 st.markdown(
@@ -252,7 +256,10 @@ def _render_players(*, result: dict[str, Any], me: Any = None) -> None:
                         f"<strong>{escape(str(player.get('display_name', '플레이어')))}</strong>",
                         unsafe_allow_html=True,
                     )
-                    st.write(f"{role_marker} {role_name}")
+                    if isinstance(player.get("role_name"), str) and player.get("faction") in {"CITIZEN", "MAFIA"}:
+                        st.text(f"{player['role_name']} · {'시민 진영' if player['faction'] == 'CITIZEN' else '마피아 진영'}")
+                    else:
+                        st.write(f"{role_marker} {role_name}")
                     status, detail = _player_status(player)
                     if status == "생존":
                         st.success(status)

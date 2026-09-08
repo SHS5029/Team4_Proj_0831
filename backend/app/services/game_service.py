@@ -240,6 +240,10 @@ class PostgresBeginGameService:
                     kind=kind,
                     display_name=str(row["display_name"]),
                     alive=bool(row["alive"]),
+                    custom_role_name=row.get("custom_role_name"),
+                    custom_role_catalog_version=row.get("custom_role_catalog_version"),
+                    custom_ability_ids=tuple(row.get("custom_ability_ids") or ()),
+                    custom_faction=Faction(str(row["faction"])) if row.get("custom_ability_ids") else None,
                 )
             )
             if kind is PlayerKind.HUMAN:
@@ -261,6 +265,7 @@ class PostgresBeginGameService:
                 day_number=int(game_row["day_number"]),
                 state_version=int(game_row["state_version"]),
                 updated_at=game_row["updated_at"],
+                mode=str(game_row.get("mode") or "STANDARD"),
             ),
             human_player_id,
         )

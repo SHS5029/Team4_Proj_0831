@@ -364,3 +364,163 @@ def test_home_navigation_reaches_create_or_general_feedback(button, page):
     assert not app.exception
     assert app.session_state["navigation.page"] == page
     assert "home.games" not in app.session_state
+
+
+class _CustomClient(_Client):
+    """B16 catalog envelope을 합성하여 Front만의 생성·재시도 계약을 검증한다."""
+
+    def __init__(self):
+        super().__init__()
+        self.catalog = {"data": {"catalog_version": "custom-role-v1", "abilities": [
+            {"id": "night.attack.v1", "label": "공격", "factions": ["MAFIA"]},
+            {"id": "night.investigate.v1", "label": "조사", "factions": ["CITIZEN", "MAFIA"]},
+            {"id": "night.protect.v1", "label": "보호", "factions": ["CITIZEN", "MAFIA"]},
+            {"id": "vote.triple.v1", "label": "투표 조작", "factions": ["CITIZEN", "MAFIA"]},
+            {"id": "intel.special_roles.v1", "label": "특수 직업 열람", "factions": ["CITIZEN", "MAFIA"]},
+        ]}}
+
+    def get_custom_role_abilities(self):
+        """외부 API 없이 실패와 catalog 교체를 재현한다."""
+
+        if isinstance(self.catalog, Exception):
+            raise self.catalog
+        return self.catalog
+
+
+def test_custom_create_normalizes_and_retries_identical_payload():
+    client = _CustomClient()
+    client.create_error = True
+    app = AppTest.from_function(_create_app, args=(client,)).run()
+    app.radio(key="game.create_mode").set_value("CUSTOM_ROLE").run()
+    app.text_input(key="game.create_role_name").set_value("  가   감식관 ").run()
+    app.multiselect(key="game.create_abilities.CITIZEN").set_value(["night.investigate.v1", "night.protect.v1"]).run()
+    app.button(key="game.create_submit").click().run()
+    first = dict(client.created[-1])
+    assert first["custom_role"] == {"name": "가 감식관", "faction": "CITIZEN",
+        "catalog_version": "custom-role-v1", "ability_ids": ["night.investigate.v1", "night.protect.v1"]}
+    assert app.radio(key="game.create_mode").disabled
+    app.button(key="game.create_retry").click().run()
+    assert client.created[-1] == first
+    assert not app.exception
+
+
+@pytest.mark.parametrize("catalog", [None, {"data": {"catalog_version": "old", "abilities": []}},
+    ApiUnavailableError(status_code=503, code="DEPENDENCY_UNAVAILABLE")])
+def test_catalog_failure_blocks_only_custom_and_has_retry(catalog):
+    client = _CustomClient()
+    client.catalog = catalog
+    app = AppTest.from_function(_create_app, args=(client,)).run()
+    app.radio(key="game.create_mode").set_value("CUSTOM_ROLE").run()
+    assert app.button(key="game.create_submit").disabled
+    assert app.button(key="game.catalog_retry")
+    app.radio(key="game.create_mode").set_value("STANDARD").run()
+    assert not app.button(key="game.create_submit").disabled
+    assert not app.exception
+
+
+def test_mafia_attack_mandatory_and_citizen_selection_survives_rerun():
+    client = _CustomClient()
+    app = AppTest.from_function(_create_app, args=(client,)).run()
+    app.radio(key="game.create_mode").set_value("CUSTOM_ROLE").run()
+    app.text_input(key="game.create_role_name").set_value("잠입자").run()
+    app.multiselect(key="game.create_abilities.CITIZEN").set_value(["night.protect.v1"]).run()
+    app.run()
+    assert app.multiselect(key="game.create_abilities.CITIZEN").value == ["night.protect.v1"]
+    app.radio(key="game.create_faction").set_value("MAFIA").run()
+    assert app.multiselect(key="game.create_abilities.MAFIA").options == ["조사", "보호", "투표 조작", "특수 직업 열람"]
+    app.button(key="game.create_submit").click().run()
+    assert client.created[-1]["custom_role"]["ability_ids"] == ["night.attack.v1"]
+    assert not app.exception
+
+
+def test_validation_correction_creates_new_body_and_key():
+    from frontend_user.core.api_client import ApiResponseError
+
+    class RejectClient(_CustomClient):
+        """명시적 거부는 결과 불명과 달리 새 요청으로 교정할 수 있어야 한다."""
+
+        def create_game(self, **body):
+            self.created.append(body)
+            raise ApiResponseError(status_code=422, code="VALIDATION_ERROR")
+
+    client = RejectClient()
+    app = AppTest.from_function(_create_app, args=(client,)).run()
+    app.radio(key="game.create_mode").set_value("CUSTOM_ROLE").run()
+    app.radio(key="game.create_faction").set_value("MAFIA").run()
+    app.text_input(key="game.create_role_name").set_value("첫 직업").run()
+    app.button(key="game.create_submit").click().run()
+    first = client.created[-1]
+    app.text_input(key="game.create_role_name").set_value("새 직업").run()
+    app.button(key="game.create_submit").click().run()
+    assert client.created[-1]["idempotency_key"] != first["idempotency_key"]
+    assert first["custom_role"]["name"] == "첫 직업"
+    assert client.created[-1]["custom_role"]["name"] == "새 직업"
+    assert not app.exception
+
+
+def test_catalog_retry_recovers_custom_form_without_creating_game():
+    client = _CustomClient()
+    catalog = client.catalog
+    client.catalog = {"data": {"catalog_version": "custom-role-v1", "abilities": []}}
+    app = AppTest.from_function(_create_app, args=(client,)).run()
+    app.radio(key="game.create_mode").set_value("CUSTOM_ROLE").run()
+    assert app.button(key="game.create_submit").disabled
+    client.catalog = catalog
+    app.button(key="game.catalog_retry").click().run()
+    assert len(app.multiselect) == 1
+    assert not client.created
+    assert not app.exception
+
+
+
+@pytest.mark.parametrize("mutation", [
+    "bare", "old", "missing", "duplicate", "unknown", "extra", "wrong_label", "label_type",
+    "faction_type", "faction_order", "faction_duplicate", "attack_citizen", "data_extra", "descriptor_missing",
+])
+def test_catalog_exact_closed_descriptors_fail_closed(mutation):
+    from copy import deepcopy
+    from frontend_user.core.commands import validate_ability_catalog
+
+    response = deepcopy(_CustomClient().catalog)
+    data = response["data"]
+    item = data["abilities"][1]
+    if mutation == "bare":
+        response = data
+    elif mutation == "old":
+        data["catalog_version"] = "old"
+    elif mutation == "missing":
+        data["abilities"].pop()
+    elif mutation == "duplicate":
+        data["abilities"][-1] = dict(item)
+    elif mutation == "unknown":
+        item["id"] = "unknown.v1"
+    elif mutation == "extra":
+        item["tool"] = "raw"
+    elif mutation == "wrong_label":
+        item["label"] = "다른 이름"
+    elif mutation == "label_type":
+        item["label"] = []
+    elif mutation == "faction_type":
+        item["factions"] = "CITIZEN"
+    elif mutation == "faction_order":
+        item["factions"].reverse()
+    elif mutation == "faction_duplicate":
+        item["factions"] = ["CITIZEN", "CITIZEN", "MAFIA"]
+    elif mutation == "attack_citizen":
+        data["abilities"][0]["factions"] = ["CITIZEN", "MAFIA"]
+    elif mutation == "data_extra":
+        data["extra"] = True
+    else:
+        item.pop("factions")
+    assert validate_ability_catalog(response) is None
+
+
+def test_custom_citizen_accepts_only_day_and_intel_abilities():
+    client = _CustomClient()
+    app = AppTest.from_function(_create_app, args=(client,)).run()
+    app.radio(key="game.create_mode").set_value("CUSTOM_ROLE").run()
+    app.text_input(key="game.create_role_name").set_value("기록관").run()
+    app.multiselect(key="game.create_abilities.CITIZEN").set_value(["vote.triple.v1", "intel.special_roles.v1"]).run()
+    app.button(key="game.create_submit").click().run()
+    assert not app.exception
+    assert client.created[-1]["custom_role"]["ability_ids"] == ["vote.triple.v1", "intel.special_roles.v1"]

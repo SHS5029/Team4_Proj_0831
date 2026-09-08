@@ -340,7 +340,8 @@ AI GM이 진행하는 대화형 마피아 추리게임이다. 인간 사용자�
 
 - 역할 ID는 `MAFIA`, `DETECTIVE`, `DOCTOR`, `CITIZEN`이다.
 - 역할은 Backend가 암호학적으로 안전하게 생성한 게임 seed와 결정적 RNG로 배정한다.
-- 인간 사용자의 역할도 다른 좌석과 같은 방식으로 무작위 배정한다.
+- `STANDARD` 인간 사용자의 역할도 다른 좌석과 같은 방식으로 무작위 배정한다.
+  `CUSTOM_ROLE` 인간의 슬롯 고정은 이 문서의 CP-0 절을 따른다.
 - 방 생성자는 소유자일 뿐 게임 안에서 별도 권한을 갖지 않는다.
 - 마피아가 두 명이어도 서로의 정체, 선택과 응답 여부를 알 수 없다.
 - 탐정과 의사는 시민 진영이다.
@@ -1382,3 +1383,61 @@ REPEATABLE READ transaction에서 적용·검증·commit했다. 원본/분석 6�
 보존했고 독립 읽기 연결에서 정확한 008 본문·활성 트리거·DB health를 확인했다.
 실제 env·계정·권한·게임/분석 행은 수정하지 않았으며 서비스 재시작은 수행하지 않았다.
 SQL 변경이 없으므로 직전 격리 QA·전체 회귀 결과를 재사용했다. 상세 집계는 README를 따른다.
+
+## 2026-09-08 CUSTOM_ROLE 계약 고정 (사용자 승인 CP-0)
+
+이 절은 자유 직업 선택과 충돌하는 기존 문구보다 우선하며, 이번 작업은 구현 없이 다섯 정본의 계약만 고정한다. `STANDARD`는 `mode`를 생략하거나 `STANDARD`로 보낸 기존 생성 요청·역할 무작위 배정·밤 행동을 그대로 유지한다. `CUSTOM_ROLE`은 인간 한 명만 자유 직업을 사용하며, 사용자는 NFC와 공백 정규화 뒤 1~40자인 직업명, `CITIZEN` 또는 `MAFIA` 진영, `custom-role-v1` catalog와 versioned ability ID 1~3개를 선택한다.
+
+허용 ID는 `night.attack.v1`, `night.investigate.v1`, `night.protect.v1`, `vote.triple.v1`, `intel.special_roles.v1` 다섯 개다. `CITIZEN`은 공격 외 네 능력 중 1~3개를 선택하며 낮/조회 능력만도 가능하다. `MAFIA`는 공격을 반드시 포함하고 나머지 중 추가하여 총 1~3개를 선택한다. 커스텀 역할은 밤 능력이 여러 개여도 밤마다 그중 하나만 사용한다. 직업명은 신뢰하지 않는 일반 표시 문자열이며 system prompt나 역할 지침으로 승격하지 않는다. Backend는 catalog version, allowlist, 중복, 진영별 조합을 fail-closed로 검증한다.
+
+기존 인원별 `mafia_count`는 바꾸지 않는다. CUSTOM_ROLE 인간이 `MAFIA`이면 인간을 mafia 슬롯에, `CITIZEN`이면 citizen 슬롯에 고정하고, 남은 AI에는 표준 mafia 수와 detective·doctor 구성을 유지한다. 승패는 표시용 직업명이 아니라 저장된 faction으로 판정한다. 복수의 INVESTIGATE·PROTECT actor를 허용하고 밤 해소에는 모든 보호 대상의 합집합을 적용한다. 상세 생성·catalog·snapshot·command 계약은 API 명세, 저장 계약은 DB 설계, MCP 경계는 MCP 서버 설계, 사용자 흐름은 화면 정본을 따른다.
+
+### 구현 작업 단위와 파일 경계
+
+| 순서 | WU | 허용 파일 경계 | 완료 기준 |
+|---:|---|---|---|
+| 1 | `WU-B16` Backend | `backend/`의 additive migration, game model·repository·규칙 engine, 공개 API와 해당 테스트 및 이 다섯 정본 | 구형 행과 STANDARD 회귀, 생성 validation, 슬롯 고정, faction 승패, 복수 조사·보호, private projection을 focused·전체 회귀 테스트로 검증 |
+| 2 | `WU-F11` Front | `frontend_user/`의 새 게임 설정·역할 공개·밤 행동 화면과 해당 테스트 및 이 다섯 정본 | catalog 조회, CUSTOM_ROLE 입력·오류·접근성, 능력 하나 제출, STANDARD 화면 회귀를 합성 API와 연결 검증 |
+| 3 | `WU-M10` 계약·호환 검증 | `mcp_server/`의 기존 descriptor·adapter 검증 테스트와 운영 검증 문서만 허용하며 runtime mutation·신규 Tool·DB 접근은 금지 | 세 versioned ID가 기존 `propose_night_action`을 참조하고 raw Tool명·action subtype·prompt가 공개 입력이 아님을 확인하며 STANDARD 및 HUMAN-only 비간섭성을 입증 |
+
+`CP-7 CUSTOM_ROLE 통합`은 `CP-0 -> WU-B16 -> WU-F11 -> WU-M10 -> CP-0.1 -> WU-B17 -> WU-F12 -> CP-7` 순서로 진행한다. B16 계약 fixture가 확정되기 전에 F11을 실제 Backend에 결합하지 않는다. M10의 확장 범위는 아래 사용자 요청 절을 따르며, CP-0.1에서 공개 adapter·Front 확장 계약을 고정한 뒤 B17 응답 fixture와 F12 연결을 순서대로 검증한다. CP-7 완료 조건은 생성부터 재접속·밤 행동·처형 공개·종료·STANDARD 회귀까지의 통합 증거와 다섯 정본의 링크·용어·schema 일치다. custom AI 지원은 이 순서에 포함하지 않고 별도 후속 WU로 예약한다.
+
+### 2026-09-08 사용자 요청 WU-M10: 커스텀 직업 전용 MCP 능력 추가
+
+이번 사용자의 신규 Tool 구현 요청은 위 M10의 신규 Tool·runtime 변경 금지와 순서를
+이 범위에서 대체한다. 단일 WU-M10 안에서 MCP 등록·HTTP adapter와 이에 필요한
+Backend catalog·command·조회·순수 규칙·저장 복원 및 관련 테스트를 연결한다.
+Backend는 판정·소유권·저장을, MCP는 내부 HTTP 위임을 담당하는 기존 소유권을 유지한다.
+Front UI 구현, custom AI, 실제 DB migration 적용은 포함하지 않는다. 기존 B16 작업은 보존한다.
+
+- `vote.triple.v1`: HUMAN 능력자가 능력 ID를 지정해 제출한 처형 투표 한 장의 가중치는 3이다.
+  DAY_VOTE·REVOTE에만 적용하며 일반 제출·자동 투표·최종 지목은 1표다. 표는 창당 한 번만
+  제출할 수 있고 가중치를 더하거나 다른 플레이어의 표를 바꾸지 않는다.
+- `intel.special_roles.v1`: 첫 밤이 끝난 뒤(`day_number >= 2`) 생존한 HUMAN 능력자는
+  마피아·시민을 제외한 다른 플레이어의 특수 직업을 조회할 수 있다. 현재 표준 역할은
+  탐정·의사이며 사망자도 포함한다. 본인 전용 읽기이며 밤 행동 횟수를 소모하지 않는다.
+- 기존 `custom-role-v1`에 두 versioned ID를 additive로 제공한다. 두 진영 모두 선택할 수
+  있고 능력 수 1~3개·마피아 공격 필수는 유지한다. 밤 능력이 없는 시민 커스텀 직업도 허용한다.
+- 신규 파일은 `backend/migrations/011_add_custom_role_tool_abilities.sql` 하나다.
+  기존 010은 유지하고 VOTE의 `vote.triple.v1` 저장만 순방향으로 허용한다.
+
+M10 완료는 MCP 왕복·권한 거부·첫 밤 경계·가중 집계·재투표·재개·STANDARD 회귀를
+합성 데이터로 검증한 시점이다. 실제 화면 사용과 CP-7 완료는 후속 WU-B17·WU-F12 연동 증거가 필요하다.
+
+
+### 2026-09-08 CP-0.1 공개 adapter·Front 확장 계약
+
+이번 CP-0.1은 다섯 정본만 최소 갱신하는 문서 계약 WU다. 기존 WU-M10의 두 Tool·
+능력·저장 계약을 보존하고 코드·루트 README·migration 실행·commit/push는 범위 밖이다.
+
+| 순서 | WU | 허용 파일 경계 | 완료 기준 |
+|---:|---|---|---|
+| 4 | `WU-B17` 공개 adapter | 기존 `backend/app/routers/game_router.py`, 조회 service·공개 schema 및 관련 Backend 테스트·정본·README | 인증된 사용자 흐름의 `GET /api/v1/games/{game_id}/special-roles` + `X-User-Id`를 기존 `read_special_roles`에 연결하고 success envelope·no-store·404/403/409·소유권/해금 거부를 검증 |
+| 5 | `WU-F12` Front 확장 | 기존 `frontend_user/`의 생성·API client·view model·투표·게임·종료 화면과 관련 테스트·정본·README | 정확한 5개 descriptor와 진영 배열/중복의 fail-closed 검증, 신규 ID 수용, 일반 1표/능력 3표 선택, day>=2 private 조회·안전한 오류/재시도·범위 격리, 종료 custom 직업명/진영·평문 escape와 STANDARD 회귀 검증 |
+
+공개/내부 조회의 schema·오류는 [API 정본](AI_MAFIA_API_SPEC.md), 저장 없는 조회 경계는
+[DB 정본](AI_MAFIA_DB_DESIGN.md), raw Tool 비직접 호출은
+[MCP 정본](AI_MAFIA_MCP_SERVER_DESIGN.md), 화면 조건은
+[화면 정본](AI_MAFIA_SCREEN_FLOW.md)을 따른다. CP-7에는 B17·F12의 성공/거부 경로와
+identity/game/state 전환 시 private 결과 폐기, FINAL_ACCUSATION 능력 미노출,
+공개 명부·timeline·analytics 비복제의 통합 증거를 추가한다.

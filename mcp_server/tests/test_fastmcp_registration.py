@@ -16,6 +16,7 @@ class FakeBackend:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.action_payloads: list[dict[str, str | None]] = []
 
     async def read_resource(self, uri: str) -> dict[str, Any]:
         self.calls.append(("resource", uri))
@@ -30,7 +31,14 @@ class FakeBackend:
         **payload: str | None,
     ) -> dict[str, object]:
         self.calls.append(("tool", str(payload["action"])))
+        self.action_payloads.append(payload)
         return {"status": "accepted", "accepted": True, "action": payload["action"]}
+
+    async def inspect_special_roles(self, *, user_id: str, game_id: str) -> dict[str, object]:
+        """등록부가 actor를 추가하지 않고 소유자와 게임만 전달하는지 확인한다."""
+
+        self.calls.append(("special_roles", f"{user_id}/{game_id}"))
+        return {"game_id": game_id, "roles": []}
 
 
 @pytest.mark.anyio
@@ -51,7 +59,9 @@ async def test_fastmcp_registers_and_delegates_minimal_capabilities() -> None:
     assert [item.mimeType for item in resource_templates] == [
         "application/json", "application/json",
     ]
-    assert [item.name for item in tools] == ["submit_action"]
+    assert [item.name for item in tools] == [
+        "submit_action", "manipulate_vote", "inspect_special_roles",
+    ]
     assert [item.name for item in prompts] == ["agent_instruction"]
 
     resource = await server.read_resource(
@@ -86,6 +96,43 @@ async def test_fastmcp_registers_and_delegates_minimal_capabilities() -> None:
         ),
         ("tool", "PASS"),
     ]
+
+
+@pytest.mark.anyio
+async def test_human_ability_tools_preserve_legacy_signature_and_pin_vote_ability() -> None:
+    """새 능력은 기존 AI 행동 서명을 바꾸지 않고 actor·가중치 입력을 노출하지 않는다."""
+
+    backend = FakeBackend()
+    server = create_fastmcp_server(backend)
+    schemas = {item.name: item.inputSchema for item in await server.list_tools()}
+    assert set(schemas["submit_action"]["properties"]) == {
+        "action", "user_id", "game_id", "expected_state_version", "window_id",
+        "idempotency_key", "player_id", "target_player_id", "message",
+    }
+    vote_arguments = {
+        "user_id": "00000000-0000-4000-8000-000000000002",
+        "game_id": "00000000-0000-4000-8000-000000000001",
+        "expected_state_version": 7,
+        "window_id": "00000000-0000-4000-8000-000000000003",
+        "idempotency_key": "00000000-0000-4000-8000-000000000004",
+        "target_player_id": "00000000-0000-4000-8000-000000000005",
+    }
+    assert set(schemas["manipulate_vote"]["properties"]) == set(vote_arguments)
+    assert set(schemas["manipulate_vote"]["required"]) == set(vote_arguments)
+    assert set(schemas["inspect_special_roles"]["properties"]) == {"user_id", "game_id"}
+    await server.call_tool("manipulate_vote", vote_arguments)
+    assert backend.action_payloads == [{
+        **vote_arguments,
+        "expected_state_version": "7",
+        "action": "VOTE",
+        "ability_id": "vote.triple.v1",
+    }]
+    await server.call_tool("inspect_special_roles", {
+        "user_id": vote_arguments["user_id"], "game_id": vote_arguments["game_id"],
+    })
+    assert backend.calls[-1] == (
+        "special_roles", f"{vote_arguments['user_id']}/{vote_arguments['game_id']}",
+    )
 
 
 @pytest.mark.anyio

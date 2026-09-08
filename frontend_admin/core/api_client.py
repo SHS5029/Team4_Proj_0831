@@ -136,7 +136,8 @@ class AdminApiClient:
             if value is not None and value != "":
                 params[key] = value
         query = urlencode(params)
-        return self._request("/api/v1/admin/speech-analytics?" + query)
+        # 전체 기간 발언 집계의 지연만 허용하고 다른 관리자 요청의 대기 제한은 유지한다.
+        return self._request("/api/v1/admin/speech-analytics?" + query, timeout=30.0)
 
     def feedback(self, *, feedback_type: str | None = None, rating: int | None = None,
                  cursor: str | None = None, limit: int = 20) -> dict:
@@ -178,13 +179,13 @@ class AdminApiClient:
             {"question": normalized_question, "filters": filters, "top_k": top_k},
         )
 
-    def _request(self, path: str) -> dict[str, Any]:
+    def _request(self, path: str, *, timeout: float = 5.0) -> dict[str, Any]:
         request = Request(
             f"{self.api_url}{path}",
             headers={"Accept": "application/json", "X-User-Id": str(self.user_id),
                      "X-Request-Id": str(uuid4())},
         )
-        return self._send_request(request)
+        return self._send_request(request, timeout=timeout)
 
     def _request_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         """관리자 질문 body를 JSON으로 보내되 인증 header 규칙은 GET과 공유한다."""
@@ -198,11 +199,11 @@ class AdminApiClient:
         )
         return self._send_request(request)
 
-    def _send_request(self, request: Request) -> dict[str, Any]:
+    def _send_request(self, request: Request, *, timeout: float = 5.0) -> dict[str, Any]:
         """HTTP 오류와 JSON 응답을 기존 관리자 오류 경계로 통일한다."""
 
         try:
-            status, body = self._transport(request, 5.0)
+            status, body = self._transport(request, timeout)
         except (OSError, URLError, TimeoutError) as exc:
             raise AdminApiError(503, "DEPENDENCY_UNAVAILABLE") from exc
         try:

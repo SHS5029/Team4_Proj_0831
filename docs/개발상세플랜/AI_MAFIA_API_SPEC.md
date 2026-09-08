@@ -2137,3 +2137,128 @@ items는 최신 최대 20발언을 sequence 오름차순으로 반환하고 evid
 total은 요약 가능한 전체 발언 수, omitted는 total-items 길이다. 임베딩이 아직 없어도
 완료된 주장 요약은 PARTIAL로 노출할 수 있다. coverage는 범위 내 HUMAN·AI 전체 기준이고
 revision에 요약을 포함한다. GET은 모델 호출·DB 쓰기·게임 변경을 하지 않는다.
+
+## 2026-09-08 CUSTOM_ROLE 공개 API 계약 (CP-0)
+
+### 생성과 catalog
+
+`POST /api/v1/games` body는 다음 additive 필드를 허용한다. `mode` 생략은
+`STANDARD`이며 이때 `custom_role`은 없어야 하고 기존 요청·응답 의미가 변하지 않는다.
+
+```json
+{
+  "player_count": 6,
+  "ruleset_version": "mystery-v1",
+  "scenario_version": "scenario-v1",
+  "mode": "CUSTOM_ROLE",
+  "custom_role": {
+    "name": "기록 감식관",
+    "faction": "CITIZEN",
+    "catalog_version": "custom-role-v1",
+    "ability_ids": ["night.investigate.v1", "night.protect.v1"]
+  }
+}
+```
+
+`CUSTOM_ROLE`에서는 `custom_role`이 필수다. `name`은 Unicode NFC 적용, 앞뒤 공백
+제거와 연속 Unicode 공백의 한 칸 축약 뒤 1~40자다. 이는 plain untrusted text이며
+prompt나 명령으로 해석하지 않는다. `ability_ids`는 중복 없는 1~3개 배열이다.
+`CITIZEN`은 공격 외 네 ID 중 1~3개를 허용하며 낮/조회 능력만 선택해도 된다. `MAFIA`는
+`night.attack.v1`을 반드시 포함하며 나머지 네 ID 중에서 추가하여 총 1~3개를 선택한다. 알 수 없는 mode,
+catalog version, ability ID, 중복, 팀 제약 위반은 `422 VALIDATION_ERROR`로 fail-closed한다.
+
+`GET /api/v1/game-config/custom-role-abilities`는 인증된 사용자에게 다음 서버 catalog를
+반환하며 DB나 MCP를 호출하지 않는 versioned 공개 설정이다.
+
+```json
+{
+  "catalog_version": "custom-role-v1",
+  "abilities": [
+    {"id": "night.attack.v1", "label": "공격", "factions": ["MAFIA"]},
+    {"id": "night.investigate.v1", "label": "조사", "factions": ["CITIZEN", "MAFIA"]},
+    {"id": "night.protect.v1", "label": "보호", "factions": ["CITIZEN", "MAFIA"]},
+    {"id": "vote.triple.v1", "label": "투표 조작", "factions": ["CITIZEN", "MAFIA"]},
+    {"id": "intel.special_roles.v1", "label": "특수 직업 열람", "factions": ["CITIZEN", "MAFIA"]}
+  ]
+}
+```
+
+descriptor의 내부 실행 참조는 MCP 설계 정본에만 두며 공개 catalog와 생성 body에는 raw
+MCP Tool명, action subtype, prompt를 포함하지 않는다.
+
+### Snapshot과 밤 행동
+
+게임 snapshot의 `game.mode`는 항상 `STANDARD` 또는 `CUSTOM_ROLE`이다. CUSTOM_ROLE
+본인 projection에는 `me.role_name`, `me.faction`, `me.ability_ids`,
+`me.ability_options`를 반환한다. `ability_options`의 각 항목은
+`{ability_id, label, valid_targets}`이며 현재 밤에 선택 가능한 본인 능력만 포함한다.
+이 네 필드는 소유자 본인에게만 반환하고 다른 audience의 Resource·sync·관리자 공개
+projection으로 전달하지 않는다.
+
+공개 player에는 nullable additive `revealed_role_name`을 둔다. 해당 player가 처형됐거나
+게임이 종료된 뒤에만 정규화된 자유 직업명을 제공하며 밤 사망을 포함한 그 이전에는
+`null`이다. 기존 `revealed_role` 의미는 보존한다.
+
+CUSTOM_ROLE의 `SUBMIT_NIGHT_ACTION` body에는 catalog의 `ability_id`가 필수이며
+`target_player_id`와 함께 보낸다. 현재 본인의 저장 ability, faction, phase, 생존,
+target 규칙을 다시 검증하고 한 밤의 첫 유효 능력 하나만 받는다. STANDARD 요청에서는
+`ability_id`를 받지 않으며 Backend가 기존 role에서 action을 결정한다. 복수 actor의
+INVESTIGATE·PROTECT는 각각 유효하고 밤 해소는 모든 보호 대상 집합을 적용한다.
+
+### 2026-09-08 WU-M10 추가 능력 계약
+
+초기 세 능력 한정 규칙을 확장한 위 catalog에 `vote.triple.v1`(투표 조작),
+`intel.special_roles.v1`(특수 직업 열람)을 추가한다. 두 항목의 factions는
+`[CITIZEN, MAFIA]`이며 기존 catalog version·생성 형식·1~3개 제한은 유지한다.
+`ability_options`는 계속 현재 밤 능력만 반환한다. 낮/조회 능력은 밤에 선택하거나
+자동 사용하지 않으며 밤 능력 없는 커스텀 직업은 밤 제출 대상에서 제외한다.
+
+`SUBMIT_VOTE`는 선택적 `ability_id=vote.triple.v1`을 허용한다. 생존 HUMAN의
+CUSTOM_ROLE 저장 능력을 검증하고 DAY_VOTE·REVOTE의 해당 표에만 가중치 3을 부여한다.
+다른 phase·AI·STANDARD·미보유·밤 ID는 거부한다. 생략·자동 제출은 1표이며 최종 지목은
+이 능력을 받지 않는다. 기존 window·deadline·대상·멱등성·중복 제출 검증은 동일하다.
+공개 결과 counts는 가중 합계이고 개별 표·능력 사용 여부는 종료 전 공개하지 않는다.
+종료 결과의 `ballots`는 능력을 사용한 표에만 additive `ability_id=vote.triple.v1`을
+포함한다. 구형·일반 표의 필드 생략은 1표다. 숫자 `weight` 입력·저장은 허용하지 않고
+actor의 저장 능력과 당시 phase로 가중치를 재계산한다. AUTO ballot의 능력 ID는 거부한다.
+
+MCP `manipulate_vote(user_id, game_id, expected_state_version, window_id,
+idempotency_key, target_player_id)`는 `/internal/mcp/actions`에
+`action=VOTE, ability_id=vote.triple.v1`을 고정 전달한다. Tool은 player_id·weight를 받지
+않으며 Backend가 게임 소유자의 HUMAN을 결정한다. 기존 submit_action은 기존 서명을 유지한다.
+
+MCP `inspect_special_roles(user_id, game_id)`는
+`GET /internal/mcp/special-roles?user_id=...&game_id=...`로 위임한다. Backend는 소유권,
+CUSTOM_ROLE, HUMAN, 생존, `IN_PROGRESS`, 능력 보유 및 `day_number >= 2`를 검증한다.
+소유권 불일치는 404 GAME_NOT_FOUND, 능력/actor 불일치는 403 ABILITY_NOT_ALLOWED,
+상태·첫 밤 미해금은 409 ABILITY_NOT_AVAILABLE이다. 성공 응답은 폐쇄형 object
+`{game_id, player_id, ability_id, state_version, roles}`이고 roles는 좌석순
+`[{player_id, display_name, role, alive}]`이다. 다른 플레이어의 DETECTIVE·DOCTOR만
+포함하고 MAFIA·CITIZEN·본인은 제외하며 사망자도 포함한다. 원본 상태·faction·알리바이·
+밤 행동·투표는 포함하지 않는다. 응답은 Cache-Control: no-store이며 이벤트·공개 Resource·
+AI context에는 추가하지 않는다. 이 조회는 읽기 전용이고 밤 행동 횟수를 소모하지 않는다.
+
+
+### 2026-09-08 CP-0.1 공개 특수 직업 조회 adapter (WU-B17)
+
+사용자 Front는 raw MCP Tool을 직접 호출하지 않고 인증된 사용자 흐름에서
+`GET /api/v1/games/{game_id}/special-roles`를 `X-User-Id`로 호출한다. 기존 1.2~1.3절의
+UUID 식별·접근 통제 경계를 유지하며 헤더 자체를 새로운 인증 증명으로 해석하지 않는다.
+URL·body의 user_id 또는 임의 player_id 입력은 받지 않는다. Backend 공개 adapter는
+기존 `read_special_roles`를 재사용해 같은 읽기 snapshot에서 소유권·CUSTOM_ROLE·HUMAN·
+생존·IN_PROGRESS·`intel.special_roles.v1` 보유·`day_number >= 2`를 검증한다.
+
+HTTP 200은 1.4절 API success envelope의 `data`에
+`{game_id, player_id, ability_id, state_version, roles}`를 담고 `meta`는 공통 계약을 따른다.
+`ability_id`는 `intel.special_roles.v1`이며 roles의 폐쇄형 schema·좌석순·대상 포함/제외
+규칙은 위 WU-M10 계약과 동일하다. 성공·오류 응답에 `Cache-Control: no-store`를 적용한다.
+소유권 불일치/미존재는 `404 GAME_NOT_FOUND`, mode·actor·능력 불일치는
+`403 ABILITY_NOT_ALLOWED`, 사망·진행 중 아님·첫 밤 미해금은
+`409 ABILITY_NOT_AVAILABLE`을 공통 오류 envelope로 유지한다.
+`/internal/mcp/special-roles`는 MCP Tool 전용이며 공개 adapter가 MCP runtime을 경유하지 않는다.
+
+Front는 위 catalog의 정확한 다섯 descriptor(ID·label·factions)를 검증한다. 누락·미지 ID·
+중복 ID·미지 필드·잘못된 타입·진영 배열 불일치 또는 중복 진영은 fail-closed로 거부하고,
+두 신규 ID는 정상 수용한다. 진영 배열은 위 명시된 배열과 일치해야 한다.
+종료 결과에서는 본인의 custom `role_name`·`faction`을 표준 역할 표시보다 우선하며,
+직업명과 표시 이름을 평문 escape한다. private 조회 결과는 공개 결과에 합치지 않는다.

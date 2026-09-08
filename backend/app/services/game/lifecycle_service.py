@@ -97,7 +97,7 @@ def begin_game(service: Any, owner_user_id: UUID, game_id: UUID, payload: GameCo
 
     if payload.type != "BEGIN_GAME":
         raise ValueError("PostgresBeginGameService only accepts BEGIN_GAME")
-    request_hash = _request_hash(payload.model_dump(mode="json"))
+    request_hash = _request_hash(payload.receipt_body())
     route_scope = _route_scope(game_id)
     try:
         with service._transactions.transaction() as connection:
@@ -145,7 +145,7 @@ def save_game(service: Any, owner_user_id: UUID, game_id: UUID, payload: GameCom
 
     if payload.type != "SAVE_AND_EXIT":
         raise ValueError("PostgresGameSaveService only accepts SAVE_AND_EXIT")
-    request_hash = _request_hash(payload.model_dump(mode="json"))
+    request_hash = _request_hash(payload.receipt_body())
     route_scope = _route_scope(game_id)
     try:
         with service._transactions.transaction() as connection:
@@ -190,7 +190,7 @@ def resume_game(service: Any, owner_user_id: UUID, game_id: UUID, payload: GameC
 
     if payload.type != "RESUME":
         raise ValueError("PostgresGameResumeService only accepts RESUME")
-    request_hash = _request_hash(payload.model_dump(mode="json"))
+    request_hash = _request_hash(payload.receipt_body())
     route_scope = _route_scope(game_id)
     current_time = now or datetime.now(UTC)
     try:

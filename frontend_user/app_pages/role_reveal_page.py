@@ -14,8 +14,8 @@ from frontend_user.app_pages.game_page import (
     render_saved_control,
 )
 from frontend_user.components.action_panel import render_status_bar
-from frontend_user.components.theme import render_application_header, render_header_back_button
-from frontend_user.core.view_models import own_private_view, public_players
+from frontend_user.components.theme import render_application_header
+from frontend_user.core.view_models import own_private_view, public_players, custom_role_description
 
 ROLE_REVEAL_CSS = """
 <style>
@@ -62,6 +62,12 @@ ROLE_REVEAL_CSS = """
 [class*="st-key-role-reveal-card"] h2,
 [class*="st-key-role-reveal-card"] h3,
 [class*="st-key-role-reveal-card"] p { color: var(--role-ink); }
+[class*="st-key-role-reveal-card"] [data-testid="stText"] {
+  color: var(--role-ink) !important;
+  -webkit-text-fill-color: var(--role-ink) !important;
+  font-size: 1.7rem; font-weight: 800; line-height: 1.35;
+  overflow-wrap: anywhere;
+}
 .role-pill {
   width: fit-content; margin: 0 auto .7rem; padding: .42rem .9rem;
   border-radius: 999px; color: #fff; background: var(--role-blue);
@@ -158,9 +164,15 @@ def render(snapshot: dict[str, Any]) -> None:
         ("역할 확인 중", "❔", "역할 정보를 확인하는 중입니다."),
     )
 
+    if custom_role_description(me):
+        role_name = me["role_name"]
+        role_text = custom_role_description(me)
     with st.container(key="role-reveal-card", border=True):
         st.markdown('<div class="role-pill">🎭 &nbsp; 역할 공개</div>', unsafe_allow_html=True)
-        st.markdown(f"## 당신은 **{role_name}**입니다")
+        if custom_role_description(me):
+            st.text(f"당신은 {role_name}입니다")
+        else:
+            st.markdown(f"## 당신은 **{role_name}**입니다")
         st.markdown(f'<div class="role-avatar" aria-hidden="true">{role_icon}</div>', unsafe_allow_html=True)
         st.markdown(
             '<div class="role-scenario">현재 사건 정보</div>',

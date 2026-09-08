@@ -38,6 +38,7 @@ from frontend_user.core.session import (  # noqa: E402
     IDENTITY_WARNING_SESSION_KEY,
     IDENTITY_WRITE_SESSION_KEY,
     get_identity,
+    maintain_special_roles,
     request_identity_write,
     set_identity,
 )
@@ -60,6 +61,7 @@ def main() -> None:
     )
     st.session_state.pop(IDENTITY_COMPONENT_CHANGED_SESSION_KEY, None)
     if user_id is None:
+        maintain_special_roles(st.session_state)
         maintain_speech_queue(user_id=None, page="home", game_id=None)
         if error_code == "INVALID_STORED_UUID":
             st.error("저장된 게임 식별자가 손상됐어요. 새 UUID를 생성해 주세요.")
@@ -84,6 +86,8 @@ def main() -> None:
     page = st.session_state.get("navigation.page", "home")
     page = sync_page_navigation(page)
     maintain_speech_queue(user_id=user_id, page=page, game_id=st.session_state.get("game.game_id"))
+    if page != "game":
+        maintain_special_roles(st.session_state)
     load_home_games = False
     if page == "feedback":
         render_feedback(client=client, feedback_type="GENERAL")
@@ -128,8 +132,10 @@ def main() -> None:
                 raise ValueError("INVALID_RESPONSE")
             snapshot = prefer_current_snapshot(snapshot=snapshot, game_id=game_id, user_id=user_id)
             st.session_state["game.latest_snapshot"] = snapshot
+            maintain_special_roles(st.session_state, snapshot)
             maintain_speech_queue(user_id=user_id, page=page, game_id=game_id, snapshot=snapshot)
         except Exception as error:
+            maintain_special_roles(st.session_state)
             # DELETE 응답 유실 뒤 첫 재조회가 404라면 팝업을 다시 그릴 snapshot이 없다.
             # 이 게임에 사용자가 제출한 삭제 요청이 있을 때만 이탈 완료로 처리한다.
             pending_delete = st.session_state.get("game.delete_pending")

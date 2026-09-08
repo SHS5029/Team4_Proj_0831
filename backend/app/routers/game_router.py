@@ -12,12 +12,32 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ValidationError
 
 from backend.app.core.errors import ApiError
-from backend.app.core.responses import api_success_response
+from backend.app.core.responses import api_error_response, api_success_response
 from backend.app.schemas.command_schema import GameCommandRequest
 from backend.app.schemas.feedback_schema import FeedbackRequest
-from backend.app.schemas.game_schema import CreateGameRequest
+from backend.app.schemas.game_schema import (
+    CUSTOM_ROLE_ABILITIES, CUSTOM_ROLE_CATALOG_VERSION, CreateGameRequest,
+)
 router = APIRouter(prefix="/api/v1/games", tags=["games"])
 feedback_router = APIRouter(prefix="/api/v1", tags=["feedback"])
+config_router = APIRouter(prefix="/api/v1/game-config", tags=["game-config"])
+
+
+@config_router.get("/custom-role-abilities")
+async def custom_role_abilities(
+    request: Request, x_user_id: str | None = Header(default=None),
+) -> JSONResponse:
+    """인증 식별자를 확인한 뒤 DB 호출 없이 고정 catalog를 반환한다."""
+
+    user_id_header(x_user_id)
+    abilities = [
+        {"id": ability_id, "label": item["label"], "factions": item["factions"]}
+        for ability_id, item in CUSTOM_ROLE_ABILITIES.items()
+    ]
+    return api_success_response(request, {
+        "catalog_version": CUSTOM_ROLE_CATALOG_VERSION,
+        "abilities": abilities,
+    })
 
 def game_runtime(request: Request):
     """전역 변수가 아닌 현재 FastAPI 앱의 게임 runtime을 반환한다."""
@@ -95,6 +115,34 @@ async def get_game(request: Request, game_id: UUID, x_user_id: str | None = Head
     owner = user_id_header(x_user_id)
     data = await asyncio.to_thread(game_runtime(request).snapshot, owner, game_id)
     return api_success_response(request, data)
+
+
+@router.get("/{game_id}/special-roles")
+async def special_roles(
+    request: Request, game_id: str, x_user_id: str | None = Header(default=None),
+) -> JSONResponse:
+    """본인 전용 조회를 공통 권위 검증에 위임하고 입력 오류까지 캐시 저장을 막는다."""
+
+    try:
+        owner = user_id_header(x_user_id)
+        try:
+            parsed_game_id = UUID(game_id)
+        except ValueError:
+            raise ApiError(status_code=422, code="INVALID_REQUEST", message="게임 ID는 UUID 형식이어야 합니다.") from None
+        if request.query_params or await request.body():
+            raise ApiError(status_code=422, code="INVALID_REQUEST", message="조회 형식이 올바르지 않습니다.")
+        data = await asyncio.to_thread(game_runtime(request).special_roles, owner, parsed_game_id)
+        response = api_success_response(request, data)
+    except ApiError as error:
+        response = api_error_response(request, error)
+    except Exception:
+        # 예상 밖의 adapter 오류에도 저장소 원문이나 비공개 역할이 응답에 섞이지 않게 한다.
+        response = api_error_response(request, ApiError(
+            status_code=503, code="DEPENDENCY_UNAVAILABLE",
+            message="능력 정보를 조회할 수 없습니다.", retryable=True,
+        ))
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.delete("/{game_id}")
@@ -248,4 +296,5 @@ def _validate_body(model: type[BaseModel], body: object) -> BaseModel:
         return model.model_validate(body)
     except ValidationError as error:
         details = [{"location": list(item["loc"]), "type": item["type"]} for item in error.errors()]
-        raise ApiError(status_code=422, code="INVALID_REQUEST", message="요청 형식이 올바르지 않습니다.", details=details) from error
+        code = "VALIDATION_ERROR" if model is CreateGameRequest and isinstance(body, dict) and ("mode" in body or "custom_role" in body) else "INVALID_REQUEST"
+        raise ApiError(status_code=422, code=code, message="요청 형식이 올바르지 않습니다.", details=details) from error

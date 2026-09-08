@@ -8,6 +8,8 @@ from html import escape
 from typing import Any
 from uuid import UUID, uuid4
 
+from frontend_user.core.view_models import custom_role_description
+
 import streamlit as st
 
 from frontend_user.components import vote_insights
@@ -22,7 +24,9 @@ from frontend_user.core.api_client import ApiResponseError, ApiUnavailableError
 from frontend_user.core.scenario_images import scenario_image_path
 from frontend_user.core.sync import SyncEnvelopeError
 from frontend_user.core.time_display import display_timestamp
-from frontend_user.core.view_models import own_private_view, public_players, public_timeline
+from frontend_user.core.view_models import own_private_view, public_players, public_timeline, validate_special_roles
+from frontend_user.core.session import maintain_special_roles, special_roles_scope
+from frontend_user.core.commands import owns_custom_ability
 
 CLOSED_PLAYER_SELECTION = "__closed__"
 
@@ -77,6 +81,12 @@ GAME_PAGE_CSS = """
   padding: 1rem !important; border: 1px solid var(--game-border) !important;
   border-radius: .8rem !important; background: #fff !important;
   box-shadow: 0 .5rem 1.5rem rgba(20, 42, 81, .05);
+}
+[class*="st-key-game-player-panel"] [data-testid="stText"],
+[class*="st-key-game-my-panel"] [data-testid="stText"] {
+  color: var(--game-ink) !important;
+  -webkit-text-fill-color: var(--game-ink) !important;
+  overflow-wrap: anywhere;
 }
 [class*="st-key-side-action-region"] [class*="st-key-night-action-panel"],
 [class*="st-key-side-action-region"] [class*="st-key-vote-action-panel"] {
@@ -304,6 +314,7 @@ def render(snapshot: dict[str, Any]) -> None:
     # GET snapshot·sync 결과가 화면의 단일 기준이다. Backend가 제공한 문자열은
     # 일반 Streamlit 텍스트로만 렌더링하고, CSS용 HTML에는 정적 장식만 사용한다.
     client = st.session_state["game.client"]
+    maintain_special_roles(st.session_state, snapshot)
     game = snapshot.get("game", {})
     game_id = game.get("game_id")
     _process_shell_pending(client=client, game_id=str(game_id))
@@ -541,6 +552,7 @@ def _render_live_updates(*, client: Any, snapshot: dict[str, Any]) -> None:
     with st.container(key="game-sync-region"):
         if not sending:
             latest = _sync_snapshot(client=client, snapshot=latest)
+    maintain_special_roles(st.session_state, latest)
     changed_connection = connection != (
         st.session_state.get("game.sync_status"), st.session_state.get("game.sync_hidden")
     )
@@ -550,6 +562,7 @@ def _render_live_updates(*, client: Any, snapshot: dict[str, Any]) -> None:
         st.session_state["game.sync_render_snapshot"] = True
         st.rerun()
     game = latest.get("game", {})
+    _render_special_roles(client=client, snapshot=latest)
     _render_agent_activity(snapshot=latest)
     if own_private_view(latest).get("alive") is False:
         _render_spectator_timeline(snapshot=latest, me=own_private_view(latest))
@@ -726,6 +739,8 @@ def _render_players(*, snapshot: dict[str, Any], me: dict[str, Any], phase: str)
             me.get("role"),
             ("확인 중", "❔"),
         )
+        if custom_role_description(me):
+            role_name = me["role_name"]
         with st.container(key="game-my-summary", border=True):
             st.markdown('<div class="game-my-label">내 정보</div>', unsafe_allow_html=True)
             st.markdown(
@@ -737,6 +752,8 @@ def _render_players(*, snapshot: dict[str, Any], me: dict[str, Any], phase: str)
                 '</div>',
                 unsafe_allow_html=True,
             )
+        if custom_role_description(me):
+            st.text(custom_role_description(me))
         st.markdown('<div class="game-panel-title">플레이어 목록</div>', unsafe_allow_html=True)
         st.markdown(
             f'<div class="game-panel-caption">전체 {len(players)}명 · 생존 {alive_count}명</div>',
@@ -780,7 +797,7 @@ def _render_players(*, snapshot: dict[str, Any], me: dict[str, Any], phase: str)
                 )
                 revealed_role = player.get("revealed_role")
                 if revealed_role:
-                    st.caption(f"공개 역할: {revealed_role}")
+                    st.text(f"공개 역할: {player.get('revealed_role_name') or revealed_role}")
             if str(player.get("player_id")) == selected_player_id:
                 _render_selected_player_summary(
                     snapshot=snapshot,
@@ -1048,7 +1065,12 @@ def _render_spectator_private(*, snapshot: dict[str, Any], me: dict[str, Any]) -
     )
     with st.container(key="spectator-my-panel", border=True):
         st.markdown("### 내 정보 (당신)")
-        st.markdown(f"## {role_icon} {role_name}")
+        if custom_role_description(me):
+            role_name = me["role_name"]
+            st.text(custom_role_description(me))
+            st.text(f"{role_icon} {role_name}")
+        else:
+            st.markdown(f"## {role_icon} {role_name}")
         st.error("사망")
         st.markdown("#### 🔒 내 정보 (비공개)")
         st.caption("이 정보는 다른 플레이어에게 공개되지 않습니다.")
@@ -1226,7 +1248,10 @@ def _render_private_panel(*, snapshot: dict[str, Any], me: dict[str, Any]) -> No
             f'<div class="game-role-icon" aria-hidden="true">{role_icon}</div>',
             unsafe_allow_html=True,
         )
-        st.markdown(f'<div class="game-role-name">{role_name}</div>', unsafe_allow_html=True)
+        if custom_role_description(me):
+            role_name = me["role_name"]
+            st.text(custom_role_description(me))
+        st.markdown(f'<div class="game-role-name">{escape(str(role_name))}</div>', unsafe_allow_html=True)
         st.success("생존 중" if me.get("alive") else "관전 중")
         with st.container(key="game-alibi", border=True):
             st.markdown("#### ◷ 나의 알리바이")
@@ -1253,7 +1278,9 @@ def _validated_investigation_results(
     events = me.get("private_events")
     own_id = _canonical_uuid(me.get("player_id"))
     if (not isinstance(game, dict) or not isinstance(players, list)
-            or not isinstance(events, list) or me.get("role") != "DETECTIVE"
+            or not isinstance(events, list) or (me.get("role") != "DETECTIVE"
+                and not (game.get("mode") == "CUSTOM_ROLE"
+                         and "night.investigate.v1" in me.get("ability_ids", [])))
             or own_id is None or own_id != me.get("player_id")):
         return []
     game_id = _canonical_uuid(game.get("game_id"))
@@ -2083,3 +2110,84 @@ def render_saved_control(*, client: Any, snapshot: dict[str, Any]) -> None:
 
     st.info("저장된 게임입니다. 불러오기를 누르면 같은 단계에서 계속합니다. 남은 시간은 일시 정지되어 있습니다.")
     _render_shell_command(client=client, game_id=str(snapshot["game"]["game_id"]), snapshot=snapshot, command_type="RESUME")
+
+
+
+def _render_special_roles(*, client: Any, snapshot: dict[str, Any]) -> None:
+    """별도 본인 패널에서만 조회하고 늦은 HTTP 응답도 현재 세션 범위를 다시 확인한다."""
+
+    scope = maintain_special_roles(st.session_state, snapshot)
+    if scope is not None and str(client.user_id) != scope[0]:
+        maintain_special_roles(st.session_state)
+        return
+    if not owns_custom_ability(snapshot, "intel.special_roles.v1"):
+        return
+    if scope is None:
+        if type(snapshot["game"].get("day_number")) is int and snapshot["game"]["day_number"] < 2:
+            st.info("특수 직업 열람은 첫 밤 종료 후 사용할 수 있습니다.")
+        return
+    with st.container(key="game-special-roles-private", border=True):
+        st.subheader("특수 직업 열람 · 나에게만 표시")
+        stored = st.session_state.get("game.special_roles")
+        if st.button("특수 직업 다시 조회" if stored else "특수 직업 조회", key="game.special_roles_query"):
+            if st.session_state.get("game.special_roles_refresh") == scope:
+                if not _refresh_special_roles_snapshot(client, scope):
+                    st.warning("최신 게임 상태를 확인하지 못했습니다. 잠시 후 다시 시도해 주세요.")
+                    return
+                if special_roles_scope(st.session_state, st.session_state.get("game.latest_snapshot")) != scope:
+                    st.rerun()
+            st.session_state.pop("game.special_roles", None)
+            request_token = str(uuid4())
+            st.session_state["game.special_roles"] = {"scope": scope, "request": request_token}
+            roles = None
+            try:
+                response = client.get_special_roles(scope[2])
+                roles = validate_special_roles(response, scope)
+            except Exception:
+                # 서버 원문·비공개 payload·transport 예외를 화면이나 세션에 복사하지 않는다.
+                pass
+            current = st.session_state.get("game.latest_snapshot")
+            pending = st.session_state.get("game.special_roles")
+            if (special_roles_scope(st.session_state, current) != scope
+                    or str(client.user_id) != scope[0]
+                    or not isinstance(pending, dict) or pending.get("request") != request_token):
+                maintain_special_roles(st.session_state, current)
+                return
+            if roles is None:
+                st.session_state.pop("game.special_roles", None)
+                st.warning("특수 직업 정보를 확인하지 못했습니다. 최신 상태를 확인한 뒤 다시 조회해 주세요.")
+                st.session_state["game.special_roles_refresh"] = scope
+                _refresh_special_roles_snapshot(client, scope)
+                return
+            st.session_state["game.special_roles"] = {"scope": scope, "roles": roles}
+        stored = st.session_state.get("game.special_roles")
+        if (isinstance(stored, dict) and stored.get("scope") == scope
+                and special_roles_scope(st.session_state, st.session_state.get("game.latest_snapshot")) == scope):
+            for row in stored.get("roles", []):
+                role = "탐정" if row["role"] == "DETECTIVE" else "의사"
+                st.text(f"{row['display_name']} · {role} · {'생존' if row['alive'] else '사망'}")
+            if stored.get("roles") == []:
+                st.text("조회 가능한 특수 직업이 없습니다.")
+
+
+
+def _refresh_special_roles_snapshot(client: Any, scope: tuple) -> bool:
+    """조회 거부 뒤 최신 상태 확인이 실패하면 재시도에서도 먼저 상태 갱신을 요구한다."""
+
+    try:
+        refreshed = client.get_game(scope[2])
+        refreshed = refreshed.get("data", refreshed)
+        if (special_roles_scope(st.session_state, st.session_state.get("game.latest_snapshot")) != scope
+                or str(client.user_id) != scope[0] or not isinstance(refreshed, dict)
+                or not isinstance(refreshed.get("game"), dict) or not isinstance(refreshed.get("me"), dict)
+                or refreshed["game"].get("game_id") != scope[2]
+                or refreshed["me"].get("player_id") != scope[3]
+                or type(refreshed["game"].get("state_version")) is not int
+                or refreshed["game"]["state_version"] < scope[4]):
+            return False
+        st.session_state["game.latest_snapshot"] = refreshed
+        st.session_state.pop("game.special_roles_refresh", None)
+        maintain_special_roles(st.session_state, refreshed)
+        return True
+    except Exception:
+        return False

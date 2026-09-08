@@ -216,8 +216,9 @@ API:
 - `게임 만들기` primary button
 - `취소` secondary button
 
-시나리오, 역할과 persona는 사용자가 고르지 않는다. 반복 플레이 편향을 줄이기 위해
-Backend가 결정적으로 선택한다.
+`STANDARD`에서는 시나리오, 역할과 persona를 사용자가 고르지 않는다. 반복 플레이
+편향을 줄이기 위해 Backend가 결정적으로 선택한다. `CUSTOM_ROLE`의 인간 자유 직업
+선택은 이 문서의 CP-0 절을 따른다.
 
 ### 6.2 제출
 
@@ -560,6 +561,9 @@ AI 발언 분석은 `GET /api/v1/admin/speech-analytics`를 사용한다. 화면
 5개 공개 근거를 펼친다. 히트맵과 비율 그래프는 표본 상한·부분 완료를 숨기지 않으며,
 키워드와 같은 주제의 표현은 동의어 확정이 아닌 원문 동시 출현 후보로 안내한다.
 벡터·role·faction·개별 행동·투표·private context는 표시하지 않는다.
+팀 DB의 전체 기간 집계가 일반 조회보다 오래 걸릴 수 있으므로 발언 분석 GET만
+최대 30초를 기다리고, 나머지 관리자 요청은 기존 5초 제한을 유지한다. 제한 시간을
+넘거나 403을 받으면 기존 fail-closed 오류 처리를 유지하며 자동 재시도하지 않는다.
 
 ## 16. 화면 상태 소유권
 
@@ -719,3 +723,63 @@ Front 세션의 대기열에 입력 순서대로 예약하며, 전송 중에도 
 토론 분석 범위 선택은 game/phase/round에 묶어 발언마다 바뀌는 window_id와 분리한다.
 같은 토론의 새 발언이 도착해도 게임 누적 선택을 유지하며, 각 요약 바로 앞에 공개
 명부의 화자 이름을 표시한다. 원문 expander를 펼치지 않아도 화자를 구분할 수 있다.
+
+## 2026-09-08 CUSTOM_ROLE 사용자 흐름 (CP-0, WU-F11 예약)
+
+새 게임 설정의 기본값은 `STANDARD`이고 기존 화면·요청을 그대로 유지한다.
+`CUSTOM_ROLE`을 선택하면 Front는 `GET /api/v1/game-config/custom-role-abilities`의
+`custom-role-v1` catalog를 읽어 진영, 자유 직업명, 능력 1~3개를 받는다. 직업명은
+NFC·연속 공백·앞뒤 공백 정규화 결과 1~40자를 안내하고, 서버 응답 전에는 catalog를
+신뢰한 것으로 간주하지 않는다. `CITIZEN` 화면은 공격 외 네 능력 중 1~3개를 제공하며 낮/조회 능력만도 선택할 수 있다.
+`MAFIA` 화면은 공격을 선택 해제할 수 없게 하고 나머지 중 추가하여 총 1~3개를 받되, 조작된 요청의 최종 거부는 Backend가 담당한다.
+
+역할 공개와 내 정보에는 snapshot의 `me.role_name`, `me.faction`, `me.ability_ids`,
+`me.ability_options`만 사용한다. 이 값은 본인 projection 밖의 상태·cache·analytics에
+복제하지 않는다. 공개 플레이어 목록은 처형 또는 게임 종료 전에는 자유 직업명을
+표시하지 않고, 그 뒤 Backend가 보낸 additive `revealed_role_name`만 표시한다.
+
+CUSTOM_ROLE 밤 화면은 `ability_options` 중 하나를 먼저 선택한 뒤 해당 능력의
+`valid_targets`에서 대상을 골라 `SUBMIT_NIGHT_ACTION`에 `ability_id`를 보낸다. 한 밤에
+한 능력만 제출할 수 있고 두 번째 제출은 기존 `ACTION_ALREADY_SUBMITTED` 처리를 따른다.
+STANDARD는 능력 선택 UI와 `ability_id`를 보내지 않으며 Backend가 기존 role에서 행동을
+결정한다. catalog 실패·구버전·빈 허용 목록·진영 불일치에서는 생성 또는 제출을
+fail-closed로 막고 안전한 재시도를 제공한다. raw MCP Tool명, action subtype, prompt는
+어떤 입력 필드나 화면 상태에도 노출하지 않는다.
+
+### 2026-09-08 WU-M10 추가 능력의 Front 연결 준비
+
+catalog에는 두 진영 모두 `vote.triple.v1`과 `intel.special_roles.v1`이 추가된다.
+이번 WU는 MCP/Backend 연결 준비이며 Front 화면 구현은 후속 WU-F12 범위다.
+투표 조작은 DAY_VOTE·REVOTE에서 선택한 대상에 `SUBMIT_VOTE`와 고정 ability_id를 함께
+보내는 한 번의 제출이다. 일반 투표·자동 투표·최종 지목은 1표다. 특수 직업 조회는
+첫 밤 종료 이후 본인에게만 보여 주며 AI·공개 명부·analytics에 복제하지 않는다.
+밤 화면은 기존 ability_options에 있는 밤 능력만 사용하므로 낮/조회 능력만 가진
+시민 커스텀 직업은 밤 제출 UI를 표시하지 않는다. raw Tool명은 공개 선택값으로 쓰지 않는다.
+
+
+### 2026-09-08 CP-0.1 사용자 Front 확장 (WU-F12)
+
+생성 화면은 [API 정본](AI_MAFIA_API_SPEC.md)의 `custom-role-v1` 다섯 descriptor의
+ID·label·factions를 정확히 검증한다. 누락·미지/중복 ID·미지 필드·타입 오류·진영 배열
+불일치·중복 진영은 fail-closed로 막고 안전한 재시도를 제공한다. `vote.triple.v1`과
+`intel.special_roles.v1`은 정상 선택값이다. 공격은 `[MAFIA]`, 나머지 네 능력은
+`[CITIZEN, MAFIA]`이며 생성 시에도 중복 없는 1~3개와 진영 제약을 검증한다.
+
+생존 CUSTOM_ROLE HUMAN의 `vote.triple.v1` 보유자에게 DAY_VOTE/REVOTE에서
+일반 1표 또는 능력 3표를 명시적으로 선택하게 한다. 일반 선택은 `SUBMIT_VOTE`의
+ability_id를 생략하고 능력 선택은 `ability_id=vote.triple.v1`을 보낸다. 기존 target·
+window·state_version·멱등성·제출 잠금 규칙을 유지하며 숫자 weight는 보내지 않는다.
+FINAL_ACCUSATION에는 이 선택을 노출하거나 능력 ID를 전달하지 않는다.
+
+생존 CUSTOM_ROLE HUMAN의 `intel.special_roles.v1` 보유자는 IN_PROGRESS이고
+`day_number >= 2`일 때 본인 private panel에서 조회한다. raw MCP Tool 대신
+`GET /api/v1/games/{game_id}/special-roles`를 `X-User-Id`로 호출한다. 해금 전에는
+첫 밤 종료 후 사용 가능함을 안내한다. 실패 시 서버 원문/비공개 payload 대신 안전한
+오류와 재시도를 제공하고 오래된 성공 결과를 남기지 않는다. 권한·상태 오류는 snapshot을
+갱신해 사용 가능 조건을 재평가한 뒤 재시도한다.
+
+결과는 요청 identity/game/player/state_version과 현재 본인 상태의 일치를 확인한 뒤
+본인 UI에만 둔다. identity·game·state 전환, 로그아웃, 사망·종료·권한 상실 때 폐기하며
+이전 요청의 늦은 응답도 표시하지 않는다. 공유 cache·공개 명부·timeline·analytics에
+복제하지 않고 표시 이름은 평문 escape한다. 종료 화면은 custom `role_name`·`faction`을
+표준 역할 표시보다 우선하고 평문 escape하며 private 조회 결과를 재사용하지 않는다.

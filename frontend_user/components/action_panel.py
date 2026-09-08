@@ -12,7 +12,8 @@ from uuid import UUID, uuid4
 import streamlit as st
 
 from frontend_user.core.api_client import ApiClient, ApiResponseError, ApiUnavailableError
-from frontend_user.core.commands import SpeechQueue, build_command
+from frontend_user.core.commands import SpeechQueue, build_command, custom_ability_options, can_use_triple_vote
+from frontend_user.core.view_models import custom_role_description
 
 ASSET_DIR = Path(__file__).with_name("browser_components") / "action_attention"
 ACTION_ATTENTION_COMPONENT = st.components.v2.component(
@@ -31,6 +32,11 @@ ACTION_PANEL_CSS = """
 }
 [class*="st-key-discussion-action-panel"] textarea {
   min-height: 3.5rem; border-color: #8eb6ff; background: #fff !important;
+  color: #172033 !important; -webkit-text-fill-color: #172033 !important;
+}
+[class*="st-key-discussion-action-panel"] textarea::placeholder {
+  color: #65728b !important; -webkit-text-fill-color: #65728b !important;
+  opacity: 1;
 }
 [class*="st-key-night-action-panel"] {
   padding: 1.15rem !important; border: 1px solid #203a60 !important;
@@ -511,6 +517,10 @@ def _render_night_action(
         "CITIZEN": "시민은 밤에 별도 행동을 할 필요가 없습니다. 아침까지 기다리세요.",
     }.get(role, "제한 시간 내에 행동을 선택하세요.")
     role_label, role_icon = ROLE_PRESENTATION.get(role, ("확인 중", "❔"))
+    if game.get("mode") == "CUSTOM_ROLE":
+        role_label = str(me.get("role_name", "커스텀 직업"))
+        instruction = "이번 밤에는 선택한 능력 중 하나만 사용할 수 있습니다."
+        title = "선택한 능력의 대상을 골라 주세요"
     day_number = game.get("day_number", 1)
     if type(day_number) is not int or day_number < 1:
         day_number = 1
@@ -520,16 +530,32 @@ def _render_night_action(
         with st.container(key="night-time-card", border=True):
             _render_panel_time(game_id=game_id, snapshot=snapshot)
         with st.container(key="night-role-card", border=True):
-            st.markdown(f"**내 역할** · {role_icon} {role_label}")
+            if custom_role_description(me):
+                st.text(f"내 역할 · {role_label}")
+                st.text(custom_role_description(me))
+            else:
+                st.markdown(f"**내 역할** · {role_icon} {role_label}")
             st.caption(instruction)
         _render_pending_feedback(client=client, game_id=game_id, pending=pending)
 
         legal = set(snapshot.get("legal_actions", []))
-        targets = _valid_targets(snapshot=snapshot, command_type="SUBMIT_NIGHT_ACTION")
+        ability_id = None
+        custom = game.get("mode") == "CUSTOM_ROLE"
+        if custom:
+            options = {option["ability_id"]: option for option in custom_ability_options(snapshot)}
+            ability_key = f"form.night_ability.{game_id}.{me.get('player_id')}.{window.get('window_id')}"
+            _clear_invalid_selection(key=ability_key, options=list(options))
+            if options:
+                ability_id = st.radio("이번 밤에 사용할 능력", list(options), index=None,
+                                      format_func=lambda value: str(options[value].get("label", "능력")),
+                                      key=ability_key, disabled=_is_locked(window=window, pending=pending))
+            else:
+                st.info("현재 선택할 수 있는 능력이 없습니다. 최신 게임 상태를 확인해 주세요.")
+        targets = _valid_targets(snapshot=snapshot, command_type="SUBMIT_NIGHT_ACTION", ability_id=ability_id)
         if "SUBMIT_NIGHT_ACTION" not in legal or not targets:
             if window.get("has_submitted") or (pending and pending.get("status") == "SUCCEEDED"):
                 st.success("밤 행동을 제출했습니다. 다른 플레이어의 선택을 기다리고 있습니다.")
-            elif role == "CITIZEN":
+            elif role == "CITIZEN" and not custom:
                 st.info("시민은 밤에 별도 행동을 할 필요가 없습니다. 아침까지 기다려 주세요.")
             else:
                 st.info("다른 플레이어의 행동이 끝나기를 기다리고 있습니다.")
@@ -537,7 +563,7 @@ def _render_night_action(
 
         locked = _is_locked(window=window, pending=pending)
         option_ids = [str(target["player_id"]) for target in targets]
-        target_key = f"form.night_target.{game_id}.{window.get('window_id', 'current')}"
+        target_key = f"form.night_target.{game_id}.{window.get('window_id', 'current')}.{ability_id or 'standard'}"
         _clear_invalid_selection(key=target_key, options=option_ids)
         with st.container(key="night-action-selection", border=True):
             st.markdown("#### 행동 선택")
@@ -566,6 +592,7 @@ def _render_night_action(
                 snapshot=snapshot,
                 command_type="SUBMIT_NIGHT_ACTION",
                 target_player_id=target_id,
+                ability_id=ability_id,
             )
         st.caption("🔒 첫 제출 후에는 선택을 변경할 수 없습니다.")
 
@@ -594,7 +621,11 @@ def _render_vote_action(
             _render_panel_time(game_id=game_id, snapshot=snapshot)
             st.caption("⚠ 제한 시간 내에 투표를 완료하세요.")
         with st.container(key="vote-role-card", border=True):
-            st.markdown(f"**내 역할** · {role_icon} {role_label}")
+            if game.get("mode") == "CUSTOM_ROLE" and custom_role_description(me):
+                st.text(f"내 역할 · {me['role_name']}")
+                st.text("시민 진영" if me["faction"] == "CITIZEN" else "마피아 진영")
+            else:
+                st.markdown(f"**내 역할** · {role_icon} {role_label}")
         with st.container(key="vote-target-selection", border=True):
             if phase == "FINAL_ACCUSATION":
                 st.markdown("#### 최종 판정할 플레이어를 지목해 주세요")
@@ -631,10 +662,18 @@ def _render_vote_action(
                 horizontal=True,
                 key=target_key,
             )
+            vote_choice = "일반 1표"
+            eligible = can_use_triple_vote(snapshot)
+            if eligible:
+                vote_choice = st.radio(
+                    "투표 방식", ["일반 1표", "능력 3표"], index=None, disabled=locked,
+                    key=f"form.vote_ability.{game_id}.{window.get('window_id', 'current')}",
+                    horizontal=True,
+                )
             if st.button(
                 submit_label,
                 key="action.SUBMIT_VOTE",
-                disabled=locked or target_id is None,
+                disabled=locked or target_id is None or vote_choice is None,
                 use_container_width=True,
                 type="primary",
             ):
@@ -644,6 +683,7 @@ def _render_vote_action(
                     snapshot=snapshot,
                     command_type="SUBMIT_VOTE",
                     target_player_id=target_id,
+                    ability_id="vote.triple.v1" if eligible and vote_choice == "능력 3표" else None,
                 )
         st.info("🔒 개별 투표는 공개되지 않으며, 모두 투표를 종료한 뒤 결과가 공개됩니다.")
 
@@ -926,6 +966,7 @@ def _queue_command(
     command_type: str,
     message: str | None = None,
     target_player_id: str | None = None,
+    ability_id: str | None = None,
     user_id: Any = None,
     rerun: bool = True,
     speech_draft: dict[str, Any] | None = None,
@@ -946,10 +987,11 @@ def _queue_command(
             command_type=command_type,
             message=message,
             target_player_id=target_player_id,
+            ability_id=ability_id,
         )
         if command_type in {"SUBMIT_VOTE", "SUBMIT_NIGHT_ACTION"}:
             game = snapshot.get("game", {})
-            targets = _valid_targets(snapshot=snapshot, command_type=command_type)
+            targets = _valid_targets(snapshot=snapshot, command_type=command_type, ability_id=ability_id)
             if (_canonical_player_id(game.get("game_id")) != _canonical_player_id(game_id)
                     or _canonical_player_id(game_id) is None
                     or command["target_player_id"] not in {target["player_id"] for target in targets}):
@@ -1133,10 +1175,13 @@ def _canonical_player_id(value: Any) -> str | None:
         return None
 
 
-def _valid_targets(*, snapshot: dict[str, Any], command_type: str) -> list[dict[str, Any]]:
+def _valid_targets(*, snapshot: dict[str, Any], command_type: str, ability_id: str | None = None) -> list[dict[str, Any]]:
     """서버 후보를 현재 게임 생존자와 교차 확인하며 후보를 임의로 보충하지 않는다."""
 
     targets = _window(snapshot).get("valid_targets")
+    if command_type == "SUBMIT_NIGHT_ACTION" and snapshot.get("game", {}).get("mode") == "CUSTOM_ROLE":
+        targets = next((option["valid_targets"] for option in custom_ability_options(snapshot)
+                        if option["ability_id"] == ability_id), [])
     players = snapshot.get("players")
     game = snapshot.get("game") if isinstance(snapshot.get("game"), dict) else {}
     me = snapshot.get("me") if isinstance(snapshot.get("me"), dict) else {}

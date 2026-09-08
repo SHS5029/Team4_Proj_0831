@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 from uuid import uuid4
 
@@ -9,6 +10,8 @@ import streamlit as st
 
 from frontend_user.components.theme import render_application_header, render_header_back_button
 from frontend_user.core.api_client import ApiClient, ApiResponseError, ApiUnavailableError
+
+from frontend_user.core.commands import ABILITY_DESCRIPTIONS, normalize_role_name, validate_ability_catalog
 
 ROLE_COUNTS = {
     6: {"마피아": 1, "탐정": 1, "의사": 1, "시민": 3},
@@ -69,6 +72,30 @@ SETUP_CSS = """
 [class*="st-key-game-create-cancel"] button:not([kind="primary"]), [class*="st-key-game-create-cancel"] [data-testid="baseButton-secondary"] { color:#53627a !important; background:#f1f4f8 !important; border-color:#cbd5e1 !important; }
 [class*="st-key-game-create-cancel"] button:not([kind="primary"]) *, [class*="st-key-game-create-cancel"] [data-testid="baseButton-secondary"] * { color:#53627a !important; }
 [class*="st-key-game-create-cancel"] button:not([kind="primary"]):hover:not(:disabled), [class*="st-key-game-create-cancel"] [data-testid="baseButton-secondary"]:hover:not(:disabled) { color:#334155 !important; background:#e3e9f1 !important; }
+[data-testid="stMainBlockContainer"] :is(
+  [data-testid="stWidgetLabel"], [data-testid="stRadio"], [data-testid="stText"],
+  [data-testid="stCaptionContainer"]
+),
+[data-testid="stMainBlockContainer"] :is(
+  [data-testid="stWidgetLabel"], [data-testid="stRadio"], [data-testid="stText"],
+  [data-testid="stCaptionContainer"]
+) * {
+  color:var(--setup-ink) !important; -webkit-text-fill-color:var(--setup-ink) !important;
+}
+[data-testid="stMainBlockContainer"] [data-testid="stMultiSelect"] [role="group"]:has(> [data-testid="stMultiSelectTagsContainer"]) {
+  color:var(--setup-ink) !important; background:#fff !important; border-color:#8292ad !important;
+}
+[data-testid="stMainBlockContainer"] [data-testid="stMultiSelect"] [role="group"]:has(> [data-testid="stMultiSelectTagsContainer"]) > button {
+  color:var(--setup-ink) !important;
+}
+[data-testid="stMainBlockContainer"] [data-testid="stMultiSelect"] input {
+  color:var(--setup-ink) !important; -webkit-text-fill-color:var(--setup-ink) !important;
+}
+[data-testid="stMainBlockContainer"] [data-testid="stMultiSelect"] input::placeholder {
+  color:var(--setup-muted) !important; -webkit-text-fill-color:var(--setup-muted) !important; opacity:1;
+}
+[data-testid="stMultiSelectDropdown"] { color:var(--setup-ink) !important; background:#fff !important; }
+[data-testid="stMultiSelectDropdown"] [role="option"] { color:var(--setup-ink) !important; }
 .setup-rules { display:flex; align-items:center; gap:1.5rem; margin-top:1.1rem; padding:1rem 1.2rem; border:1px solid var(--setup-border); border-radius:.8rem; background:#fff; }
 .setup-rule-book { font-size:2.6rem; }
 .setup-rules-title { margin-bottom:.4rem; color:var(--setup-ink); font-size:1.05rem; font-weight:800; }
@@ -91,9 +118,6 @@ def render(client: ApiClient) -> None:
         st.session_state.pop("game.game_id", None)
         st.session_state.pop("game.latest_snapshot", None)
 
-    # POST body·idempotency key·pending 상태는 기존 계약을 유지하고, 이 함수에서는
-    # 화면 표현만 설정 화면 형태로 조율한다. 커스텀 직업 토글은 백엔드 연결 전
-    # 비활성 안내용이며, 현재 생성 요청에는 시나리오·역할·persona를 추가하지 않는다.
     st.markdown(SETUP_CSS, unsafe_allow_html=True)
     render_application_header(
         title="AI 마피아",
@@ -121,15 +145,7 @@ def render(client: ApiClient) -> None:
         "PENDING_TO_RENDER", "IN_FLIGHT", "RETRYABLE_UNKNOWN",
     }
     selected = _render_player_choices(in_flight=in_flight)
-    with st.container(border=True):
-        st.subheader("직업 설정")
-        st.toggle(
-            "커스텀 직업 사용",
-            value=False,
-            disabled=True,
-            key="game.custom_role",
-        )
-        st.caption("커스텀 직업은 백엔드 연결 후 활성화됩니다.")
+    custom_role, custom_valid = _render_role_settings(client, in_flight=in_flight)
     st.markdown(
         '<section class="setup-rules"><div class="setup-rule-book">📘</div><div>'
         '<div class="setup-rules-title">게임 방식</div><ul class="setup-rules-list">'
@@ -140,13 +156,14 @@ def render(client: ApiClient) -> None:
 
     button_left, button_right = st.columns([1.1, .6])
     with button_left:
-        create_clicked = st.button("게임 만들기", type="primary", key="game.create_submit", disabled=in_flight, width="stretch")
+        create_clicked = st.button("게임 만들기", type="primary", key="game.create_submit", disabled=in_flight or not custom_valid, width="stretch")
     with button_right:
         cancel_clicked = st.button("취소", key="game.create_cancel", disabled=in_flight, width="stretch")
     if create_clicked:
         st.session_state["game.create_pending"] = {
             "status": "PENDING_TO_RENDER",
             "player_count": selected,
+            "custom_role": deepcopy(custom_role),
             "idempotency_key": str(uuid4()),
         }
         st.rerun()
@@ -167,7 +184,8 @@ def render(client: ApiClient) -> None:
 
     st.info("게임을 만들고 있어요. 잠시만 기다려 주세요.")
     try:
-        response = client.create_game(player_count=int(pending["player_count"]), idempotency_key=str(pending["idempotency_key"]))
+        kwargs = {"mode": "CUSTOM_ROLE", "custom_role": deepcopy(pending["custom_role"])} if pending.get("custom_role") else {}
+        response = client.create_game(player_count=int(pending["player_count"]), idempotency_key=str(pending["idempotency_key"]), **kwargs)
         data = response.get("data")
         if not isinstance(data, dict) or not isinstance(data.get("game_id"), str):
             raise ApiUnavailableError(status_code=503, code="INVALID_RESPONSE")
@@ -227,3 +245,69 @@ def _render_terminal(pending: dict[str, object]) -> None:
             st.rerun()
     elif status == "REJECTED":
         st.error("게임을 만들 수 없어요. 입력과 Backend 상태를 확인해 주세요.")
+
+
+def _render_role_settings(client: ApiClient, *, in_flight: bool) -> tuple[dict | None, bool]:
+    """catalog 실패는 커스텀 생성만 막으며 응답 불명 요청의 선택값은 고정한다."""
+
+    with st.container(border=True, key="game-role-settings"):
+        st.subheader("직업 설정")
+        mode = st.radio("게임 모드", ["STANDARD", "CUSTOM_ROLE"],
+                        format_func=lambda value: {"STANDARD": "기본 역할", "CUSTOM_ROLE": "커스텀 직업"}[value],
+                        key="game.create_mode", disabled=in_flight, horizontal=True)
+        if mode == "STANDARD":
+            return None, True
+        faction = st.radio("진영", ["CITIZEN", "MAFIA"],
+                           format_func=lambda value: "시민 진영" if value == "CITIZEN" else "마피아 진영",
+                           key="game.create_faction", disabled=in_flight, horizontal=True)
+        name = st.text_input("자유 직업명", key="game.create_role_name", disabled=in_flight,
+                             help="NFC 및 연속·앞뒤 공백 정리 후 1~40자입니다.")
+        if "game.ability_catalog" not in st.session_state:
+            with st.spinner("능력 목록을 불러오고 있습니다."):
+                try:
+                    response = client.get_custom_role_abilities()
+                    data = validate_ability_catalog(response)
+                    st.session_state["game.ability_catalog"] = data
+                except ApiResponseError:
+                    st.session_state["game.ability_catalog"] = None
+        data = st.session_state.get("game.ability_catalog")
+        abilities = data.get("abilities") if isinstance(data, dict) else None
+        if validate_ability_catalog({"data": data}) is None:
+            st.warning("능력 목록을 확인할 수 없습니다. 기본 역할로 생성하거나 다시 시도해 주세요.")
+            if st.button("능력 목록 다시 시도", key="game.catalog_retry", disabled=in_flight):
+                st.session_state.pop("game.ability_catalog", None)
+                st.rerun()
+            return None, False
+        allowed = {item["id"]: item for item in abilities if faction in item["factions"]
+                   and (faction == "MAFIA" or item["id"] != "night.attack.v1")}
+        if not allowed or faction == "MAFIA" and "night.attack.v1" not in allowed:
+            st.warning("현재 진영의 능력 목록이 비어 있습니다.")
+            if st.button("능력 목록 다시 시도", key="game.catalog_retry", disabled=in_flight):
+                st.session_state.pop("game.ability_catalog", None)
+                st.rerun()
+            return None, False
+        for ability_id, item in allowed.items():
+            with st.container(border=True):
+                st.text(item["label"])
+                st.caption(ABILITY_DESCRIPTIONS[ability_id])
+        mandatory = ["night.attack.v1"] if faction == "MAFIA" else []
+        if mandatory:
+            st.info("공격은 마피아 진영의 필수 능력입니다.")
+        options = [ability_id for ability_id in allowed if ability_id not in mandatory]
+        key = f"game.create_abilities.{faction}"
+        if key in st.session_state:
+            st.session_state[key] = [value for value in st.session_state[key] if value in options]
+        selected = st.multiselect("사용할 능력 (총 1~3개)", options,
+                                  format_func=lambda value: allowed[value]["label"],
+                                  key=key, disabled=in_flight)
+        ability_ids = mandatory + selected
+        try:
+            name = normalize_role_name(name)
+        except ValueError as error:
+            st.caption(str(error))
+            return None, False
+        if not 1 <= len(ability_ids) <= 3 or len(set(ability_ids)) != len(ability_ids):
+            st.caption("능력을 1~3개 선택해 주세요.")
+            return None, False
+        return {"name": name, "faction": faction, "catalog_version": data["catalog_version"],
+                "ability_ids": ability_ids}, True

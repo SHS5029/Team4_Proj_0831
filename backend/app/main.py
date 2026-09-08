@@ -162,6 +162,7 @@ def create_app(
     application.include_router(minimal_mcp_router)
     # 사용자 식별은 공개 요청의 X-User-Id(UUID v4)로만 처리한다.
     application.include_router(game_module.feedback_router)
+    application.include_router(game_module.config_router)
     runtime = build_postgres_runtime(effective_settings)
     application.state.game_runtime = runtime
     # 운영 기본값은 실제 정본 PostgreSQL을 읽는다. 계약 테스트처럼 메모리

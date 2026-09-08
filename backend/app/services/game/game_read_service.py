@@ -12,6 +12,7 @@ from psycopg import IsolationLevel
 from psycopg.rows import dict_row
 
 from backend.app.core.errors import ApiError
+from backend.app.game_engine.rules.night_rules import ABILITY_ACTIONS, required_actors
 from backend.app.infrastructure.transaction import TransactionManager
 from backend.app.infrastructure.redis.cache import RedisConversationHistory
 from backend.app.models.enums import Faction, GamePhase, GameStatus, PlayerKind, PlayerRole, WinReason
@@ -137,6 +138,60 @@ def list_games(reader: Any, owner_user_id: UUID, *, status: str | None, limit: i
             message="게임 저장소를 사용할 수 없습니다.",
             retryable=True,
         ) from exc
+
+
+def read_special_roles(reader: Any, *, owner_user_id: UUID, game_id: UUID) -> dict[str, Any]:
+    """소유 HUMAN의 해금·능력을 같은 읽기 snapshot에서 검증한 뒤 특수 직업만 반환한다.
+
+    AI context나 공개 cache를 경유하지 않으며 개인 단서·이벤트·제출 원장도 읽지 않는다.
+    임의 actor 선택을 받지 않아 호출자가 다른 플레이어의 권한을 빌릴 수 없다.
+    """
+
+    try:
+        with reader._transactions.transaction() as connection:
+            connection.isolation_level = IsolationLevel.REPEATABLE_READ
+            connection.read_only = True
+            with connection.cursor(row_factory=dict_row) as cursor:
+                game = reader._games.get_owned_game(
+                    cursor, owner_user_id=owner_user_id, game_id=game_id,
+                )
+                if (game is None or UUID(str(game["id"])) != game_id
+                        or UUID(str(game["owner_user_id"])) != owner_user_id):
+                    raise ApiError(status_code=404, code="GAME_NOT_FOUND", message="게임을 찾을 수 없습니다.")
+                rows = reader._players.list_players(cursor, game_id=game_id)
+                humans = [row for row in rows if row["kind"] == "HUMAN"]
+                if (game.get("mode") != "CUSTOM_ROLE" or len(humans) != 1
+                        or humans[0].get("user_id") is None
+                        or UUID(str(humans[0]["user_id"])) != owner_user_id):
+                    raise ApiError(status_code=403, code="ABILITY_NOT_ALLOWED", message="사용할 수 없는 능력입니다.")
+                # DB 행도 외부 입력이므로 bool 문자열이나 다른 게임의 행을 그대로 투영하지 않는다.
+                if any(type(row["alive"]) is not bool or UUID(str(row["game_id"])) != game_id for row in rows):
+                    raise ValueError("특수 직업 조회의 저장 행이 올바르지 않습니다.")
+                record = initial_record_from_rows(keyring=reader._keyring, game=game, player_rows=rows)
+                state = record.state
+                human = state.player_by_id[record.human_player_id]
+                if "intel.special_roles.v1" not in human.custom_ability_ids:
+                    raise ApiError(status_code=403, code="ABILITY_NOT_ALLOWED", message="사용할 수 없는 능력입니다.")
+                if state.status is not GameStatus.IN_PROGRESS or not human.alive or state.day_number < 2:
+                    raise ApiError(status_code=409, code="ABILITY_NOT_AVAILABLE", message="아직 사용할 수 없는 능력입니다.")
+                return {
+                    "game_id": str(game_id), "player_id": str(human.player_id),
+                    "ability_id": "intel.special_roles.v1", "state_version": state.state_version,
+                    "roles": [
+                        {"player_id": str(player.player_id), "display_name": player.display_name,
+                         "role": player.role.value, "alive": player.alive}
+                        for player in sorted(state.players, key=lambda player: player.seat)
+                        if player.player_id != human.player_id
+                        and player.role in {PlayerRole.DETECTIVE, PlayerRole.DOCTOR}
+                    ],
+                }
+    except ApiError:
+        raise
+    except Exception:
+        raise ApiError(
+            status_code=503, code="DEPENDENCY_UNAVAILABLE",
+            message="능력 정보를 조회할 수 없습니다.", retryable=True,
+        ) from None
 
 
 def read_snapshot(reader: Any, owner_user_id: UUID, game_id: UUID) -> dict[str, Any]:
@@ -323,12 +378,26 @@ def _snapshot_private_events(record: CanonicalGameRecord, rows: list[Mapping[str
                 continue
             data = {"round": _event_integer(payload["round"], 1, 5), "target_player_id": str(target)}
             human_role = record.state.player_by_id[record.human_player_id].role
+            human = record.state.player_by_id[record.human_player_id]
             if row["event_type"] == "INVESTIGATION_RESULT":
-                if human_role is not PlayerRole.DETECTIVE or type(payload["is_mafia"]) is not bool:
+                can_investigate = (
+                    human_role is PlayerRole.DETECTIVE
+                    or "night.investigate.v1" in human.custom_ability_ids
+                )
+                if not can_investigate or type(payload["is_mafia"]) is not bool:
                     continue
                 data["is_mafia"] = payload["is_mafia"]
             elif row["event_type"] == "NIGHT_ACTION_ACCEPTED":
-                if payload["action_type"] != {PlayerRole.MAFIA: "ATTACK", PlayerRole.DOCTOR: "PROTECT", PlayerRole.DETECTIVE: "INVESTIGATE"}.get(human_role):
+                standard_action = {
+                    PlayerRole.MAFIA: "ATTACK", PlayerRole.DOCTOR: "PROTECT",
+                    PlayerRole.DETECTIVE: "INVESTIGATE",
+                }.get(human_role)
+                custom_actions = {
+                    {"night.attack.v1": "ATTACK", "night.investigate.v1": "INVESTIGATE",
+                     "night.protect.v1": "PROTECT"}[ability]
+                    for ability in human.custom_ability_ids if ability in ABILITY_ACTIONS
+                }
+                if payload["action_type"] not in ({standard_action} if not custom_actions else custom_actions):
                     continue
                 data["action_type"] = payload["action_type"]
             else:
@@ -406,15 +475,22 @@ def _public_event_data(
             raise ValueError("공개 투표 집계가 비어 있습니다.")
         counts = []
         seats = []
+        # 과거 공개 집계에는 현재 사망한 능력자의 표도 포함될 수 있으므로 생존으로 좁히지 않는다.
+        max_votes = len(record.state.players) + (2 if (
+            phase in {GamePhase.DAY_VOTE, GamePhase.REVOTE}
+            and record.state.mode == "CUSTOM_ROLE"
+            and any(player.kind is PlayerKind.HUMAN and "vote.triple.v1" in player.custom_ability_ids
+                    for player in record.state.players)
+        ) else 0)
         for item in raw_counts:
             if not isinstance(item, Mapping) or set(item) != {"target_player_id", "vote_count"}:
                 raise ValueError("공개 집계에 허용되지 않은 필드가 있습니다.")
             identifier = player_id(item["target_player_id"])
             seats.append(record.state.player_by_id[UUID(identifier)].seat)
-            counts.append({"target_player_id": identifier, "vote_count": _event_integer(item["vote_count"], 0, len(record.state.players))})
+            counts.append({"target_player_id": identifier, "vote_count": _event_integer(item["vote_count"], 0, max_votes)})
         total = sum(item["vote_count"] for item in counts)
         maximum = max(item["vote_count"] for item in counts)
-        if seats != sorted(set(seats)) or not 2 <= total <= len(record.state.players):
+        if seats != sorted(set(seats)) or not 2 <= total <= max_votes:
             raise ValueError("공개 집계 순서 또는 표 수가 올바르지 않습니다.")
         if payload["tied"] != (sum(item["vote_count"] == maximum for item in counts) > 1):
             raise ValueError("공개 집계와 동률 상태가 다릅니다.")
@@ -458,6 +534,9 @@ def initial_record_from_rows(
         nonce=bytes(game["seed_nonce"]),
         key_id=str(game["seed_key_id"]),
     )
+    from backend.app.services.game.postgres_helpers import validate_custom_player_rows
+
+    validate_custom_player_rows(game, player_rows)
     players: list[PlayerState] = []
     human_player_id: UUID | None = None
     eliminated: dict[UUID, tuple[str, int]] = {}
@@ -470,6 +549,10 @@ def initial_record_from_rows(
             kind=PlayerKind(str(row["kind"])),
             display_name=str(row["display_name"]),
             alive=bool(row["alive"]),
+            custom_role_name=row.get("custom_role_name"),
+            custom_role_catalog_version=row.get("custom_role_catalog_version"),
+            custom_ability_ids=tuple(row.get("custom_ability_ids") or ()),
+            custom_faction=Faction(str(row["faction"])) if row.get("custom_ability_ids") else None,
         )
         players.append(player)
         if player.kind is PlayerKind.HUMAN:
@@ -497,6 +580,7 @@ def initial_record_from_rows(
         updated_at=game["updated_at"],
         winner=Faction(str(game["winner"])) if game["winner"] is not None else None,
         win_reason=WinReason(str(game["win_reason"])) if game["win_reason"] is not None else None,
+        mode=str(game.get("mode") or "STANDARD"),
     )
     state.fast_forward_enabled = game.get("fast_forward_enabled") is True
     # 구형 엔진은 지난 밤 수를 round로 저장했다. 새 계약과 구분되는 밤 상태만
@@ -570,6 +654,9 @@ def build_snapshot(record: CanonicalGameRecord) -> dict[str, Any]:
                 "kind": player.kind.value,
                 "alive": player.alive,
                 "revealed_role": revealed,
+                "revealed_role_name": (
+                    player.custom_role_name if revealed is not None else None
+                ),
                 "eliminated_phase": eliminated[0] if eliminated else None,
                 "eliminated_round": eliminated[1] if eliminated else None,
             }
@@ -587,8 +674,9 @@ def build_snapshot(record: CanonicalGameRecord) -> dict[str, Any]:
             "last_sequence": record.front_sequence,
             "ruleset_version": "mystery-v1",
             "scenario_version": "scenario-v1",
+            "mode": state.mode,
             "player_count": len(state.players),
-            "mafia_count": sum(player.role is PlayerRole.MAFIA for player in state.players),
+            "mafia_count": sum(player.faction is Faction.MAFIA for player in state.players),
             "fast_forward_enabled": record.state.fast_forward_enabled,
             "updated_at": state.updated_at.isoformat(),
         },
@@ -602,6 +690,12 @@ def build_snapshot(record: CanonicalGameRecord) -> dict[str, Any]:
             "alibi": record.alibi,
             "observation": record.observation,
             "private_events": copy.deepcopy(record.private_events),
+            **({
+                "role_name": human.custom_role_name,
+                "faction": human.faction.value,
+                "ability_ids": list(human.custom_ability_ids),
+                "ability_options": _ability_options(record),
+            } if state.mode == "CUSTOM_ROLE" else {}),
         },
         "action_window": action_window(record, legal),
         "legal_actions": legal,
@@ -633,7 +727,8 @@ def legal_actions(record: CanonicalGameRecord) -> list[str]:
     if state.phase in {GamePhase.DAY_DISCUSSION, GamePhase.FINAL_DISCUSSION} and (record.action_window and record.action_window.get("deadline_at") is not None or record.human_player_id not in state.speech_actors):
         return (["SPEAK", "SAVE_AND_EXIT"] if state.phase is GamePhase.DAY_DISCUSSION
                 and state.day_number == 1 else ["SPEAK", "PASS", "SAVE_AND_EXIT"])
-    if state.phase is GamePhase.NIGHT_ACTION and human.role is not PlayerRole.CITIZEN and record.human_player_id not in state.night_actions:
+    if (state.phase is GamePhase.NIGHT_ACTION and human in required_actors(state)
+            and record.human_player_id not in state.night_actions):
         return ["SUBMIT_NIGHT_ACTION", "SAVE_AND_EXIT"]
     if state.phase in {GamePhase.DAY_VOTE, GamePhase.REVOTE, GamePhase.FINAL_ACCUSATION} and record.human_player_id not in state.votes:
         return ["SUBMIT_VOTE", "SAVE_AND_EXIT"]
@@ -718,6 +813,33 @@ def _valid_targets(record: CanonicalGameRecord, kind: str) -> list[dict[str, str
         if (player.player_id != record.human_player_id or (kind == "NIGHT" and human.role is PlayerRole.DOCTOR))
         and (kind != "REVOTE" or player.player_id in record.state.revote_candidates)
     ]
+
+
+def _ability_options(record: CanonicalGameRecord) -> list[dict[str, Any]]:
+    """본인에게 저장된 CUSTOM_ROLE 능력과 능력별 현재 대상만 반환한다."""
+
+    from backend.app.schemas.game_schema import CUSTOM_ROLE_ABILITIES
+
+    human = record.state.player_by_id[record.human_player_id]
+    if (record.state.phase is not GamePhase.NIGHT_ACTION
+            or record.human_player_id in record.state.night_actions or not human.alive):
+        return []
+    options = []
+    for ability_id in human.custom_ability_ids:
+        if ability_id not in ABILITY_ACTIONS:
+            continue
+        allow_self = ability_id == "night.protect.v1"
+        targets = [
+            {"player_id": str(player.player_id), "display_name": player.display_name}
+            for player in record.state.alive_players
+            if allow_self or player.player_id != human.player_id
+        ]
+        options.append({
+            "ability_id": ability_id,
+            "label": CUSTOM_ROLE_ABILITIES[ability_id]["label"],
+            "valid_targets": targets,
+        })
+    return options
 
 
 def list_item(row: Mapping[str, Any]) -> dict[str, Any]:

@@ -36,7 +36,7 @@ def submit_discussion_transaction(service: Any, owner_user_id: UUID, game_id: UU
     route_scope = f"POST /api/v1/games/{game_id}/agent-commands" if actor else f"POST /api/v1/games/{game_id}/commands"
     principal_type = actor.principal_type if actor else "USER"
     principal_id = actor.principal_id if actor else owner_user_id
-    body_hash = request_hash(payload.model_dump(mode="json"))
+    body_hash = request_hash(payload.receipt_body())
     current_time = now or datetime.now(UTC)
     try:
         with service._transactions.transaction() as connection:

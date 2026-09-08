@@ -57,8 +57,8 @@ def resolve(state: GameState, *, force: bool = False) -> GameState:
     target_id = DeterministicRng(state.seed).choice(candidates, f"final-accusation:{state.round}")
     target = find_player(state, target_id)
     state.final_accusation_target = target_id
-    winner = Faction.CITIZEN if target.role is PlayerRole.MAFIA else Faction.MAFIA
-    reason = WinReason.FINAL_MAFIA_SELECTED if target.role is PlayerRole.MAFIA else WinReason.FINAL_NON_MAFIA_SELECTED
+    winner = Faction.CITIZEN if target.faction is Faction.MAFIA else Faction.MAFIA
+    reason = WinReason.FINAL_MAFIA_SELECTED if target.faction is Faction.MAFIA else WinReason.FINAL_NON_MAFIA_SELECTED
     touch(state)
     finish(state, winner, reason)
     return state

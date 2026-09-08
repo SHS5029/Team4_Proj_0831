@@ -1065,3 +1065,57 @@ FINAL_DISCUSSION인 투표 준비 경계에서만 허용한다. 첫날·토론 �
 함수 OID·소유권·ACL·실행 설정·트리거·relation 메타데이터가 보존됐다.
 독립 연결에서 008 본문과 활성 트리거·health를 재확인했다. 실제 데이터 보정·권한
 변경·서비스 재시작·유료 모델 호출은 없으며 집계와 검증 재사용 근거는 README를 따른다.
+
+## 2026-09-08 CUSTOM_ROLE additive 저장 계약 (CP-0)
+
+WU-B16 migration은 기존 migration을 수정하지 않고 다음 nullable/additive 열을 추가한다.
+
+| 테이블 | 열 | 타입·기본값 | 제약·의미 |
+|---|---|---|---|
+| `games` | `mode` | `varchar(16) NOT NULL DEFAULT 'STANDARD'` | `STANDARD` 또는 `CUSTOM_ROLE`; 기존 행은 `STANDARD` |
+| `game_players` | `custom_role_name` | `varchar(40) NULL` | HUMAN CUSTOM_ROLE 좌석의 NFC·공백 정규화 표시 문자열 |
+| `game_players` | `custom_ability_ids` | `jsonb NULL` | HUMAN CUSTOM_ROLE 좌석의 순서가 보존된 중복 없는 versioned ID 배열 1~3개 |
+| `game_players` | `custom_role_catalog_version` | `varchar(32) NULL` | v1에서는 `custom-role-v1` |
+
+`STANDARD`와 모든 AI 행의 세 custom 열은 NULL이다. `CUSTOM_ROLE` 게임에서는 정확히 한 HUMAN 행에 세 값이 모두 존재해야 하며, 기존 `role_id` 또는 동등한 표준 역할 열과 별개로 저장된 `faction`이 권위 있는 승패 값이다. DB check만으로 진영별 조합을 느슨하게 허용하지 않고 Backend가 catalog allowlist·중복·팀 제약을 transaction 안에서 fail-closed로 검증한 결과만 기록한다. 직업명은 평문 비신뢰 데이터이므로 prompt·SQL·로그 제어 문자열로 해석하지 않으며 출력 경계에서 escape한다.
+
+`custom_ability_ids`의 v1 allowlist는 `night.attack.v1`, `night.investigate.v1`,
+`night.protect.v1`, `vote.triple.v1`, `intel.special_roles.v1`이다. `CITIZEN`은 공격 외
+네 능력 중 1~3개(낮/조회 능력만도 가능), `MAFIA`는 공격 필수와 나머지 추가로 총 1~3개를
+허용하며 배열 중복이나 알 수 없는 ID는 저장하지 않는다.
+
+역할 배정 시 기존 `games.mafia_count`를 유지한다. CUSTOM_ROLE 인간의 저장 faction이 `MAFIA`이면 mafia 슬롯 하나, `CITIZEN`이면 citizen 슬롯 하나를 선점한다. 나머지 AI에는 표준 mafia 총수와 detective·doctor 각 한 명 구성을 보존한다. 밤 원장은 actor별 `ability_id`와 대상을 구분할 수 있어야 하며 복수 INVESTIGATE·PROTECT 제출을 허용하고, 해소 시 유효 PROTECT actor의 모든 대상 집합을 공격 대상과 비교한다. migration upgrade 검증은 기존 행이 `mode=STANDARD`, custom 열 NULL로 읽히며 기존 게임 결과가 변하지 않는지 포함한다.
+
+### 2026-09-08 WU-M10 능력 저장 확장
+
+catalog allowlist에 `vote.triple.v1`, `intel.special_roles.v1`을 두 진영 공통으로 추가한다.
+1~3개 제한과 MAFIA 공격 필수는 유지한다. 신규 migration
+`011_add_custom_role_tool_abilities.sql`은 010 뒤에 실행하며 기존 행을 변경하지 않고
+`action_submissions_ability_id_check`에 `vote.triple.v1` + `action_type=VOTE` 조합만 추가한다.
+이 신규 조합은 `source=HUMAN`도 필수로 검증한다.
+능력 투표는 기존 immutable 제출 행의 ability_id에 기록하고 복원 시 게임 mode·HUMAN·
+보유 능력·phase와 대상을 재검증해 3표를 재현한다. NULL은 기존 1표이며 가중치를 외부
+숫자로 저장/수용하지 않는다. 공개 counts와 순수 엔진은 같은 가중 합계를 사용한다.
+확정 해소 원장과 종료 결과의 ballots도 능력 사용 표에만 `ability_id`를 추가한다.
+구형/일반 ballot의 생략은 1표이고 숫자 weight와 AUTO 능력 ballot은 거부한다.
+특수 직업 열람은 현재 소유 게임 snapshot에서 검증·최소 projection만 만들고 저장,
+event, Redis cache를 추가하지 않는다. 첫 밤 완료는 저장된 day_number >= 2로 판정한다.
+
+
+### 2026-09-08 CP-0.1 공개 조회 저장 경계
+
+WU-B17의 공개 `GET /api/v1/games/{game_id}/special-roles`는 기존 `read_special_roles`의
+동일 읽기 snapshot과 소유권·능력·생존·진행 상태·day>=2 검증을 재사용한다. 별도 테이블·
+migration·이벤트·Redis cache를 만들지 않으며 내부 MCP 전용 조회 계약도 유지한다.
+Front의 결과는 identity/game/state 범위의 본인 UI에만 두고 범위 변경 시 폐기하며,
+공개 명부·timeline·analytics 또는 종료 결과 저장에 복제하지 않는다.
+응답 envelope·no-store·오류의 정본은 [API 명세](AI_MAFIA_API_SPEC.md)의 CP-0.1 절이다.
+
+### 2026-09-08 CP-7 팀 DB 적용 검증
+
+사용자가 설정한 `DATABASE_MIGRATION_URL`로 팀 DB 대상과 DDL 권한을 확인한 뒤,
+Backend·MCP·사용자 Front를 중지하고 010 다음 011을 적용했다. 두 SQL만 담은
+임시 migration 디렉터리를 사용했으며 기존 001~009는 재실행하지 않았다.
+같은 순서의 재실행도 성공했고, 새 열 5개·검증된 CHECK 3개·기존 세 테이블 행 수와
+기존 게임의 STANDARD/default 및 custom/ability NULL 보존을 확인했다.
+URL·자격 증명은 출력하지 않았으며 실제 서비스 검증 결과는 루트 README에 기록한다.

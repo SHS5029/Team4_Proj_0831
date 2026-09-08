@@ -28,8 +28,98 @@ def normalize_message(value: str) -> str:
     return normalized
 
 
+ABILITY_DESCRIPTIONS = {
+    "night.attack.v1": "공격: 자신을 제외한 생존자 한 명을 공격합니다.",
+    "night.investigate.v1": "조사: 자신을 제외한 생존자 한 명의 진영을 확인합니다.",
+    "night.protect.v1": "보호: 자신을 포함한 생존자 한 명을 보호합니다.",
+    "vote.triple.v1": "투표 조작: 낮 투표·재투표에서 선택한 한 표를 3표로 제출합니다.",
+    "intel.special_roles.v1": "특수 직업 열람: 첫 밤 종료 후 다른 탐정·의사의 직업을 나에게만 표시합니다.",
+}
+
+
+CUSTOM_ABILITY_LABELS = {
+    "night.attack.v1": "공격", "night.investigate.v1": "조사", "night.protect.v1": "보호",
+    "vote.triple.v1": "투표 조작", "intel.special_roles.v1": "특수 직업 열람",
+}
+
+
+def validate_ability_catalog(response: Any) -> dict[str, Any] | None:
+    """success envelope 안의 폐쇄형 다섯 descriptor만 신뢰하고 구버전도 거부한다."""
+
+    data = response.get("data") if isinstance(response, dict) and "error" not in response else None
+    if (not isinstance(data, dict) or set(data) != {"catalog_version", "abilities"}
+            or data["catalog_version"] != "custom-role-v1" or not isinstance(data["abilities"], list)
+            or len(data["abilities"]) != 5):
+        return None
+    seen = set()
+    for item in data["abilities"]:
+        if not isinstance(item, dict) or set(item) != {"id", "label", "factions"}:
+            return None
+        value = item["id"]
+        if not isinstance(value, str) or value not in CUSTOM_ABILITY_LABELS or value in seen:
+            return None
+        factions = ["MAFIA"] if value == "night.attack.v1" else ["CITIZEN", "MAFIA"]
+        if (not isinstance(item["label"], str) or item["label"] != CUSTOM_ABILITY_LABELS[value]
+                or type(item["factions"]) is not list or item["factions"] != factions):
+            return None
+        seen.add(value)
+    return deepcopy(data)
+
+
+def owns_custom_ability(snapshot: dict[str, Any], ability_id: str) -> bool:
+    """본인과 공개 명부의 HUMAN 좌석이 일치할 때만 커스텀 능력 UI를 허용한다."""
+
+    game, me = snapshot.get("game", {}), snapshot.get("me", {})
+    players = snapshot.get("players", [])
+    if not isinstance(game, dict) or not isinstance(me, dict):
+        return False
+    return (game.get("mode") == "CUSTOM_ROLE" and game.get("status") == "IN_PROGRESS"
+            and me.get("alive") is True and me.get("spectator") is not True
+            and isinstance(me.get("ability_ids"), list) and ability_id in me["ability_ids"]
+            and isinstance(players, list) and any(isinstance(player, dict)
+                and player.get("player_id") == me.get("player_id") and player.get("kind") == "HUMAN"
+                for player in players))
+
+
+def can_use_triple_vote(snapshot: dict[str, Any]) -> bool:
+    """최종 지목과 표준 게임에서는 능력 선택과 전송을 모두 차단한다."""
+
+    return (snapshot.get("game", {}).get("phase") in {"DAY_VOTE", "REVOTE"}
+            and owns_custom_ability(snapshot, "vote.triple.v1"))
+
+
+def normalize_role_name(value: str) -> str:
+    """표시용 직업명을 NFC와 공백 기준으로 정리하고 제어 문자 입력을 거부한다."""
+
+    if any(unicodedata.category(char).startswith("C") for char in value):
+        raise ValueError("직업명에는 제어 문자를 사용할 수 없습니다.")
+    name = " ".join(unicodedata.normalize("NFC", value).split())
+    if not 1 <= len(name) <= 40:
+        raise ValueError("직업명은 공백 정리 후 1~40자로 입력해 주세요.")
+    return name
+
+
+def custom_ability_options(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    """본인에게 저장된 능력과 진영에 일치하는 공개 ID만 밤 입력에 사용한다."""
+
+    me = snapshot.get("me", {})
+    if snapshot.get("game", {}).get("mode") != "CUSTOM_ROLE" or me.get("faction") not in {"CITIZEN", "MAFIA"}:
+        return []
+    owned = me.get("ability_ids", [])
+    options = me.get("ability_options", [])
+    if not isinstance(owned, list) or not isinstance(options, list):
+        return []
+    return [option for option in options if isinstance(option, dict)
+            and isinstance(option.get("ability_id"), str)
+            and option.get("ability_id") in {"night.attack.v1", "night.investigate.v1", "night.protect.v1"}
+            and option["ability_id"] in owned
+            and (me["faction"] == "MAFIA" or option["ability_id"] != "night.attack.v1")
+            and isinstance(option.get("valid_targets"), list)]
+
+
 def build_command(*, snapshot: dict[str, Any], command_type: str,
-                  message: str | None = None, target_player_id: str | None = None) -> dict[str, Any]:
+                  message: str | None = None, target_player_id: str | None = None,
+                  ability_id: str | None = None) -> dict[str, Any]:
     """snapshot에서 입력 형식만 정규화해 Backend 검증용 command를 만든다."""
 
     # Front snapshot의 legal_actions·valid_targets·turn 정보는 SSE 시점 차이로
@@ -58,6 +148,14 @@ def build_command(*, snapshot: dict[str, Any], command_type: str,
         except (TypeError, ValueError):
             raise ValueError("유효한 대상이 아닙니다.") from None
         body["target_player_id"] = candidate
+    if command_type == "SUBMIT_NIGHT_ACTION" and game.get("mode") == "CUSTOM_ROLE":
+        if ability_id not in {option["ability_id"] for option in custom_ability_options(snapshot)}:
+            raise ValueError("현재 사용할 수 있는 능력을 선택해 주세요.")
+        body["ability_id"] = ability_id
+    if command_type == "SUBMIT_VOTE" and ability_id is not None:
+        if ability_id != "vote.triple.v1" or not can_use_triple_vote(snapshot):
+            raise ValueError("현재 사용할 수 있는 투표 능력이 아닙니다.")
+        body["ability_id"] = ability_id
     return body
 
 

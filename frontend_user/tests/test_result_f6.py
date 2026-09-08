@@ -318,3 +318,18 @@ def test_public_chat_distinguishes_speech_and_actions_and_escapes_html():
     html = "\n".join(item.value for item in app.markdown)
     assert "&lt;b&gt;합성 이름&lt;/b&gt;" in html and "<b>합성 이름</b>" not in html
     assert "PASS했습니다" in rendered
+
+
+def test_custom_result_prefers_plain_role_name_and_faction_and_discards_intel():
+    snapshot = _snapshot()
+    custom = {"player_id": PLAYER, "role": "DETECTIVE", "role_name": "<b>기록관</b>", "faction": "MAFIA"}
+    snapshot["me"] = custom
+    snapshot["result"]["players"][0].update(custom)
+    app = AppTest.from_function(_result_app, args=(snapshot,))
+    app.session_state["game.special_roles"] = {"roles": [{"secret": "유출 금지"}]}
+    app.run()
+    assert not app.exception
+    assert any("내 역할 · <b>기록관</b> · 마피아 진영" == item.value for item in app.text)
+    assert "<b>기록관</b>" not in "\n".join(item.value for item in app.markdown)
+    assert "유출 금지" not in _text(app)
+    assert "game.special_roles" not in app.session_state

@@ -15,7 +15,7 @@ from backend.app.game_engine.fallback import auto_night_target, auto_vote_target
 from backend.app.game_engine.rng import DeterministicRng, generate_seed
 from backend.app.game_engine.errors import RuleViolation
 from backend.app.game_engine.rules.discussion_rules import normalize_speech
-from backend.app.game_engine.rules.night_rules import required_actors, role_action
+from backend.app.game_engine.rules.night_rules import ABILITY_ACTIONS, required_actors, role_action
 from backend.app.game_engine.rules.player_rules import eliminate_player, find_player, require_alive_player
 from backend.app.game_engine.replay import apply_operation
 from backend.app.game_engine.rules.vote_rules import leaders
@@ -171,7 +171,12 @@ class GameEngine:
         """역할에 맞는 밤 행동을 첫 유효 제출만 저장한다."""
 
         night_phase.submit_action(state, actor_id, action_type, target_id)
-        self._record(state, "SUBMIT_NIGHT_ACTION", actor_id, target_id=target_id)
+        actor = self._player(state, actor_id)
+        # 커스텀 능력의 선택을 기록해야 재생 시 저장 순서의 첫 능력으로 바뀌지 않는다.
+        ability_id = next((item for item in actor.custom_ability_ids
+                           if ABILITY_ACTIONS.get(item) == action_type), None)
+        self._record(state, "SUBMIT_NIGHT_ACTION", actor_id,
+                     target_id=target_id, ability_id=ability_id)
         return state
 
     def resolve_night(self, state: GameState, *, force: bool = False) -> GameState:
@@ -181,12 +186,13 @@ class GameEngine:
         self._record(state, "RESOLVE_NIGHT")
         return state
 
-    def submit_vote(self, state: GameState, actor_id: UUID | None, target_id: UUID) -> GameState:
+    def submit_vote(self, state: GameState, actor_id: UUID | None, target_id: UUID,
+                    *, ability_id: str | None = None) -> GameState:
         """낮 투표 또는 재투표에서 유효한 첫 표를 저장한다."""
 
         actor = self._alive_actor(state, actor_id)
-        vote_phase_module.submit(state, actor.player_id, target_id)
-        self._record(state, "SUBMIT_VOTE", actor.player_id, target_id=target_id)
+        vote_phase_module.submit(state, actor.player_id, target_id, ability_id=ability_id)
+        self._record(state, "SUBMIT_VOTE", actor.player_id, target_id=target_id, ability_id=ability_id)
         return state
 
     def resolve_vote(self, state: GameState, *, force: bool = False) -> GameState:

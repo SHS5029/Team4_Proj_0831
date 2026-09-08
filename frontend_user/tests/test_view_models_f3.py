@@ -1089,3 +1089,203 @@ def test_exit_save_uses_server_confirmation_when_screen_version_is_older():
     assert client.snapshot["game"]["state_version"] == 16
     assert client.reads == reads + 1
     assert app.session_state["navigation.page"] == "home"
+
+
+def test_custom_private_fields_never_enter_public_player_projection():
+    """타인에게 섞인 비공개 직업·능력을 공개 목록이 복사하지 않는지 검증한다."""
+
+    from frontend_user.core.view_models import custom_role_description
+
+    private = {"role_name": "본인 감식관", "faction": "CITIZEN", "ability_ids": ["night.investigate.v1"],
+               "ability_options": []}
+    snapshot = {"me": private, "players": [{"player_id": AI, "seat": 1,
+        "role_name": "타인 비밀", "faction": "MAFIA", "ability_ids": ["night.attack.v1"], "ability_options": []}]}
+    assert own_private_view(snapshot) == private
+    assert public_players(snapshot) == [{"player_id": AI, "seat": 1}]
+    assert "조사" in custom_role_description(own_private_view(snapshot))
+    assert "타인 비밀" not in custom_role_description(own_private_view(snapshot))
+
+
+def test_custom_investigator_can_read_only_own_results():
+    snapshot = _investigation_snapshot()
+    snapshot["game"]["mode"] = "CUSTOM_ROLE"
+    snapshot["me"].update(role="CITIZEN", role_name="감식관", faction="CITIZEN",
+                          ability_ids=["night.investigate.v1"], ability_options=[])
+    app = AppTest.from_function(_page_app, args=(_Client(snapshot), snapshot)).run()
+    assert not app.exception
+    assert any("밤 1 조사 결과" in item.value for item in app.text)
+    assert any("시민 진영" in item.value for item in app.text)
+
+
+def _intel_snapshot():
+    """첫 밤 이후 본인 전용 능력이 해금된 최소 공개 snapshot이다."""
+
+    snapshot = _snapshot()
+    snapshot["game"].update(mode="CUSTOM_ROLE", day_number=2)
+    snapshot["me"].update(ability_ids=["intel.special_roles.v1"], faction="CITIZEN", role_name="기록관")
+    return snapshot
+
+
+class _IntelClient:
+    """동기 HTTP 도중의 identity·snapshot 변경도 재현하는 비공개 조회 대역이다."""
+
+    user_id = HUMAN
+
+    def __init__(self):
+        self.snapshot = _intel_snapshot()
+        self.calls = 0
+        self.refreshes = 0
+        self.change = None
+        self.error = None
+        self.response = {"data": {"game_id": GAME, "player_id": HUMAN,
+            "ability_id": "intel.special_roles.v1", "state_version": 12,
+            "roles": [{"player_id": AI, "display_name": "<b>비공개 탐정</b>", "role": "DETECTIVE", "alive": False}]}}
+
+    def get_special_roles(self, game_id):
+        import streamlit as st
+
+        self.calls += 1
+        if self.change:
+            self.change(st.session_state)
+        if self.error:
+            raise self.error
+        return deepcopy(self.response)
+
+    def get_game(self, game_id):
+        self.refreshes += 1
+        return {"data": deepcopy(self.snapshot)}
+
+
+def _intel_app(client):
+    from copy import deepcopy
+    import streamlit as st
+    from frontend_user.app_pages.game_page import _render_special_roles
+
+    st.session_state.setdefault("identity.user_id", client.user_id)
+    st.session_state.setdefault("game.game_id", client.snapshot["game"]["game_id"])
+    st.session_state.setdefault("game.latest_snapshot", deepcopy(client.snapshot))
+    _render_special_roles(client=client, snapshot=st.session_state["game.latest_snapshot"])
+
+
+def test_intel_private_panel_plain_text_rerun_error_discards_and_retries():
+    client = _IntelClient()
+    app = AppTest.from_function(_intel_app, args=(client,)).run()
+    app.button(key="game.special_roles_query").click().run()
+    assert not app.exception
+    assert any("<b>비공개 탐정</b>" in item.value for item in app.text)
+    assert "비공개 탐정" not in str(app.session_state["game.latest_snapshot"])
+    app.run()
+    assert client.calls == 1
+    client.error = ApiResponseError(status_code=403, code="PRIVATE_RAW_ERROR")
+    app.button(key="game.special_roles_query").click().run()
+    assert "game.special_roles" not in app.session_state
+    assert not any("비공개 탐정" in item.value for item in app.text)
+    assert "PRIVATE_RAW_ERROR" not in str([item.value for item in app.warning])
+    assert client.refreshes == 1
+    client.error = None
+    app.button(key="game.special_roles_query").click().run()
+    assert app.session_state["game.special_roles"]["roles"]
+    assert not app.exception
+
+
+@pytest.mark.parametrize("change", ["identity", "game", "version", "phase", "dead", "ended", "ability", "logout", "player"])
+def test_intel_scope_changes_discard_success_and_late_response(change):
+    from frontend_user.core.session import maintain_special_roles, special_roles_scope
+
+    def mutate(state):
+        if change == "identity":
+            state["identity.user_id"] = AI
+        elif change == "logout":
+            state.pop("identity.user_id", None)
+        elif change == "game":
+            state["game.game_id"] = AI
+        else:
+            snapshot = deepcopy(state["game.latest_snapshot"])
+            if change == "version":
+                snapshot["game"]["state_version"] += 1
+            elif change == "phase":
+                snapshot["game"]["phase"] = "NIGHT_ACTION"
+            elif change == "dead":
+                snapshot["me"]["alive"] = False
+            elif change == "ended":
+                snapshot["game"]["status"] = "COMPLETED"
+            elif change == "ability":
+                snapshot["me"]["ability_ids"] = []
+            else:
+                snapshot["me"]["player_id"] = AI
+            state["game.latest_snapshot"] = snapshot
+
+    snapshot = _intel_snapshot()
+    state = {"identity.user_id": HUMAN, "game.game_id": GAME, "game.latest_snapshot": snapshot}
+    state["game.special_roles"] = {"scope": special_roles_scope(state, snapshot), "roles": [{"secret": True}]}
+    mutate(state)
+    maintain_special_roles(state, state["game.latest_snapshot"])
+    assert "game.special_roles" not in state
+    client = _IntelClient()
+    client.change = mutate
+    app = AppTest.from_function(_intel_app, args=(client,)).run()
+    app.button(key="game.special_roles_query").click().run()
+    assert not app.exception
+    assert "game.special_roles" not in app.session_state
+    assert not any("비공개 탐정" in item.value for item in app.text)
+
+
+@pytest.mark.parametrize("change", ["day", "standard", "ai", "dead", "saved", "ability"])
+def test_intel_ineligible_never_calls_api(change):
+    client = _IntelClient()
+    if change == "day":
+        client.snapshot["game"]["day_number"] = 1
+    elif change == "standard":
+        client.snapshot["game"]["mode"] = "STANDARD"
+    elif change == "ai":
+        client.snapshot["players"][1]["kind"] = "AI"
+    elif change == "dead":
+        client.snapshot["me"]["alive"] = False
+    elif change == "saved":
+        client.snapshot["game"]["status"] = "SAVED"
+    else:
+        client.snapshot["me"]["ability_ids"] = []
+    app = AppTest.from_function(_intel_app, args=(client,)).run()
+    assert not app.button
+    assert client.calls == 0
+    assert not app.exception
+
+
+@pytest.mark.parametrize("field,value", [("game_id", AI), ("player_id", AI), ("state_version", 13),
+    ("state_version", True), ("ability_id", "other"), ("roles", [{"role": "MAFIA"}])])
+def test_intel_response_scope_and_schema_fail_closed(field, value):
+    client = _IntelClient()
+    client.response["data"][field] = value
+    app = AppTest.from_function(_intel_app, args=(client,)).run()
+    app.button(key="game.special_roles_query").click().run()
+    assert "game.special_roles" not in app.session_state
+    assert app.warning
+    assert not app.exception
+
+
+def test_intel_failed_snapshot_refresh_blocks_query_until_revalidated():
+    class FailingRefreshClient(_IntelClient):
+        """권한 오류 뒤 snapshot 의존성까지 실패하면 다음 클릭도 먼저 재검증한다."""
+
+        fail_refresh = True
+
+        def get_game(self, game_id):
+            self.refreshes += 1
+            if self.fail_refresh:
+                raise ApiUnavailableError(status_code=503, code="PRIVATE_FAILURE")
+            return {"data": deepcopy(self.snapshot)}
+
+    client = FailingRefreshClient()
+    client.error = ApiResponseError(status_code=409, code="ABILITY_NOT_AVAILABLE")
+    app = AppTest.from_function(_intel_app, args=(client,)).run()
+    app.button(key="game.special_roles_query").click().run()
+    assert client.calls == 1
+    app.button(key="game.special_roles_query").click().run()
+    assert client.calls == 1
+    assert "game.special_roles" not in app.session_state
+    client.fail_refresh = False
+    client.error = None
+    app.button(key="game.special_roles_query").click().run()
+    assert client.calls == 2
+    assert app.session_state["game.special_roles"]["roles"]
+    assert not app.exception
