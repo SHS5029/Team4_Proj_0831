@@ -49,3 +49,4 @@ backend/tests/*
 frontend_user/tests/*
 !frontend_user/tests/test_identity_f1.py
 !frontend_user/tests/test_vote_insights_f9.py
+.log
