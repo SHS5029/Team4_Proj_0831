@@ -134,6 +134,40 @@ async def test_day1_context_failure_still_falls_back_to_speech():
     assert provider.calls == 0
 
 
+def test_day1_fallback_avoids_public_repeats_across_players_and_windows():
+    """연속 장애에서도 공개 이력에 남은 대사를 다른 AI가 그대로 반복하지 않는다."""
+
+    events = []
+    context = {"public": {"data": {"public_events": events}}}
+    messages = []
+    for index in range(13):
+        spec = AgentJobSpec(GAME_ID, UUID(int=index % 6 + 1), UUID(int=700 + index),
+                            "SPEECH", "DAY_DISCUSSION", index + 2, day_number=1)
+        proposal = AgentOrchestrator._fallback_proposal(spec, context)
+        assert proposal.type == "SPEAK" and 1 <= len(proposal.message) <= 200
+        assert proposal == AgentOrchestrator._fallback_proposal(spec, context)
+        messages.append(proposal.message)
+        events.append({"event_type": "PLAYER_SPOKE", "data": {
+            "player_id": str(spec.player_id), "message": proposal.message,
+        }})
+    assert len(set(messages[:12])) == 12
+    assert messages[-1] == messages[0]
+    assert "난 앞으로 나온 주장과 그 근거가 맞는지 비교해 볼게." not in messages
+
+
+def test_day1_fallback_without_context_varies_and_stays_deterministic():
+    """공개 scope부터 실패해도 하나의 고정 대사를 모든 예약에 주입하지 않는다."""
+
+    messages = set()
+    for index in range(24):
+        spec = AgentJobSpec(GAME_ID, UUID(int=index % 6 + 1), UUID(int=800 + index),
+                            "SPEECH", "DAY_DISCUSSION", index + 2, day_number=1)
+        proposal = AgentOrchestrator._fallback_proposal(spec, {})
+        assert proposal == AgentOrchestrator._fallback_proposal(spec, {})
+        messages.add(proposal.message)
+    assert len(messages) > 1
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("code,expected_status", [
     ("MCP_CONTEXT_STALE", "STALE"),

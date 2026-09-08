@@ -1,14 +1,15 @@
 """B8 관리자 allowlist·read-only·redaction 계약 테스트."""
 
 from datetime import UTC, datetime
-from uuid import UUID, uuid4
-import pytest
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
+from uuid import UUID
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.core.config import Settings
 from backend.app.main import create_app
-from backend.app.repositories.admin_repository import AdminRepository
 
 ADMIN = "00000000-0000-4000-8000-000000000201"
 USER = "00000000-0000-4000-8000-000000000202"
@@ -74,6 +75,30 @@ class FakeAdminRepository:
                  "personality_summary": "근거를 차분히 쌓는 성격", "participations": 10,
                  "wins": 6, "win_rate": 0.6}]
 
+    def speech_analytics(self, **kwargs):
+        """공개 발언 분석 탭이 사용할 빈 분석 결과를 제공한다."""
+
+        self.last_speech_query = kwargs
+        return {
+            "analysis_version": "synthetic-v1",
+            "generated_at": "2026-09-08T00:00:00Z",
+            "coverage": {
+                "eligible_speeches": 0,
+                "analyzed_speeches": 0,
+                "embedding_ready": 0,
+                "claims_ready": 0,
+                "embedding_coverage": 0.0,
+                "claims_coverage": 0.0,
+                "sampled_speeches": 0,
+                "sample_limited": False,
+            },
+            "topics": [],
+            "topic_count": 0,
+            "agents": [],
+            "keywords": [],
+            "method": {"similarity": "cosine", "threshold": 0.78, "sample_limit": 500},
+        }
+
     def list_feedback(self, **kwargs):
         """검증된 필터가 저장소에 전달되는지 확인할 수 있게 보관한다."""
 
@@ -128,6 +153,45 @@ def _create_game(client: TestClient) -> str:
 
     del client
     return str(GAME_ID)
+
+
+@pytest.mark.parametrize("method,path,repository_method,body", [
+    ("GET", "/metrics", "metrics", None),
+    ("GET", "/speech-analytics", "speech_analytics", None),
+    ("GET", "/games", "list_games", None),
+    ("POST", "/insights/query", "search_knowledge", {"question": "운영 개선 근거를 찾아 주세요."}),
+])
+def test_slow_admin_query_keeps_shared_event_loop_available(monkeypatch, method, path, repository_method, body):
+    """관리자 DB 대기 중에도 같은 앱의 health가 응답하고 미허용 사용자는 조회 전에 거부된다."""
+
+    client, repository = _client()
+    entered, release = Event(), Event()
+    original = getattr(repository, repository_method)
+
+    def slow_query(*args, **kwargs):
+        entered.set()
+        if not release.wait(timeout=5):
+            raise AssertionError("합성 관리자 조회의 해제 신호가 오지 않았습니다.")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(repository, repository_method, slow_query)
+    with client, ThreadPoolExecutor(max_workers=2) as requests:
+        denied = client.request(method, f"/api/v1/admin{path}", headers={"X-User-Id": USER}, json=body)
+        assert denied.status_code == 403 and not entered.is_set()
+        assert repository.audit_events == []
+        pending = requests.submit(
+            client.request, method, f"/api/v1/admin{path}", headers={"X-User-Id": ADMIN}, json=body,
+        )
+        try:
+            assert entered.wait(timeout=2)
+            # TestClient context는 두 요청에 동일한 이벤트 루프를 사용한다.
+            # DB 대기를 풀기 전에 health가 끝나야 다른 API의 진행을 막지 않은 것이다.
+            health = requests.submit(client.get, "/health").result(timeout=1)
+            assert health.status_code == 200 and health.json() == {"status": "ok"}
+            assert not pending.done()
+        finally:
+            release.set()
+        assert pending.result(timeout=2).status_code == 200
 
 
 def test_b8_admin_list_detail_and_metrics_are_read_only() -> None:
@@ -203,6 +267,7 @@ def test_b8_unknown_game_is_not_disclosed() -> None:
 @pytest.mark.parametrize("path,action", [
     ("role-win-rates", "ADMIN_GET_ROLE_WIN_RATES"),
     ("persona-win-rates", "ADMIN_GET_PERSONA_WIN_RATES"),
+    ("speech-analytics", "ADMIN_GET_SPEECH_ANALYTICS"),
     ("feedback", "ADMIN_LIST_FEEDBACK"), ("audit-logs", "ADMIN_LIST_AUDIT_LOGS"),
 ])
 def test_admin_extensions_authorization_and_audit(path, action):
@@ -229,6 +294,10 @@ def test_admin_extensions_authorization_and_audit(path, action):
     ("role-win-rates", "from=2026-03-01&to=2026-01-01"),
     ("persona-win-rates", "from=2026-01-01&to=2026-03-01"),
     ("persona-win-rates", "from=2026-03-01&to=2026-01-01"),
+    ("speech-analytics", "round=6"),
+    ("speech-analytics", "limit=21"),
+    ("speech-analytics", "game_id=bad"),
+    ("speech-analytics", "from=2026-03-01&to=2026-01-01"),
 ])
 def test_admin_extensions_reject_invalid_queries(path, query):
     """유효하지 않은 조건은 SQL이나 감사 기록에 도달하지 않는다."""
@@ -260,6 +329,24 @@ def test_admin_filter_cursor_forwarding_and_dependency_failures():
     repository.append_audit = fail
     failed = client.get("/api/v1/admin/role-win-rates", headers={"X-User-Id": ADMIN})
     assert failed.status_code == 503 and "items" not in failed.json()
+
+
+def test_admin_speech_analytics_forwards_scope_and_writes_audit():
+    """발언 분석 범위가 검증된 타입으로 repository에 전달되고 감사되는지 확인한다."""
+
+    client, repository = _client()
+    response = client.get(
+        "/api/v1/admin/speech-analytics?game_id=00000000-0000-4000-8000-000000000299"
+        "&persona_id=CAUTIOUS_ANALYST&round=2&analysis_version=v1&limit=5",
+        headers={"X-User-Id": ADMIN},
+    )
+    assert response.status_code == 200
+    assert repository.last_speech_query["game_id"] == GAME_ID
+    assert repository.last_speech_query["persona_id"] == "CAUTIOUS_ANALYST"
+    assert repository.last_speech_query["round_number"] == 2
+    assert repository.last_speech_query["analysis_version"] == "v1"
+    assert repository.last_speech_query["topic_limit"] == 5
+    assert repository.audit_events[-1]["action"] == "ADMIN_GET_SPEECH_ANALYTICS"
 
 
 def test_admin_insight_query_returns_evidence_and_audits_without_mutation():
@@ -362,7 +449,9 @@ def test_frontend_live_mode_uses_new_backend_contracts(monkeypatch):
 
     from pathlib import Path
     from urllib.parse import urlsplit
+
     from streamlit.testing.v1 import AppTest
+
     from frontend_admin.core import api_client
     from frontend_admin.core.auth import ADMIN_USER_ID_SESSION_KEY
 
@@ -382,18 +471,35 @@ def test_frontend_live_mode_uses_new_backend_contracts(monkeypatch):
     monkeypatch.setattr(identity_bridge, "load_identity", lambda **kwargs: (ADMIN, None))
     at.session_state[ADMIN_USER_ID_SESSION_KEY] = ADMIN
     at.run()
-    assert not at.exception and not at.error and len(at.tabs) == 3
-    assert {"/api/v1/admin/persona-win-rates", "/api/v1/admin/feedback", "/api/v1/admin/audit-logs"} <= set(routes)
-    assert "<script>가상 의견</script>" in at.dataframe[1].value["의견"].tolist()
+    assert not at.exception and not at.error and len(at.tabs) == 4
+    assert {"/api/v1/admin/persona-win-rates", "/api/v1/admin/speech-analytics",
+            "/api/v1/admin/feedback", "/api/v1/admin/audit-logs"} <= set(routes)
+    feedback_frame = next(frame.value for frame in at.dataframe if "의견" in frame.value.columns)
+    assert "<script>가상 의견</script>" in feedback_frame["의견"].tolist()
     repository.list_feedback = lambda **kwargs: (_ for _ in ()).throw(RuntimeError("synthetic"))
     at.run()
     assert at.error and not at.tabs and not at.exception
+
+
+def test_frontend_demo_renders_speech_analysis_tab(monkeypatch):
+    """관리자 데모가 합성 발언 분석 차트와 네 탭을 오류 없이 표시하는지 확인한다."""
+
+    from pathlib import Path
+
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setenv("ADMIN_DEMO_MODE", "true")
+    at = AppTest.from_file(str(Path(__file__).parents[2] / "frontend_admin/app.py"), default_timeout=20)
+    at.run()
+    assert not at.exception and not at.error and len(at.tabs) == 4
+    assert any("AI 발언 분석" in tab.label for tab in at.tabs)
 
 
 def test_metrics_user_daily_and_auto_action_projection():
     """확장된 KPI가 DB 반환값으로 계산되고 빈 날짜는 0으로 채워지는지 확인한다."""
 
     from datetime import date
+
     from backend.app.repositories.admin_repository import PostgresAdminRepository
 
     class Database:
@@ -473,3 +579,75 @@ def test_postgres_knowledge_query_uses_approved_scope_and_vector_score():
     assert "ADMIN_APPROVED" in cursor.query
     assert "content_tsv" in cursor.query and "<=>" in cursor.query
     assert cursor.params[2] == ["FEEDBACK"] and cursor.params[4] == 3
+
+
+def test_speech_analytics_groups_similar_embeddings_and_keeps_partial_coverage():
+    """임베딩 유사 주제·키워드·stance 집계가 부분 분석을 숨기지 않는지 확인한다."""
+
+    from backend.app.repositories.admin_repository import _aggregate_speech_rows
+    rows = [
+        {
+            "event_id": "40000000-0000-4000-8000-000000000001",
+            "game_id": "00000000-0000-4000-8000-000000000001",
+            "source_sequence": 1,
+            "created_at": "2026-09-08T00:00:00Z",
+            "message": "근거를 보면 투표가 수상합니다",
+            "persona_id": "A",
+            "persona_name": "분석 에이전트",
+            "round": 1,
+            "phase": "DAY_DISCUSSION",
+            "embedding": [1.0, 0.0],
+            "embedding_status": "READY",
+            "claims": [{"stance": "SUSPICION"}],
+            "claims_status": "READY",
+            "eligible_total": 3,
+            "analyzed_total": 2,
+            "embedding_ready_total": 2,
+            "claims_ready_total": 1,
+        },
+        {
+            "event_id": "40000000-0000-4000-8000-000000000002",
+            "game_id": "00000000-0000-4000-8000-000000000001",
+            "source_sequence": 2,
+            "created_at": "2026-09-08T00:01:00Z",
+            "message": "투표 전에 근거 설명이 필요합니다",
+            "persona_id": "B",
+            "persona_name": "토론 에이전트",
+            "round": 1,
+            "phase": "DAY_DISCUSSION",
+            "embedding": [0.99, 0.1],
+            "embedding_status": "READY",
+            "claims": [{"stance": "QUESTION"}],
+            "claims_status": "FAILED",
+            "eligible_total": 3,
+            "analyzed_total": 2,
+            "embedding_ready_total": 2,
+            "claims_ready_total": 1,
+        },
+        {
+            "event_id": "40000000-0000-4000-8000-000000000003",
+            "game_id": "00000000-0000-4000-8000-000000000001",
+            "source_sequence": 3,
+            "created_at": "2026-09-08T00:02:00Z",
+            "message": "다른 맥락입니다",
+            "persona_id": "C",
+            "persona_name": "기록 에이전트",
+            "round": 1,
+            "phase": "DAY_DISCUSSION",
+            "embedding": None,
+            "embedding_status": "PENDING",
+            "claims": None,
+            "claims_status": "PENDING",
+            "eligible_total": 3,
+            "analyzed_total": 2,
+            "embedding_ready_total": 2,
+            "claims_ready_total": 1,
+        },
+    ]
+    data = _aggregate_speech_rows(rows, analysis_version="v1", topic_limit=12)
+    assert data["topic_count"] == 1
+    assert data["topics"][0]["speech_count"] == 2
+    assert data["topics"][0]["stance_breakdown"][0]["stance"] == "SUSPICION"
+    assert data["coverage"]["eligible_speeches"] == 3
+    assert data["coverage"]["claims_coverage"] == pytest.approx(1 / 3, abs=0.0001)
+    assert "embedding" not in str(data["topics"]) and "role" not in str(data["topics"])

@@ -5,8 +5,8 @@
 일어나거나 지나치게 큰 범위를 한 번에 읽는 일을 막는다.
 """
 
-from datetime import UTC, datetime
 import re
+from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
@@ -60,10 +60,51 @@ class AdminMetricsQuery(BaseModel):
         return self
 
 
+class AdminSpeechAnalyticsQuery(BaseModel):
+    """관리자 공개 발언 분석의 범위와 표시할 주제 수를 검증한다."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, str_strip_whitespace=True)
+
+    from_: datetime | None = Field(default=None, alias="from")
+    to: datetime | None = None
+    game_id: UUID | None = None
+    persona_id: str | None = Field(default=None, min_length=1, max_length=64)
+    round: int | None = Field(default=None, ge=0, le=5)
+    analysis_version: str | None = Field(default=None, min_length=1, max_length=128)
+    limit: int = Field(default=12, ge=1, le=20)
+
+    @field_validator("persona_id", "analysis_version")
+    @classmethod
+    def validate_identifier(cls, value: str | None) -> str | None:
+        """SQL 식별자 필터에 공백과 제어 문자를 허용하지 않는다."""
+
+        if value is None:
+            return None
+        if not value.isprintable() or not value.strip() or any(char in value for char in "\r\n\t"):
+            raise ValueError("identifier must be printable")
+        return value.strip()
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "AdminSpeechAnalyticsQuery":
+        """발언 event 시각 범위의 timezone과 최대 31일 간격을 검사한다."""
+
+        if self.from_ is not None and self.from_.tzinfo is None:
+            self.from_ = self.from_.replace(tzinfo=UTC)
+        if self.to is not None and self.to.tzinfo is None:
+            self.to = self.to.replace(tzinfo=UTC)
+        if self.from_ is not None and self.to is not None:
+            if self.from_ > self.to:
+                raise ValueError("from must not be later than to")
+            if (self.to - self.from_).total_seconds() > 31 * 24 * 60 * 60:
+                raise ValueError("speech analytics range must not exceed 31 days")
+        return self
+
+
 AdminAuditType = Literal[
     "ADMIN_LIST_GAMES", "ADMIN_GET_GAME", "ADMIN_GET_METRICS",
     "ADMIN_GET_ROLE_WIN_RATES", "ADMIN_GET_PERSONA_WIN_RATES",
     "ADMIN_LIST_FEEDBACK", "ADMIN_LIST_AUDIT_LOGS", "ADMIN_QUERY_INSIGHTS",
+    "ADMIN_GET_SPEECH_ANALYTICS",
 ]
 
 

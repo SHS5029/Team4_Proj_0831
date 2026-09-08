@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import altair as alt
 import streamlit as st
-from frontend_admin.core.api_client import AUDIT_EVENT_LABELS
 
+from frontend_admin.core.api_client import AUDIT_EVENT_LABELS
 
 ADMIN_DASHBOARD_CSS = """
 <style>
@@ -52,15 +52,18 @@ ADMIN_DASHBOARD_CSS = """
 @keyframes admin-live-pulse { 0%, 100% { opacity:1; } 50% { opacity:.55; } }
 .admin-divider { height:1px; margin:1.4rem 0; background:#e1e4ed; }
 @media (max-width:1050px) {
-    .st-key-admin-kpi-grid [data-testid="stHorizontalBlock"] { flex-wrap:wrap; }
+    .st-key-admin-kpi-grid [data-testid="stHorizontalBlock"], .st-key-admin-speech-kpi-grid [data-testid="stHorizontalBlock"] { flex-wrap:wrap; }
     .st-key-admin-kpi-grid [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] { flex:1 1 calc(33.333% - .75rem) !important; }
+    .st-key-admin-speech-kpi-grid [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] { flex:1 1 calc(20% - .75rem) !important; }
 }
 @media (max-width:768px) {
     [data-testid="stMainBlockContainer"] { padding:.8rem .8rem 2rem; }
     .st-key-admin-kpi-grid [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] { flex-basis:calc(50% - .6rem) !important; }
+    .st-key-admin-speech-kpi-grid [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] { flex-basis:calc(50% - .6rem) !important; }
 }
 @media (max-width:480px) {
     .st-key-admin-kpi-grid [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] { flex-basis:100% !important; }
+    .st-key-admin-speech-kpi-grid [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] { flex-basis:100% !important; }
 }
 </style>
 """
@@ -82,8 +85,8 @@ def render(metrics: dict, *, insights: dict, records: dict,
         '<div class="admin-hero-badge">READ ONLY · ADMIN</div></div>',
         unsafe_allow_html=True,
     )
-    analysis_tab, feedback_tab, logs_tab = st.tabs(
-        ["운영 분석", "사용자 피드백", "관리자 로그"]
+    analysis_tab, speech_tab, feedback_tab, logs_tab = st.tabs(
+        ["운영 분석", "AI 발언 분석", "사용자 피드백", "관리자 로그"]
     )
     with analysis_tab:
         _render_operations_analysis(
@@ -91,6 +94,11 @@ def render(metrics: dict, *, insights: dict, records: dict,
             insights=insights,
             synthetic=synthetic,
             refreshed_at=refreshed_at,
+        )
+    with speech_tab:
+        _render_speech_analysis(
+            insights.get("speech_analytics", {}),
+            synthetic=synthetic,
         )
     with feedback_tab:
         _render_feedback(metrics, records=records, synthetic=synthetic)
@@ -349,6 +357,245 @@ def _render_operations_analysis(metrics: dict, *, insights: dict,
                 domainColor="#697586",
             )
             st.altair_chart(daily_chart, width="stretch")
+
+
+def _render_speech_analysis(analytics: dict, *, synthetic: bool = False) -> None:
+    """공개 AI 발언의 주제·키워드·stance와 근거 원문을 도식화한다.
+
+    주제는 Backend가 같은 분석 버전의 임베딩으로 묶은 결과를 사용한다. Front는
+    벡터를 직접 다루지 않고, 집계와 공개 원문만 표시해 관리자 경계를 유지한다.
+    """
+
+    st.subheader("AI 발언 분석")
+    st.markdown('<div class="admin-status-label">● 공개 발언 의미 분석</div>', unsafe_allow_html=True)
+    if not isinstance(analytics, dict):
+        st.info("발언 분석 응답이 아직 준비되지 않았습니다.")
+        return
+    coverage = analytics.get("coverage")
+    if not isinstance(coverage, dict):
+        coverage = {}
+    version = analytics.get("analysis_version") or "분석 버전 없음"
+    st.caption(
+        (f"가상 분석 {version} · 실제 운영 데이터가 아닙니다." if synthetic else f"분석 버전 {version} · 공개 AI 발언만 집계합니다.")
+        + " 키워드는 원문 빈도, 주제는 임베딩 cosine 유사도 후보입니다."
+    )
+    raw_agents = analytics.get("agents")
+    filter_agents = [agent for agent in raw_agents if isinstance(agent, dict)] if isinstance(raw_agents, list) else []
+    persona_options = ["전체"] + [
+        f"{agent.get('persona_id')} · {agent.get('persona_name') or agent.get('persona_id')}"
+        for agent in filter_agents
+        if agent.get("persona_id")
+    ]
+    persona_options = list(dict.fromkeys(persona_options))
+    current_persona = st.session_state.get("admin.speech.persona", "전체")
+    if current_persona not in persona_options:
+        persona_options.append(str(current_persona))
+    with st.expander("분석 조건", expanded=False):
+        st.caption("조건을 바꾸면 다음 조회부터 Backend가 다시 집계합니다. 기본 범위는 전체 기간·전체 에이전트입니다.")
+        with st.form("admin.speech.filters"):
+            filter_columns = st.columns(4)
+            with filter_columns[0]:
+                st.selectbox("기간", ["전체 기간", "최근 7일", "최근 31일"], key="admin.speech.period")
+            with filter_columns[1]:
+                st.selectbox("에이전트", persona_options, key="admin.speech.persona")
+            with filter_columns[2]:
+                st.selectbox("라운드", ["전체", "0", "1", "2", "3", "4", "5"], key="admin.speech.round")
+            with filter_columns[3]:
+                st.text_input("게임 UUID (선택)", key="admin.speech.game", placeholder="전체 게임")
+            st.form_submit_button("조건 적용", type="primary")
+    if st.session_state.get("admin.speech.game.invalid"):
+        st.warning("게임 UUID가 올바르지 않아 해당 조건을 적용하지 않았습니다.")
+    with st.container(key="admin-speech-kpi-grid"):
+        columns = st.columns(5)
+        values = [
+            ("대상 발언", coverage.get("eligible_speeches", 0), "건"),
+            ("분석 행", coverage.get("analyzed_speeches", 0), "건"),
+            ("임베딩 완료율", float(coverage.get("embedding_coverage", 0) or 0) * 100, "%"),
+            ("주장 분석 완료율", float(coverage.get("claims_coverage", 0) or 0) * 100, "%"),
+            ("전체 주제", analytics.get("topic_count", len(analytics.get("topics", []) or [])), "개"),
+        ]
+        for column, (label, value, suffix) in zip(columns, values, strict=True):
+            if suffix == "%":
+                display = f"{value:.1f}%"
+            else:
+                try:
+                    display = f"{int(value):,}{suffix}"
+                except (TypeError, ValueError):
+                    display = f"0{suffix}"
+            column.metric(label, display)
+    if coverage.get("sample_limited"):
+        st.warning(
+            f"표본 상한 {int(coverage.get('sampled_speeches', 0) or 0):,}건으로 분석했습니다. "
+            "기간이나 게임을 좁히면 전체 발언을 더 정확히 비교할 수 있습니다."
+        )
+
+    topics = analytics.get("topics")
+    if not isinstance(topics, list):
+        topics = []
+    topics = [topic for topic in topics if isinstance(topic, dict) and topic.get("topic_id")]
+    keywords = analytics.get("keywords")
+    if not isinstance(keywords, list):
+        keywords = []
+    agents = analytics.get("agents")
+    if not isinstance(agents, list):
+        agents = []
+    if not topics:
+        st.info("임베딩이 완료된 공개 AI 발언이 없어 주제를 만들 수 없습니다.")
+        if coverage.get("eligible_speeches"):
+            st.caption("분석 행이 준비되면 이 화면에서 유사 주제와 원문 근거를 표시합니다.")
+        return
+
+    topic_options = [
+        f"{topic.get('topic_id')} · {topic.get('label') or '발언 맥락'} ({int(topic.get('speech_count', 0) or 0):,}건)"
+        for topic in topics
+    ]
+    selected_topic_label = st.selectbox("근거를 볼 주제", topic_options, key="admin.speech.topic")
+    selected_index = topic_options.index(selected_topic_label)
+    selected_topic = topics[selected_index]
+
+    heatmap_rows = []
+    topic_order = [str(topic.get("label") or topic.get("topic_id")) for topic in topics[:12]]
+    for topic in topics[:12]:
+        topic_label = str(topic.get("label") or topic.get("topic_id"))
+        breakdown = topic.get("agent_breakdown")
+        if not isinstance(breakdown, list):
+            continue
+        for agent in breakdown:
+            if not isinstance(agent, dict):
+                continue
+            heatmap_rows.append({
+                "주제": topic_label,
+                "에이전트": str(agent.get("persona_name") or agent.get("persona_id") or "알 수 없음"),
+                "발언 수": int(agent.get("speech_count", 0) or 0),
+                "비율": float(agent.get("share", 0) or 0),
+            })
+    left, right = st.columns([1.25, 1])
+    with left:
+        with st.container(border=True):
+            st.markdown("#### 에이전트 × 발언 맥락")
+            st.caption("주제별 발언 수가 많을수록 색이 진합니다. 표본·분석 완료 범위를 함께 확인하세요.")
+            if heatmap_rows:
+                heatmap = alt.Chart(alt.Data(values=heatmap_rows)).mark_rect(
+                    cornerRadius=3, stroke="#202638", strokeWidth=1
+                ).encode(
+                    x=alt.X("주제:N", sort=topic_order, title=None, axis=alt.Axis(labelAngle=-35, labelLimit=150)),
+                    y=alt.Y("에이전트:N", title=None, axis=alt.Axis(labelLimit=130)),
+                    color=alt.Color("발언 수:Q", title="발언 수", scale=alt.Scale(scheme="purples")),
+                    tooltip=[alt.Tooltip("주제:N"), alt.Tooltip("에이전트:N"),
+                             alt.Tooltip("발언 수:Q", format=","), alt.Tooltip("비율:Q", format=".1%")],
+                ).properties(height=max(240, min(420, 70 + 34 * len({row["에이전트"] for row in heatmap_rows})))).configure(
+                    background="#10131a",
+                ).configure_view(stroke=None).configure_axis(
+                    labelColor="#dbe4f0", titleColor="#dbe4f0", gridColor="#384152", domainColor="#697586"
+                )
+                st.altair_chart(heatmap, width="stretch")
+            else:
+                st.info("주제별 에이전트 분포가 없습니다.")
+    with right:
+        with st.container(border=True):
+            st.markdown("#### 많이 사용된 표현")
+            st.caption("같은 발언 안의 반복은 한 번으로 세는 발언 수와 전체 출현 수를 함께 표시합니다.")
+            keyword_rows = [row for row in keywords[:15] if isinstance(row, dict)]
+            if keyword_rows:
+                keyword_rows = [
+                    {**row, "표현": str(row.get("term") or "-"),
+                     "발언 수": int(row.get("speech_count", 0) or 0),
+                     "출현 수": int(row.get("occurrence_count", 0) or 0)}
+                    for row in keyword_rows
+                ]
+                keyword_order = [row["표현"] for row in keyword_rows]
+                keyword_chart = alt.Chart(alt.Data(values=keyword_rows)).mark_bar(
+                    color="#7c5ce5", cornerRadiusEnd=4
+                ).encode(
+                    x=alt.X("발언 수:Q", title="사용한 발언 수", scale=alt.Scale(zero=True)),
+                    y=alt.Y("표현:N", sort="-x", title=None, axis=alt.Axis(labelLimit=110)),
+                    tooltip=[alt.Tooltip("표현:N"), alt.Tooltip("발언 수:Q", format=","),
+                             alt.Tooltip("출현 수:Q", format=","), alt.Tooltip("agent_count:Q", title="에이전트 수")],
+                ).properties(height=max(260, min(420, 38 * len(keyword_order)))).configure(
+                    background="#10131a",
+                ).configure_view(stroke=None).configure_axis(
+                    labelColor="#dbe4f0", titleColor="#dbe4f0", gridColor="#384152", domainColor="#697586"
+                )
+                st.altair_chart(keyword_chart, width="stretch")
+            else:
+                st.info("키워드가 아직 없습니다.")
+
+    detail_left, detail_right = st.columns([1, 1])
+    with detail_left:
+        with st.container(border=True):
+            st.markdown(f"#### 선택 주제 · {selected_topic.get('label') or '발언 맥락'}")
+            st.caption("stance는 claims에 추출된 공개 주장 기준이며 사실 판정이 아닙니다.")
+            stance_rows = selected_topic.get("stance_breakdown")
+            if not isinstance(stance_rows, list):
+                stance_rows = []
+            stance_labels = {"SUSPICION": "의심", "DEFENSE": "옹호", "QUESTION": "질문", "NEUTRAL": "중립"}
+            chart_rows = [
+                {"stance": stance_labels.get(str(row.get("stance")), str(row.get("stance"))),
+                 "주장 수": int(row.get("count", 0) or 0), "비율": float(row.get("share", 0) or 0)}
+                for row in stance_rows if isinstance(row, dict) and int(row.get("count", 0) or 0) > 0
+            ]
+            if chart_rows:
+                stance_chart = alt.Chart(alt.Data(values=chart_rows)).mark_bar().encode(
+                    x=alt.X("비율:Q", stack="normalize", title="비율", axis=alt.Axis(format="%")),
+                    y=alt.Y("선택 주제:N", title=None),
+                    color=alt.Color("stance:N", title="stance", scale=alt.Scale(
+                        domain=["의심", "옹호", "질문", "중립"],
+                        range=["#ef4444", "#22c55e", "#f59e0b", "#94a3b8"],
+                    )),
+                    tooltip=[alt.Tooltip("stance:N"), alt.Tooltip("주장 수:Q", format=","), alt.Tooltip("비율:Q", format=".1%")],
+                ).transform_calculate(**{"선택 주제": "'선택 주제'"}).properties(height=100).configure(
+                    background="#10131a",
+                ).configure_view(stroke=None).configure_axis(
+                    labelColor="#dbe4f0", titleColor="#dbe4f0", gridColor="#384152", domainColor="#697586"
+                )
+                st.altair_chart(stance_chart, width="stretch")
+            else:
+                st.info("완료된 claims stance가 없습니다.")
+            selected_keywords = selected_topic.get("related_terms")
+            if isinstance(selected_keywords, list) and selected_keywords:
+                st.caption("같이 나타난 표현 후보: " + " · ".join(str(item) for item in selected_keywords[:8]))
+    with detail_right:
+        with st.container(border=True):
+            st.markdown("#### 대표 발언과 공개 근거")
+            representative = selected_topic.get("representative")
+            if isinstance(representative, dict):
+                st.caption(
+                    f"{representative.get('persona_name', '알 수 없는 에이전트')} · "
+                    f"{representative.get('phase', '-')} · round {representative.get('round', '-') }"
+                )
+                st.write(str(representative.get("message") or ""))
+            evidence = selected_topic.get("evidence")
+            if isinstance(evidence, list) and evidence:
+                st.caption(f"공개 근거 {len(evidence)}건")
+                st.dataframe([
+                    {
+                        "시각": row.get("created_at"),
+                        "에이전트": row.get("persona_name"),
+                        "게임": row.get("game_id"),
+                        "라운드": row.get("round"),
+                        "발언": row.get("message"),
+                    }
+                    for row in evidence if isinstance(row, dict)
+                ], hide_index=True, width="stretch")
+            else:
+                st.info("이 주제의 공개 근거가 없습니다.")
+
+    if agents:
+        with st.expander("에이전트별 상위 주제와 표현", expanded=False):
+            agent_rows = []
+            for agent in agents:
+                if not isinstance(agent, dict):
+                    continue
+                top_topics = agent.get("top_topics") if isinstance(agent.get("top_topics"), list) else []
+                top_keywords = agent.get("top_keywords") if isinstance(agent.get("top_keywords"), list) else []
+                agent_rows.append({
+                    "에이전트": agent.get("persona_name") or agent.get("persona_id"),
+                    "발언 수": agent.get("speech_count", 0),
+                    "상위 주제": ", ".join(str(item.get("label")) for item in top_topics[:3] if isinstance(item, dict)),
+                    "상위 표현": ", ".join(str(item.get("term")) for item in top_keywords[:4] if isinstance(item, dict)),
+                })
+            if agent_rows:
+                st.dataframe(agent_rows, hide_index=True, width="stretch")
 
 
 def _render_live_chart_status(refreshed_at: str | None, *, synthetic: bool) -> None:

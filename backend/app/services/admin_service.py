@@ -131,6 +131,34 @@ class AdminService:
         self._audit(admin_user_id, "ADMIN_GET_PERSONA_WIN_RATES", None, request_id)
         return {"items": items}
 
+    def speech_analytics(
+        self,
+        admin_user_id: UUID,
+        *,
+        from_time: datetime | None,
+        to_time: datetime | None,
+        game_id: UUID | None,
+        persona_id: str | None,
+        round_number: int | None,
+        analysis_version: str | None,
+        topic_limit: int,
+        request_id: UUID,
+    ) -> dict:
+        """공개 AI 발언 집계를 조회하고 성공한 요청만 감사 기록에 남긴다."""
+
+        self.require_admin(admin_user_id)
+        data = self._read(lambda: self.repository.speech_analytics(
+            from_time=from_time,
+            to_time=to_time,
+            game_id=game_id,
+            persona_id=persona_id,
+            round_number=round_number,
+            analysis_version=analysis_version,
+            topic_limit=topic_limit,
+        ))
+        self._audit(admin_user_id, "ADMIN_GET_SPEECH_ANALYTICS", game_id, request_id)
+        return data
+
     def list_feedback(self, admin_user_id: UUID, *, feedback_type: str | None,
                       rating: int | None, cursor: UUID | None, limit: int,
                       request_id: UUID) -> dict:

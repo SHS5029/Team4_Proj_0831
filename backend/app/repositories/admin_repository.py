@@ -8,6 +8,10 @@
 
 from __future__ import annotations
 
+import math
+import re
+import unicodedata
+from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -15,6 +19,24 @@ from uuid import UUID
 
 import psycopg
 from psycopg.rows import dict_row
+
+_SPEECH_SAMPLE_LIMIT = 500
+_SPEECH_EMBEDDING_PROJECTION = 96
+_SPEECH_SIMILARITY_THRESHOLD = 0.78
+_SPEECH_TOKEN_RE = re.compile(r"[가-힣A-Za-z][가-힣A-Za-z0-9_]{1,}")
+# 조사·접속사·게임 화면 공통 단어는 주제 라벨을 흐리므로 화면 집계에서만 제외한다.
+_SPEECH_STOPWORDS = frozenset({
+    "그리고", "그래서", "그러나", "그런데", "때문", "대한", "대해", "있는", "있어",
+    "있습니다", "같은", "것이", "것은", "제가", "나는", "우리", "정말", "이번", "지금",
+    "그냥", "아마", "모두", "이제", "하면", "해야", "합니다", "입니다", "같아요", "같습니다",
+    "수상한", "사람", "플레이어", "발언", "생각", "느낌", "확인", "보입니다", "보면",
+})
+_SPEECH_STANCES = ("SUSPICION", "DEFENSE", "QUESTION", "NEUTRAL")
+_SPEECH_PARTICLE_SUFFIXES = (
+    "으로", "에서", "까지", "부터", "에게", "한테", "처럼", "보다",
+    "을", "를", "이", "가", "은", "는", "의", "에", "로", "와", "과", "도", "만",
+)
+_SPEECH_ENDING_SUFFIXES = ("합니다", "입니다", "됩니다", "했어요", "해요")
 
 
 class AdminRepository(Protocol):
@@ -52,6 +74,18 @@ class AdminRepository(Protocol):
 
     def persona_win_rates(self, *, from_time: datetime | None,
                           to_time: datetime | None) -> list[dict[str, Any]]: ...
+
+    def speech_analytics(
+        self,
+        *,
+        from_time: datetime | None,
+        to_time: datetime | None,
+        game_id: UUID | None,
+        persona_id: str | None,
+        round_number: int | None,
+        analysis_version: str | None,
+        topic_limit: int,
+    ) -> dict[str, Any]: ...
 
     def list_feedback(self, *, feedback_type: str | None, rating: int | None,
                       cursor: UUID | None, limit: int) -> tuple[list[dict], str | None]: ...
@@ -94,6 +128,298 @@ def _window_kind(phase: str, status: str) -> str | None:
         "REVOTE": "REVOTE",
         "FINAL_ACCUSATION": "FINAL_VOTE",
     }.get(phase)
+
+
+def _speech_tokens(message: str) -> list[str]:
+    """공개 문장을 화면용 키워드로 정규화한다.
+
+    형태소 분석기를 관리자 조회 경로에 추가하지 않고도 재현 가능한 결과를
+    만들기 위해 한글·영문·숫자 토큰만 사용한다. 두 글자 미만과 공통 조사·
+    연결어는 제외하지만 원문 자체는 근거 응답에서 변경하지 않는다.
+    """
+
+    normalized = unicodedata.normalize("NFC", str(message or "")).casefold()
+    tokens: list[str] = []
+    for token in _SPEECH_TOKEN_RE.findall(normalized):
+        if token in _SPEECH_STOPWORDS:
+            continue
+        for suffix in _SPEECH_ENDING_SUFFIXES:
+            if token.endswith(suffix) and len(token) - len(suffix) >= 2:
+                token = token[:-len(suffix)]
+                break
+        for suffix in _SPEECH_PARTICLE_SUFFIXES:
+            if token.endswith(suffix) and len(token) - len(suffix) >= 2:
+                token = token[:-len(suffix)]
+                break
+        if len(token) >= 2 and token not in _SPEECH_STOPWORDS:
+            tokens.append(token)
+    return tokens
+
+
+def _speech_cosine(left: Any, right: Any) -> float:
+    """차원이 같은 유한 벡터의 cosine 유사도를 계산한다."""
+
+    try:
+        left_values = [float(value) for value in left]
+        right_values = [float(value) for value in right]
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not left_values or len(left_values) != len(right_values):
+        return 0.0
+    left_norm = math.sqrt(sum(value * value for value in left_values))
+    right_norm = math.sqrt(sum(value * value for value in right_values))
+    if not math.isfinite(left_norm) or not math.isfinite(right_norm) or left_norm == 0 or right_norm == 0:
+        return 0.0
+    score = sum(a * b for a, b in zip(left_values, right_values, strict=True)) / (left_norm * right_norm)
+    return score if math.isfinite(score) else 0.0
+
+
+def _speech_keyword_rows(rows: list[dict[str, Any]], *, limit: int = 10) -> list[dict[str, Any]]:
+    """발언 수와 출현 수를 함께 계산해 정렬된 키워드 목록을 만든다."""
+
+    occurrence: Counter[str] = Counter()
+    document_count: Counter[str] = Counter()
+    agents: defaultdict[str, set[str]] = defaultdict(set)
+    for row in rows:
+        tokens = _speech_tokens(row.get("message", ""))
+        occurrence.update(tokens)
+        document_count.update(set(tokens))
+        agent_id = str(row.get("persona_id") or "")
+        for token in set(tokens):
+            if agent_id:
+                agents[token].add(agent_id)
+    return [
+        {
+            "term": term,
+            "speech_count": int(document_count[term]),
+            "occurrence_count": int(occurrence[term]),
+            "agent_count": len(agents[term]),
+        }
+        for term in sorted(document_count, key=lambda value: (-document_count[value], -occurrence[value], value))[:limit]
+    ]
+
+
+def _speech_stance_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """claims에서 허용된 stance만 세어 비율을 반환한다."""
+
+    counts: Counter[str] = Counter()
+    for row in rows:
+        claims = row.get("claims")
+        if not isinstance(claims, list):
+            continue
+        for claim in claims:
+            if isinstance(claim, dict) and claim.get("stance") in _SPEECH_STANCES:
+                counts[str(claim["stance"])] += 1
+    total = sum(counts.values())
+    return [
+        {"stance": stance, "count": int(counts[stance]),
+         "share": round(counts[stance] / total, 4) if total else 0.0}
+        for stance in _SPEECH_STANCES if counts[stance]
+    ]
+
+
+def _speech_public_event(row: Mapping[str, Any]) -> dict[str, Any]:
+    """분석 근거로 사용할 공개 event projection만 구성한다."""
+
+    return {
+        "event_id": str(row.get("event_id")),
+        "game_id": str(row.get("game_id")),
+        "persona_id": str(row.get("persona_id") or ""),
+        "persona_name": str(row.get("persona_name") or row.get("persona_id") or "알 수 없는 에이전트"),
+        "round": int(row.get("round") or 0),
+        "phase": str(row.get("phase") or "UNKNOWN"),
+        "message": str(row.get("message") or ""),
+        "created_at": _iso(row.get("created_at")),
+    }
+
+
+def _aggregate_speech_rows(
+    rows: list[dict[str, Any]],
+    *,
+    analysis_version: str | None,
+    topic_limit: int,
+) -> dict[str, Any]:
+    """DB 행을 결정적인 주제·에이전트·키워드 집계 응답으로 변환한다.
+
+    임베딩은 관리자 조회에서만 메모리로 사용하고 반환하지 않는다. 입력 행은
+    event 시각과 sequence 순서로 정렬한 뒤 첫 번째로 유사한 centroid에 배치해
+    같은 snapshot을 반복 조회해도 topic id와 대표 근거가 바뀌지 않게 한다.
+    """
+
+    ordered_rows = sorted(
+        rows,
+        key=lambda row: (
+            str(row.get("created_at") or ""),
+            int(row.get("source_sequence") or 0),
+            str(row.get("event_id") or ""),
+        ),
+    )
+    eligible_total = int(ordered_rows[0].get("eligible_total") or 0) if ordered_rows else 0
+    analyzed_total = int(ordered_rows[0].get("analyzed_total") or 0) if ordered_rows else 0
+    embedding_ready_total = int(ordered_rows[0].get("embedding_ready_total") or 0) if ordered_rows else 0
+    claims_ready_total = int(ordered_rows[0].get("claims_ready_total") or 0) if ordered_rows else 0
+
+    embeddable = [
+        row for row in ordered_rows
+        if row.get("embedding_status") == "READY" and row.get("embedding") is not None
+    ]
+    topic_states: list[dict[str, Any]] = []
+    for row in embeddable:
+        vector = row.get("embedding")
+        # 주제가 많아질 때 전체 1536차원 벡터를 모든 주제와 비교하면 관리자
+        # 조회가 지나치게 오래 걸릴 수 있다. 먼저 균등 표본 차원으로 후보를
+        # 좁히고, 최대 24개 후보에만 전체 cosine을 적용한다.
+        candidate_topics = topic_states
+        try:
+            vector_values = [float(value) for value in vector]
+        except (TypeError, ValueError, OverflowError):
+            vector_values = []
+        if len(topic_states) > 24 and vector_values:
+            stride = max(1, len(vector_values) // 24)
+            coarse_vector = vector_values[::stride][:24]
+            candidate_topics = sorted(
+                topic_states,
+                key=lambda topic: _speech_cosine(
+                    coarse_vector,
+                    [float(value) for value in topic["centroid"]][::stride][:24],
+                ),
+                reverse=True,
+            )[:24]
+        best_topic = None
+        best_score = _SPEECH_SIMILARITY_THRESHOLD
+        for topic in candidate_topics:
+            score = _speech_cosine(vector, topic["centroid"])
+            if score >= best_score:
+                best_score = score
+                best_topic = topic
+        if best_topic is None:
+            topic_states.append({"rows": [row], "centroid": list(vector)})
+            continue
+        best_topic["rows"].append(row)
+        previous_count = len(best_topic["rows"]) - 1
+        try:
+            values = [float(value) for value in vector]
+            if len(values) == len(best_topic["centroid"]):
+                best_topic["centroid"] = [
+                    (old * previous_count + new) / (previous_count + 1)
+                    for old, new in zip(best_topic["centroid"], values, strict=True)
+                ]
+        except (TypeError, ValueError, OverflowError):
+            pass
+
+    def topic_sort_key(topic: dict[str, Any]) -> tuple[Any, ...]:
+        terms = _speech_keyword_rows(topic["rows"], limit=3)
+        return (
+            -len(topic["rows"]),
+            tuple(item["term"] for item in terms),
+            str(topic["rows"][0].get("created_at") or ""),
+            str(topic["rows"][0].get("event_id") or ""),
+        )
+
+    topic_states.sort(key=topic_sort_key)
+    topic_ids: dict[int, str] = {}
+    topic_labels: dict[int, str] = {}
+    for index, topic in enumerate(topic_states):
+        topic_ids[id(topic)] = f"topic-{index + 1:03d}"
+        terms = _speech_keyword_rows(topic["rows"], limit=3)
+        topic_labels[id(topic)] = " · ".join(item["term"] for item in terms) or f"발언 맥락 {index + 1}"
+
+    topics: list[dict[str, Any]] = []
+    topic_by_row: dict[int, dict[str, Any]] = {}
+    for topic in topic_states:
+        topic_id = topic_ids[id(topic)]
+        topic_label = topic_labels[id(topic)]
+        for row in topic["rows"]:
+            topic_by_row[id(row)] = topic
+        agent_counts: Counter[str] = Counter(str(row.get("persona_id") or "") for row in topic["rows"])
+        agent_names = {
+            str(row.get("persona_id") or ""): str(row.get("persona_name") or row.get("persona_id") or "알 수 없는 에이전트")
+            for row in topic["rows"]
+        }
+        topic_count = len(topic["rows"])
+        agent_breakdown = [
+            {"persona_id": persona_id, "persona_name": agent_names.get(persona_id, persona_id),
+             "speech_count": count, "share": round(count / topic_count, 4) if topic_count else 0.0}
+            for persona_id, count in sorted(agent_counts.items(), key=lambda item: (-item[1], item[0]))
+            if persona_id
+        ]
+        topics.append({
+            "topic_id": topic_id,
+            "label": topic_label,
+            "speech_count": topic_count,
+            "agent_count": len(agent_counts),
+            "agent_breakdown": agent_breakdown,
+            "stance_breakdown": _speech_stance_rows(topic["rows"]),
+            "keywords": _speech_keyword_rows(topic["rows"], limit=8),
+            "related_terms": [item["term"] for item in _speech_keyword_rows(topic["rows"], limit=8)],
+            "representative": _speech_public_event(topic["rows"][0]),
+            "evidence": [_speech_public_event(row) for row in topic["rows"][:5]],
+        })
+
+    agent_groups: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in embeddable:
+        persona_id = str(row.get("persona_id") or "")
+        if persona_id:
+            agent_groups[persona_id].append(row)
+    agents: list[dict[str, Any]] = []
+    denominator = len(embeddable)
+    visible_topics = topics[:topic_limit]
+    visible_topic_ids = {topic["topic_id"] for topic in visible_topics}
+    topic_records = {topic["topic_id"]: topic for topic in visible_topics}
+    for persona_id, agent_rows in sorted(agent_groups.items(), key=lambda item: (-len(item[1]), item[0])):
+        persona_name = str(agent_rows[0].get("persona_name") or persona_id)
+        topic_counts: Counter[str] = Counter()
+        for row in agent_rows:
+            topic = topic_by_row.get(id(row))
+            if topic is not None:
+                topic_counts[topic_ids[id(topic)]] += 1
+        topic_rows = []
+        for topic_id, count in sorted(topic_counts.items(), key=lambda item: (-item[1], item[0])):
+            if topic_id not in visible_topic_ids:
+                continue
+            topic_rows.append({
+                "topic_id": topic_id,
+                "label": topic_records[topic_id]["label"],
+                "speech_count": count,
+            })
+            if len(topic_rows) >= 5:
+                break
+        agents.append({
+            "persona_id": persona_id,
+            "persona_name": persona_name,
+            "speech_count": len(agent_rows),
+            "share": round(len(agent_rows) / denominator, 4) if denominator else 0.0,
+            "top_topics": topic_rows,
+            "top_keywords": _speech_keyword_rows(agent_rows, limit=8),
+            "stance_breakdown": _speech_stance_rows(agent_rows),
+        })
+
+    coverage_denominator = eligible_total
+    return {
+        "analysis_version": analysis_version,
+        "generated_at": _iso(datetime.now(UTC)),
+        "coverage": {
+            "eligible_speeches": coverage_denominator,
+            "analyzed_speeches": analyzed_total,
+            "embedding_ready": embedding_ready_total,
+            "claims_ready": claims_ready_total,
+            "embedding_coverage": round(embedding_ready_total / coverage_denominator, 4) if coverage_denominator else 0.0,
+            "claims_coverage": round(claims_ready_total / coverage_denominator, 4) if coverage_denominator else 0.0,
+            "sampled_speeches": len(embeddable),
+            "sample_limited": coverage_denominator > _SPEECH_SAMPLE_LIMIT,
+        },
+        "topics": topics[:topic_limit],
+        "topic_count": len(topics),
+        "agents": agents,
+        "keywords": _speech_keyword_rows(embeddable, limit=30),
+        "method": {
+            "similarity": "cosine",
+            "threshold": _SPEECH_SIMILARITY_THRESHOLD,
+            "projection_dimensions": _SPEECH_EMBEDDING_PROJECTION,
+            "sample_limit": _SPEECH_SAMPLE_LIMIT,
+            "keyword_note": "원문 토큰과 같은 주제의 동시 출현 표현을 표시합니다.",
+        },
+    }
 
 
 ConnectionFactory = Callable[..., Any]
@@ -432,6 +758,130 @@ class PostgresAdminRepository:
             }
             for row in rows
         ]
+
+    def speech_analytics(
+        self,
+        *,
+        from_time: datetime | None,
+        to_time: datetime | None,
+        game_id: UUID | None,
+        persona_id: str | None,
+        round_number: int | None,
+        analysis_version: str | None,
+        topic_limit: int,
+    ) -> dict[str, Any]:
+        """공개 AI 발언과 파생 분석만 읽어 관리자 집계로 변환한다.
+
+        원본 event와 분석 행을 한 조회 범위로 묶어 분석 행이 아직 만들어지지
+        않은 발언도 coverage 분모에 포함한다. 역할·진영·private context 컬럼은
+        SQL에서 선택하지 않으며, 임베딩은 집계 직후 응답에서 제거한다.
+        """
+
+        if not 1 <= topic_limit <= 20:
+            raise ValueError("topic_limit must be between 1 and 20")
+        with self._connection() as connection:
+            with connection.cursor() as cursor_obj:
+                cursor_obj.execute(
+                    """
+                    SELECT COALESCE(
+                        %s::text,
+                        (SELECT v.analysis_version
+                           FROM public.speech_analysis_versions v
+                          ORDER BY v.activated_at DESC, v.analysis_version DESC
+                          LIMIT 1)
+                    ) AS analysis_version
+                    """,
+                    (analysis_version,),
+                )
+                selected_row = cursor_obj.fetchone()
+                selected_version = selected_row["analysis_version"] if selected_row else analysis_version
+                cursor_obj.execute(
+                    """
+                    WITH eligible AS (
+                        SELECT e.id AS event_id,
+                               e.game_id,
+                               e.sequence AS source_sequence,
+                               e.created_at,
+                               e.payload->>'message' AS message,
+                               p.persona_id,
+                               ap.display_name AS persona_name,
+                               w.phase,
+                               w.round,
+                               a.analysis_version,
+                               a.embedding[1:96] AS embedding,
+                               a.embedding_status,
+                               a.claims,
+                               a.claims_status,
+                               COUNT(*) OVER () AS eligible_total,
+                               COUNT(a.id) OVER () AS analyzed_total,
+                               COUNT(*) FILTER (WHERE a.embedding_status = 'READY') OVER () AS embedding_ready_total,
+                               COUNT(*) FILTER (WHERE a.claims_status = 'READY') OVER () AS claims_ready_total
+                          FROM public.game_events e
+                          JOIN public.game_players p
+                            ON p.game_id = e.game_id
+                           AND p.id::text = e.payload->>'player_id'
+                           AND p.kind = 'AI'
+                          JOIN public.agent_personas ap
+                            ON ap.id = p.persona_id
+                          JOIN LATERAL (
+                              SELECT aw.phase, aw.round
+                                FROM public.game_events se
+                                JOIN public.action_windows aw
+                                  ON aw.game_id = se.game_id
+                                 AND aw.id::text = se.payload->>'window_id'
+                                 AND aw.window_kind = 'SPEECH'
+                               WHERE se.game_id = e.game_id
+                                 AND se.sequence < e.sequence
+                                 AND se.audience = 'PUBLIC'
+                                 AND se.operation_type = 'SET_ACTION_WINDOW'
+                               ORDER BY se.sequence DESC
+                               LIMIT 1
+                          ) w ON TRUE
+                          LEFT JOIN public.speech_analysis a
+                            ON a.game_id = e.game_id
+                           AND a.event_id = e.id
+                           AND a.analysis_version = %s
+                         WHERE e.audience = 'PUBLIC'
+                           AND e.audience_player_id IS NULL
+                           AND e.event_type = 'PLAYER_SPOKE'
+                           AND e.schema_version = 1
+                           AND e.operation_type = 'APPEND_PUBLIC_EVENT'
+                           AND jsonb_typeof(e.payload->'message') = 'string'
+                           AND btrim(e.payload->>'message') <> ''
+                           AND length(e.payload->>'message') BETWEEN 1 AND 200
+                           AND w.phase IN ('DAY_DISCUSSION', 'FINAL_DISCUSSION')
+                           AND (%s::timestamptz IS NULL OR e.created_at >= %s)
+                           AND (%s::timestamptz IS NULL OR e.created_at <= %s)
+                           AND (%s::uuid IS NULL OR e.game_id = %s)
+                           AND (%s::text IS NULL OR p.persona_id = %s)
+                           AND (%s::smallint IS NULL OR COALESCE(a.round, w.round) = %s)
+                    )
+                    SELECT *
+                      FROM eligible
+                     ORDER BY created_at, source_sequence, event_id
+                     LIMIT %s
+                    """,
+                    [
+                        selected_version,
+                        from_time,
+                        from_time,
+                        to_time,
+                        to_time,
+                        game_id,
+                        game_id,
+                        persona_id,
+                        persona_id,
+                        round_number,
+                        round_number,
+                        _SPEECH_SAMPLE_LIMIT,
+                    ],
+                )
+                rows = [dict(row) for row in cursor_obj.fetchall()]
+        return _aggregate_speech_rows(
+            rows,
+            analysis_version=str(selected_version) if selected_version is not None else None,
+            topic_limit=topic_limit,
+        )
 
     def list_feedback(self, *, feedback_type: str | None, rating: int | None,
                       cursor: UUID | None, limit: int) -> tuple[list[dict], str | None]:

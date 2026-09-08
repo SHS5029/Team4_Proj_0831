@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from importlib import reload
 from pathlib import Path
 from uuid import UUID
@@ -25,14 +25,18 @@ from frontend_admin.components.identity_bridge import (
     load_identity,
 )
 from frontend_admin.core.api_client import (
+    AUDIT_EVENT_LABELS,
+    DEMO_API_KEY,
     AdminApiClient,
     AdminApiError,
     DemoAdminApiClient,
-    DEMO_API_KEY,
-    AUDIT_EVENT_LABELS,
     is_demo_mode,
 )
-from frontend_admin.core.auth import ADMIN_ACCESS_SESSION_KEY, ADMIN_USER_ID_SESSION_KEY, parse_admin_uuid
+from frontend_admin.core.auth import (
+    ADMIN_ACCESS_SESSION_KEY,
+    ADMIN_USER_ID_SESSION_KEY,
+    parse_admin_uuid,
+)
 from frontend_admin.core.models import reject_private_fields
 
 
@@ -277,6 +281,52 @@ def _dashboard_inputs(client, metrics: dict) -> tuple[dict, dict]:
         return reject_private_fields(value)
 
     personas = data(client.persona_win_rates())["items"]
+    speech_period = st.session_state.get("admin.speech.period", "전체 기간")
+    if speech_period not in {"전체 기간", "최근 7일", "최근 31일"}:
+        speech_period = "전체 기간"
+        st.session_state["admin.speech.period"] = speech_period
+    speech_from_date = None
+    speech_to_date = None
+    if speech_period in {"최근 7일", "최근 31일"}:
+        days = 7 if speech_period == "최근 7일" else 31
+        now = datetime.now(UTC)
+        speech_from_date = (now - timedelta(days=days)).isoformat().replace("+00:00", "Z")
+        speech_to_date = now.isoformat().replace("+00:00", "Z")
+    speech_persona_option = st.session_state.get("admin.speech.persona", "전체")
+    if not isinstance(speech_persona_option, str) or not speech_persona_option.strip():
+        speech_persona_option = "전체"
+        st.session_state["admin.speech.persona"] = speech_persona_option
+    speech_persona_id = None
+    if speech_persona_option != "전체":
+        speech_persona_id = str(speech_persona_option).split(" · ", 1)[0].strip() or None
+    speech_round_option = st.session_state.get("admin.speech.round", "전체")
+    if speech_round_option not in {"전체", "0", "1", "2", "3", "4", "5"}:
+        speech_round_option = "전체"
+        st.session_state["admin.speech.round"] = speech_round_option
+    speech_round = None if speech_round_option == "전체" else int(speech_round_option)
+    speech_game_text = str(st.session_state.get("admin.speech.game", "")).strip()
+    speech_game_id = None
+    if speech_game_text:
+        try:
+            speech_game_id = UUID(speech_game_text)
+            st.session_state["admin.speech.game.invalid"] = False
+        except ValueError:
+            # 입력 중인 UUID 때문에 전체 화면을 실패시키지 않고, 화면에서 조건 오류를
+            # 안내한다. 잘못된 값은 Backend로 보내지 않아 SQL 경계도 유지한다.
+            st.session_state["admin.speech.game.invalid"] = True
+    else:
+        st.session_state["admin.speech.game.invalid"] = False
+    speech_response = client.speech_analytics(
+        from_date=speech_from_date,
+        to_date=speech_to_date,
+        game_id=speech_game_id,
+        persona_id=speech_persona_id,
+        round_number=speech_round,
+    )
+    speech_data = speech_response.get("data") if isinstance(speech_response, dict) else None
+    if not isinstance(speech_data, dict):
+        raise ValueError("INVALID_RESPONSE")
+    speech_data = reject_private_fields(speech_data)
     insights = {
         "personas": [{"페르소나": row["persona_name"],
                       "성격": row["personality_summary"],
@@ -285,6 +335,14 @@ def _dashboard_inputs(client, metrics: dict) -> tuple[dict, dict]:
                      for row in personas],
         "daily": [{"날짜": row["date"], "생성 게임": row["games_created"]}
                   for row in metrics.get("daily_games", [])],
+        "speech_analytics": speech_data,
+        "speech_filters": {
+            "period": speech_period,
+            "persona": speech_persona_option,
+            "round": speech_round_option,
+            "game": speech_game_text,
+            "game_invalid": bool(st.session_state.get("admin.speech.game.invalid", False)),
+        },
     }
     feedback_type = {"전체": None, "일반": "GENERAL", "게임": "GAME"}[
         st.session_state.get("admin.feedback.type", "전체")]

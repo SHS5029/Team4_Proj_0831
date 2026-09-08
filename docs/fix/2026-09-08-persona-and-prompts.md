@@ -6,6 +6,92 @@ WU-B6 페르소나 추론 수치 조정(migration 009), 첫날 발언 지침, sy
 
 ## 역할별 AI Agent 프롬프트 (WU-M6)
 
+### 자연스러운 대화·전략적 블러핑 재설계 (2026-09-08)
+
+이번 사용자 요청은 기존 MCP 소유 프롬프트의 재설계다. 아래 공격적 토론 보완의
+게임 내 블러핑 허용은 유지하되, 모든 성격에 매번 압박·도발을 요구하는 지침은 이
+절로 대체한다. 실제 게임 규칙·모델·DB·정보 접근 권한을 바꾸는 작업은 아니다.
+
+검토한 경로와 문제:
+
+- [`instructions.py`](../../mcp_server/mafia_game/api/prompts/instructions.py)의 역할별
+  토론과 공통 말투가 모두 추궁을 강조해 성격 차이·수긍·짧은 답변을 약화시키고 있었다.
+  고정된 도발 예문도 같은 표현의 반복을 유도할 수 있었다.
+- [`resources/registry.py`](../../mcp_server/mafia_game/api/resources/registry.py)는 AI
+  입력에서 개인 알리바이·관찰을 제외하는데 첫 발언 지침은 이를 참조하도록 요구했다.
+  첫 발언은 실제 공개 발언에 대한 반응이나 새로운 확인 질문·판단 기준으로 바꿨다.
+- MCP Prompt와 Resource는 같은 렌더러를 사용하고,
+  [`orchestrator.py`](../../backend/app/agent/orchestrator.py)는 지침을 developer에
+  한 번만, 원문을 user 데이터에 전달한다. Backend 공통 규칙·출력 schema·교정,
+  Provider, 공개 발언 분석용 별도 추출 프롬프트는 수정하지 않았다.
+
+재설계 내용:
+
+| 범위 | 지침 |
+|---|---|
+| 공통 대화 | 본인에게 온 말에 반응하고 한 번에 쟁점·목적 하나를 선택한다. 의심 대상과 설득할 사람을 구분하고 짧은 인정·방어·조건부 협력을 섞는다. |
+| 시민 | 타당한 답에는 의심을 낮추고 동조·표 몰이의 이득을 비교한다. 미끼 역할 자칭·거짓 확신은 선택지이며 아군 오처형 위험이 커지면 거둔다. |
+| 탐정 | 본인 실제 조사만 확정 정보로 쓰고 공개 시점을 판단한다. 미끼 주장은 실제 조사와 분리하고 조사 대상은 다음 투표를 바꿀 정보 가치로 고른다. |
+| 의사 | 보호 계획을 매번 예고하지 않는다. 보호하고 싶은 호감과 역할 판단을 구분하고, 탐정·설득의 중심·자기 생존의 가치를 비교한다. |
+| 마피아 | 검증 가능한 사실·작은 양보로 신뢰를 얻고 필요한 왜곡을 섞어 표를 모은다. 밤에는 공격할 사람뿐 아니라 낮에 처형으로 몰 후보를 살려 둘지도 비교한다. |
+| 말투 | 200자 안에서 필요한 만큼만 말하며 매번 질문·보고서식 요약으로 끝내지 않는다. 페르소나·현재 압박에 맞게 표현하되 공격성·고정 예문·의도적 오독을 강제하지 않는다. |
+
+첫날 SPEAK 의무, 이후 내용 없는 경우의 PASS, 재투표 후보 제한과 최종 단계 결단을
+유지한다. 본인 이름·좌석은 `me.data.player_id`와 `public.data.players`로 확인하고,
+허용 대상·행동은 실제 envelope의 `turn.data.valid_targets`·`turn.data.allowed_tools`를
+참조한다. 서버 확정 사실·타인의 주장·본인의 블러핑을 구분하며 없는 과거 원장·개별
+투표·동료 마피아 신원을 실제 조회한 정보로 보충하지 않는다. 페르소나 원문과 수치는
+수정하거나 지침에 보간하지 않는다. 등록명·URI·함수 서명·API/DB schema는 그대로다.
+
+검증 결과:
+
+- 새 문구·정보 경계 사례 22개를 기존 MCP 등록 테스트에 추가했다. 변경 전에는 새
+  기대 문구 18개가 실패하고 기존 원문 비간섭성 4개는 통과했다. 재설계 후 등록·ASGI
+  왕복 테스트는 72개 통과했다.
+- 최종 관련 테스트는 **289개 통과·SQL opt-in 11개 건너뜀**이다. 역할·단계 분리,
+  첫날 PASS 교정·기본 발언, MCP client 지침 검증과 Provider 전달까지 포함한다.
+- 실제 `model_context`와 `AgentOrchestrator._request`를 연결한 별도 합성 확인 56개가
+  통과했다. 네 역할·여섯 단계, 일반 토론의 첫날/이후, 최초/교정 요청을 조합해
+  developer 지침 1회 전달, user 원문 보존·주입 문자열 비승격, 첫날 SPEAK schema를 확인했다.
+  이 확인은 모델 생성이나 실제 게임 플레이가 아니다.
+- 역할 지침 24개 조합은 890~1,707자, 토론 페르소나 지침은 545자로 각각 2,400자
+  한도를 지킨다. 비토론 페르소나 지침은 빈 문자열이다.
+- Backend·MCP 비DB 전체 회귀는 **1,134개 통과·기존 실패 6개·SQL opt-in 17개 건너뜀**이다.
+  실패는 Agent/Redis import 경계 2개, 직접 SQL 경계 1개, Backend MCP context 대역
+  3개다. 수정 전 HEAD 프롬프트를 메모리에 로드해 실패 6개를 재실행해 동일하게
+  재현했으며, 작업 파일을 되돌리거나 무관한 Backend 구현을 수정하지 않았다.
+- 프롬프트 파일 Ruff는 통과했다. 기존 등록 테스트 파일의 import 정렬 3개·긴 줄
+  5개 경고는 HEAD와 동일하며 새 코드의 경고는 없다. 변경 diff의 공백 검사를 통과했다.
+
+관련 테스트 재실행 예시(저장소 루트, 별도 터미널의 합성 설정):
+
+```bash
+export TEAM_DATABASE_URL='postgresql://test:synthetic@127.0.0.1:1/mafia_tests'
+export DATABASE_URL="$TEAM_DATABASE_URL" DATABASE_MIGRATION_URL='' DATABASE_NAME=mafia_tests
+export REDIS_URL='redis://127.0.0.1:1/15' TEST_DATABASE_URL=''
+export GAME_STATE_KEYRING_FILE='' GAME_STATE_ACTIVE_KEY_ID='' ADMIN_USER_IDS=''
+export LLM_PROVIDER=dummy OPENAI_API_KEY='' GEMINI_API_KEY='' SPEECH_ANALYSIS_ENABLED=false
+export B6_LOCAL_QA=0 VOTE_INSIGHT_TEST_DATABASE_URL='' PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
+export PYTHONPATH=.:mcp_server
+.venv/bin/python -B -m pytest -c pyproject.toml -p pytest_asyncio.plugin -p anyio.pytest_plugin \
+  -p no:cacheprovider mcp_server/tests/test_fastmcp_registration.py \
+  mcp_server/tests/test_fastmcp_roundtrip.py backend/tests/test_b6_agent_manager.py \
+  backend/tests/test_fastmcp_agent_client.py backend/tests/test_llm_provider.py -q --tb=short
+.venv/bin/python -B -m pytest -c pyproject.toml -p pytest_asyncio.plugin -p anyio.pytest_plugin \
+  -p no:cacheprovider backend/tests mcp_server/tests \
+  --ignore=backend/tests/test_b5_game_api.py \
+  --ignore=backend/tests/test_postgres_game_flow.py \
+  --ignore=mcp_server/tests/test_process_backend_roundtrip.py -q --tb=short
+```
+
+DB에 게임을 생성하는 위 세 파일, opt-in SQL, 변경 없는 Front 회귀와 유료 모델
+호출·브라우저 실게임은 범위·외부 비용을 고려해 실행하지 않았다. 실제 `.env`, 팀 DB,
+실행 중 프로세스는 변경하지 않았다. 적용하려면 실행 중인 MCP를 재시작해야 한다.
+기존 공유 DB worker 경합·모델 지연·예약 방식은 이 프롬프트 변경으로 해결되지 않는다.
+문구·전달 테스트는 실제 자연스러움·승률·블러핑 성공률·모델 수준의 주입 저항성을
+증명하지 않는다. 후속 실게임에서는 같은 공개 상황의 답변 연결성, 반복 질문,
+성격 구별, 허위 대사와 실제 기록의 혼동을 따로 비교해야 한다.
+
 ### 공격적 토론·거짓말·선동·날조 보완
 
 후속 사용자 요청으로 기존 `instructions.py`의 토론을 직설·추궁·비꼼·도발 중심으로

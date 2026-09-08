@@ -52,7 +52,37 @@ cleanup은 현재 FastMCP 전환 범위에서 제외하며, 기존 상세 M2~M8 
 종료 결과의 마피아 선택 분산에 따른 RNG 사유를 표시한다. 기존 Front 파일만 사용하며
 Backend 규칙·API·비공개 정보 공개 시점은 유지한다.
 
+## 2026-09-08 관리자 AI 발언 분석 범위 (WU-F10)
+
+사용자가 요청한 이번 단일 작업 단위는 기존 `speech_analysis`의 공개 AI 발언 임베딩과
+claims를 관리자 read-only 화면에서 집계·도식화하는 것이다. Backend는 공개
+`game_events`·AI `game_players`·`agent_personas`만 조인해 기간·게임·페르소나·round·분석
+버전으로 제한된 분석 API를 제공하고, Front는 주제 유사도 히트맵·키워드 빈도·stance
+비율·원문 근거를 표시한다. 최대 500건의 결정적 표본과 cosine 기반 greedy 묶음을
+사용하며 전송량을 줄이기 위해 저장 벡터의 앞 96차원 투영만 집계에 사용한다. 새 LLM
+호출·DB 파생 저장·역할/진영 공개는 하지 않는다. 기존 관리자 API의
+allowlist·감사·read-only 경계를 유지하고 이번 WU의 파일 범위 밖 리팩터링은 포함하지
+않는다.
+
 ## 1. 확정 결정
+
+### 2026-09-08 자연스러운 대화·전략적 블러핑 재설계 (WU-M6)
+
+이번 사용자 요청은 기존 `api/prompts/instructions.py`의 역할·단계별 행동과 표현을
+재설계하는 단일 WU-M6다. 이 절은 아래 공격적 토론 보완의 일률적인 압박 지침보다
+우선한다. 게임 내 블러핑은 유지하되 매 발언의 도발·날조를 강제하지 않는다. 실제
+대화에 대한 답변·양보·반박, 조건부 협력, 설득할 상대와 발언 시점의 선택을 안내한다.
+마피아는 사실과 필요한 왜곡을 섞어 신뢰·표를 확보하고, 시민 진영은 블러핑의 이득과
+아군 오처형 위험을 비교한다. 역할별 조사·보호·공격·투표 전략도 같은 목표를 따른다.
+
+첫날 인간·AI PASS 금지, 200자 발언, 실제 기록과 허위 대사의 구분, 동료 마피아
+신원 비공개, 본인 정보 scope와 허용 대상은 유지한다. 모델 입력에서 빠진 알리바이·
+관찰을 첫 발언의 필수 근거로 요구하지 않는다. 페르소나 원문·수치를 재매핑하거나
+지시문에 보간하지 않으며 Backend system·출력 schema·Provider와 DB·API는 바꾸지 않는다.
+기존 MCP 등록 테스트로 역할·단계·문구·원문 비간섭성과 2400자 한도를 검증하고,
+Backend·MCP의 비DB 회귀를 실행한다. 새 파일·유료 모델 호출·팀 DB 변경·프로세스
+재시작은 포함하지 않는다. 실제 자연스러움·승률 개선은 별도 실게임 평가가 필요하다.
+소개는 루트 README, 상세 변경·검증은 기존 `docs/fix/2026-09-08-persona-and-prompts.md`에 둔다.
 
 ### 2026-09-08 역할별 공격적 토론·블러핑 보완 (WU-M6)
 
@@ -215,6 +245,23 @@ DB schema와 공개 API를 변경하지 않고 팀 DB 세션 임시 테이블에
   WU-F3는 기존 game shell에 API 2.4.1절의 상태 표시만 추가한다.
 
 ### 1.4 계약 단순화
+
+2026-09-08 반복 대사 실게임 점검의 단일 WU-B6는 Backend의 발언 장애 복구를
+보완한다. 첫날의 짧은 기본 SPEAK 계약은 유지하되 모든 actor가 동일한 주장을
+반복하지 않도록 공개 대화와 예약 식별자를 사용해 사실을 단정하지 않는 질문을
+선택한다. 공개 이력을 가져오지 못한 경우에도 게임·actor·window별 결정성을
+유지한다. 정상 생성·검증을 마친 발언은 MCP 제출 실패만으로 기본 대사로 교체하지
+않고 최초 상태 버전·window에 한정해 같은 service에 제출한다. 이미 적용된 행동과
+새 차례는 기존 상태·window 검증으로 구분한다. Backend 기존 파일·관련 테스트와
+README만 수정하며 공개 API·MCP Resource·DB schema·첫날 PASS 금지는 변경하지 않는다.
+팀 DB의 다른 버전 worker가 적용한 결과는 로컬 수정으로 제거할 수 없으므로,
+실게임 검증은 DB job 결과와 로컬 실행 로그를 대조해 적용 주체를 구분한다.
+같은 재검증에서 발견한 MCP_BACKEND_TIMEOUT은 기존 게임·관리자 router의 동기
+DB 작업이 공용 비동기 이벤트 루프를 점유하는 경로도 함께 보완한다. 기존 API의
+동기 service 호출을 스레드로 옮기고, 요청 검증·권한·transaction·멱등성·응답 계약은
+유지한다. 변경 파일 범위에 기존 `game_router.py`, `admin_router.py`와 해당 API
+테스트를 포함하며, 지연된 사용자·관리자 요청 중 MCP 응답이 진행되는지 합성
+동시성 테스트로 검증한다. 다른 개발자의 관리자 기능 변경은 보존한다.
 
 - 게임 시작은 생성과 분리한 명시적 `BEGIN_GAME` command다.
 - 모든 게임 변경은 하나의 discriminated-union command endpoint를 사용한다.
@@ -664,6 +711,7 @@ MCP runtime은 변경하지 않는다. 저장·삭제는 팝업에서 사용자�
 | `WU-F6` | 관전, 빠른 진행, 결과 공개 | 사망자 command 차단과 종료 공개 범위 검증 |
 | `WU-F7` | 일반·게임별 피드백 | 종류별 validation과 게임당 한 건 처리 |
 | `WU-F8` | read-only 관리자 앱 | UUID allowlist 거부·목록·상세·metrics 확인 |
+| `WU-F10` | 공개 AI 발언 분석 관리자 탭 | 임베딩 주제·키워드·coverage·원문 근거와 403 확인 |
 
 ### 8.2 Backend
 
@@ -713,7 +761,7 @@ Tool 경로는 WU-M4 계약 정리 뒤 연결한다. 운영 sink와 보존 정�
 | `CP-3` 게임 엔진 | B4 | 규칙·결정성·불변식 회귀 |
 | `CP-4` Agent·MCP | B6, B7, M2~M6 | audience 비간섭성과 fallback E2E |
 | `CP-5` 사용자 흐름 | F2~F7, B5 | 생성부터 저장·재개·종료·피드백 E2E |
-| `CP-6` 운영 | F8, B8, B9, B10, M7~M8 | 관리자 거부 경로, 장애 복구, 근거 검색 경계, runbook |
+| `CP-6` 운영 | F8, F10, B8, B9, B10, M7~M8 | 관리자 거부 경로, 발언 분석 partial·redaction, 장애 복구, 근거 검색 경계, runbook |
 
 `WU-M1A -> WU-B2 migration 산출물 -> WU-M1B -> CP-2` 순서를 지킨다. MCP 담당자는
 Backend 소유 migration SQL을 수정하지 않는다.
@@ -1147,6 +1195,7 @@ SPEECH window로 표현하고 별도 테이블은 추가하지 않는다. 조회
 | B12 | `backend/app/services/game/speech_analysis_worker.py`, `backend/app/llm_provider/speech_analysis_provider.py`, `backend/tests/test_speech_analysis_worker.py`, `backend/tests/test_speech_analysis_provider.py`; `core/config.py`, `main.py`, `.env.example` |
 | B13 | `backend/app/repositories/vote_insight_repository.py`, `backend/app/services/game/vote_insight_service.py`, `backend/tests/test_vote_insights.py`; `routers/game_router.py`, API 정본 |
 | F9 | `frontend_user/components/vote_insights.py`, `frontend_user/tests/test_vote_insights_f9.py`; 기존 API client·action panel, 화면 정본 |
+| F10 | `backend/app/repositories/admin_repository.py`, `backend/app/services/admin_service.py`, `backend/app/routers/admin_router.py`, `backend/app/schemas/admin_schema.py`, `backend/tests/test_b8_admin_api.py`, `frontend_admin/core/api_client.py`, `frontend_admin/app.py`, `frontend_admin/app_pages/dashboard_page.py`; `speech_analysis` 기반 관리자 조회·도식화와 관련 계약·README |
 | M9 | 격리 DB에서 006 적용·재실행·권한·health 확인, 실제 서비스 DB 변경은 대상 확인 후 수행 |
 | B14 | 위 계약 간 연결 확인·필요한 통합 수정·회귀, 기존 `runtime_factory.py`·`main.py`에서 조회 서비스 조립, `backend/tests/test_vote_insight_integration.py`·기존 migration 목록 검사, 새 테스트 추적용 `.gitignore`, `README.md`, 기존 정본의 실제 결과·제약 갱신 |
 

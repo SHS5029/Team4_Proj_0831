@@ -57,6 +57,7 @@ Front는 DB·Redis·LLM·MCP·internal API를 호출하지 않는다. Backend는
 | F8 | B8 | `GET /api/v1/admin/games` | filter·pagination·403 test |
 | F8 | B8 | `GET /api/v1/admin/games/{game_id}` | 진행 중 private redaction test |
 | F8 | B8 | `GET /api/v1/admin/metrics` | 기간·지표·403 test |
+| F10 | B8 | `GET /api/v1/admin/speech-analytics` | AI 공개 발언·임베딩 주제·coverage·403 test |
 
 Backend는 통합 전에 실제 `/openapi.json`, 성공·오류 예시와 synthetic fixture를 제공한다.
 Front는 같은 fixture에 대한 Pydantic validation·화면 분기 결과를 제공한다.
@@ -165,7 +166,7 @@ private snapshot과 전체 header를 남기지 않는다.
 | F2~F4/B5 | create·snapshot·command fixture | payload validation·화면 guard 결과 |
 | F5/B7 | SSE·sync 동일 batch·disconnect 결과 | dedupe·gap·reconnect E2E 결과 |
 | CP-5 | 전체 공개 API와 오류 matrix | 생성→저장→재개→종료→feedback E2E |
-| CP-6 | admin redacted schema·403 결과 | 관리자 fail-closed·DOM 비노출 E2E |
+| CP-6 | admin redacted schema·speech analytics·403 결과 | 관리자 fail-closed·coverage·DOM 비노출 E2E |
 
 ### 변경·질문 규칙
 

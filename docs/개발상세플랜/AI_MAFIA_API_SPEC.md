@@ -1164,7 +1164,7 @@ Query: `event_type` (아래 감사 분류), `cursor` (양의 bigint ID를 표현
 
 DB action을 응답에서는 `event_type`으로 투영한다. 분류는 ADMIN_LIST_GAMES,
 ADMIN_GET_GAME, ADMIN_GET_METRICS, ADMIN_GET_ROLE_WIN_RATES, ADMIN_GET_PERSONA_WIN_RATES,
-ADMIN_LIST_FEEDBACK, ADMIN_LIST_AUDIT_LOGS, ADMIN_QUERY_INSIGHTS이다. 조회 자체의 감사 기록은 조회 후 추가되어 다음 새로고침에서
+ADMIN_LIST_FEEDBACK, ADMIN_LIST_AUDIT_LOGS, ADMIN_QUERY_INSIGHTS, ADMIN_GET_SPEECH_ANALYTICS이다. 조회 자체의 감사 기록은 조회 후 추가되어 다음 새로고침에서
 확인할 수 있다. 이 API는 관리자 조회 감사 기록이며 서버 원문 로그·INFO/WARN 등급은
 제공하지 않는다. 신규 목록의 잘못된 cursor/enum/limit/rating은 422 INVALID_REQUEST다.
 
@@ -1218,6 +1218,68 @@ cosine 검색으로 함께 조회한다. 이 endpoint는 질문을 위한 POST�
 반환한다. 응답에는 원문 사용자 식별자, 역할·개별 행동·투표·seed, prompt·token·비용을
 포함하지 않는다. 질문 원문은 audit payload에 저장하지 않고 action·request ID·결과 상태만
 기록한다.
+
+### 7.10 `GET /api/v1/admin/speech-analytics`
+
+공개 발언 분석이 활성화된 게임에서 `speech_analysis`의 완료 임베딩과 주장 결과를
+관리자용 집계로 투영한다. query는 선택적인 `from`, `to`(최대 31일), `game_id`,
+`persona_id`, `round`(0~5), `analysis_version`, `limit`(주제 수, 기본 12·최대 20)다.
+기간은 발언 원본 event의 `created_at`으로 제한한다. `game_players.kind=AI`인
+발언만 포함하며 사람 발언·역할·진영·비공개 context는 조회하지 않는다.
+
+같은 `analysis_version`의 임베딩만 비교하고, 버전을 생략하면
+`speech_analysis_versions.activated_at`이 가장 최근인 버전을 선택한다. Backend는
+조회 범위에서 최대 500건을 결정적으로 표본화하고 저장된 벡터의 앞 96차원 투영을
+사용해 cosine 유사도 0.78 이상의 greedy 묶음을 계산한다. 이 묶음은 설명 가능한
+화면용 주제 후보이며 새로운 LLM 호출이나 DB
+저장을 시작하지 않는다. 주제별 `keywords`는 원문에서 정규화한 2글자 이상 표현의
+빈도이고, `related_terms`는 같은 주제 안에서 함께 나타난 표현이다. 동의어 판정이나
+사실 판정으로 해석하지 않는다.
+
+성공 응답의 `coverage`는 대상 공개 AI 발언, 분석 행, 임베딩·주장 완료 수를 각각
+보여준다. 표본 상한을 넘으면 `sample_limited=true`로 표시한다. `topics`에는 주제별
+에이전트 분포·주장 stance 분포·대표 공개 발언·최대 5개의 근거 발언이 들어가고,
+`agents`에는 에이전트별 발언 수·상위 주제·상위 표현이 들어간다. `keywords`는 전체
+범위의 상위 표현이다. 모든 공개 원문은 관리자 화면에서 근거를 확인할 수 있도록
+그대로 반환하되 HTML로 실행하지 않는다.
+
+```json
+{
+  "data": {
+    "analysis_version": "v1",
+    "generated_at": "2026-09-08T02:00:00Z",
+    "coverage": {
+      "eligible_speeches": 48,
+      "analyzed_speeches": 46,
+      "embedding_ready": 44,
+      "claims_ready": 42,
+      "embedding_coverage": 0.9167,
+      "claims_coverage": 0.875,
+      "sampled_speeches": 44,
+      "sample_limited": false
+    },
+    "topics": [{
+      "topic_id": "topic-001",
+      "label": "근거 · 투표",
+      "speech_count": 12,
+      "agent_count": 4,
+      "agent_breakdown": [{"persona_id": "CAUTIOUS_ANALYST", "persona_name": "신중한 분석가", "speech_count": 5, "share": 0.4167}],
+      "stance_breakdown": [{"stance": "SUSPICION", "count": 6, "share": 0.5}],
+      "keywords": [{"term": "근거", "speech_count": 8, "occurrence_count": 10}],
+      "related_terms": ["투표", "수상"],
+      "representative": {"event_id": "<uuid>", "game_id": "<uuid>", "persona_id": "<id>", "persona_name": "신중한 분석가", "round": 2, "phase": "DAY_DISCUSSION", "message": "...", "created_at": "2026-09-08T01:59:00Z"},
+      "evidence": []
+    }],
+    "agents": [{"persona_id": "CAUTIOUS_ANALYST", "persona_name": "신중한 분석가", "speech_count": 10, "share": 0.2273, "top_topics": [{"topic_id": "topic-001", "label": "근거 · 투표", "speech_count": 5}], "top_keywords": [{"term": "근거", "speech_count": 7, "occurrence_count": 9}], "stance_breakdown": [{"stance": "SUSPICION", "count": 4, "share": 0.4}]}],
+    "keywords": [{"term": "근거", "speech_count": 20, "occurrence_count": 27, "agent_count": 5}]
+  }
+}
+```
+
+조회 성공 뒤 `ADMIN_GET_SPEECH_ANALYTICS` 감사 action을 저장한다. DB·감사 저장 실패는
+`503 DEPENDENCY_UNAVAILABLE`, 비허용 UUID는 데이터 조회 없이 `403 ADMIN_ACCESS_DENIED`,
+잘못된 기간·UUID·버전·limit은 `422 INVALID_REQUEST`다. 응답에는 벡터 배열, claims 원문,
+role·faction·개별 행동·투표·seed·prompt·비용을 넣지 않는다.
 
 ## 8. Backend 내부 Engine API
 

@@ -20,8 +20,15 @@ AI별 말투·공격성·기만 표현은 달리하되 MVP 밸런스 검증 중 
 
 - 전체 6~9명, 탐정·의사·시민과 서로 정체를 모르는 마피아
 - 첫날 낮은 1분 45초 자유 채팅 후 무투표로 밤에 진입
-- 첫날(Day 1)은 인간·AI 모두 발언 PASS 금지. 서버에서도 거부하며 AI 생성·MCP
-  제출 실패 시에는 짧은 기본 발언을 사용합니다. 둘째 날 이후 PASS 규칙은 유지합니다
+- 첫날(Day 1)은 인간·AI 모두 발언 PASS 금지. AI 생성·MCP 조회 실패 시에는 사실을
+  단정하지 않는 짧은 질문을 사용합니다. 확인한 공개 이력의 질문은 중복을 피하고,
+  준비된 질문을 모두 사용하면 가장 오래된 질문부터 재사용하며, 이력이 없으면
+  게임·AI·발언 창별로 결정적으로 선택합니다. 이력 조회 자체가 실패하면
+  중복 방지를 보장할 수 없습니다. 둘째 날 이후 PASS 규칙은 유지합니다
+- 정상 생성한 대사는 MCP 제출 실패만으로 기본 대사로 바꾸지 않습니다. 최초 상태
+  버전·발언 창으로 같은 대사를 재제출하며, 이미 처리됐거나 차례가 바뀌면 기존 검증이 거부합니다
+- 게임·관리자 API의 동기 DB 작업은 별도 스레드에서 실행합니다. 브라우저 조회나
+  관리자 집계가 오래 걸려도 공용 이벤트 루프와 MCP 응답 처리를 막지 않습니다
 - 발언은 200자 이하, 플레이어별 최근 1분에 최대 7회. 밤 행동은 20초·투표는 30초의
 Backend 권위 deadline
 - 다섯 개 시나리오와 플레이어별 알리바이·관찰 정보를 검증된 seed 기반
@@ -40,10 +47,14 @@ Backend 권위 deadline
   기본 LLM 모델과 정보 접근 권한은 모든 AI에 동일합니다
 - 성격(preset)별 `speech_style`·`backstory`·`parameters`는 team DB의
   `agent_personas`에 배정된 값을 모델에 그대로 전달합니다
-- 역할별 토론은 직설·추궁·비꼼을 강화합니다. 시민은 반응 유도와 표 몰이, 탐정은
-  강한 조사 압박과 미끼 주장, 의사는 위장과 거짓 보호 대상, 마피아는 허위 알리바이·
-  가짜 조사·누명·선동을 전략으로 사용합니다. 대사 속 날조를 실제 서버 기록으로
-  취급하지 않으며 역할·행동·정보 접근 권한은 그대로입니다
+- AI는 상대 답변에 대한 인정·반박·정정과 조건부 협력을 섞고, 의심 대상과 설득할
+  상대를 구분하도록 안내합니다. 모든 성격에 도발을 강제하지 않으며 말투·감정 표현은
+  배정된 페르소나와 상황에 맞춥니다
+- 마피아는 사실과 필요한 왜곡을 섞어 신뢰·표를 확보하고, 시민 진영은 오처형 위험을
+  고려해 미끼 주장을 사용합니다. 탐정은 조사 공개 시점, 의사는 보호 계획의 노출,
+  마피아는 공격과 낮 처형의 이득을 비교합니다. 실제 기록·타인의 주장·자신의 블러핑을
+  구분하며 역할·허용 행동·정보 권한과 첫날 SPEAK 의무는 유지합니다. 프롬프트 지침이므로
+  실제 대화 품질이나 승률 개선을 보장하지는 않습니다
 - 문구는 `mcp_server/mafia_game/api/prompts/instructions.py`에서 관리합니다.
   실행 중인 MCP는 재시작해야 바뀐 지침을 다음 AI 판단부터 전달합니다
 - Backend 중앙 AI worker가 열린 AI 차례(발언·밤·투표)를 비동기로 회복하며,
@@ -65,8 +76,10 @@ Backend 권위 deadline
   밤·투표는 선택 입력과 시계 갱신을 분리하고, 홈 이동 시 저장·이탈 확인을 제공합니다.
   탐정의 조사 결과는 본인 화면에서만 별도로 표시합니다
 - **관리자 앱**(read-only): 게임 KPI·진영별 승률·페르소나별 AI 승률, 사용자 피드백,
-  관리자 감사 로그를 세 탭으로 표시하고 30초마다 갱신합니다. 운영 에이전트 계획
-  탭은 제거됐으며 질문 API는 Backend 독립 계약으로 유지합니다
+  관리자 감사 로그와 공개 AI 발언 분석을 네 탭으로 표시하고 30초마다 갱신합니다.
+  발언 분석은 `speech_analysis` 임베딩으로 유사 주제를 묶고 원문 키워드·stance·
+  대표 근거를 함께 보여 줍니다. 운영 에이전트 계획 탭은 제거됐으며 질문 API는
+  Backend 독립 계약으로 유지합니다
 - 공개 발언의 실시간 임베딩·주장 분석과 투표 보조 정보 표시(선택 기능,
   기본 비활성)
 
@@ -95,7 +108,7 @@ Backend는 actor별 허용된 정보만 scope별로 투영하고, 밤 행동과 
 | [AI_MAFIA_API_SPEC.md](docs/개발상세플랜/AI_MAFIA_API_SPEC.md) | 일반·관리자·내부 Engine HTTP API와 MCP Resource·Tool 계약 |
 | [AI_MAFIA_MCP_SERVER_DESIGN.md](docs/개발상세플랜/AI_MAFIA_MCP_SERVER_DESIGN.md) | MCP runtime 구조, 보안 경계와 WU-M1A~WU-M8 실행·검증 계획 |
 | [AI_MAFIA_SCREEN_FLOW.md](docs/개발상세플랜/AI_MAFIA_SCREEN_FLOW.md) | UUID 초기화, 사용자 게임·관전·피드백과 관리자 화면 흐름 |
-| [AI_MAFIA_FRONTEND_TECHNICAL_DESIGN.md](docs/개발상세플랜/AI_MAFIA_FRONTEND_TECHNICAL_DESIGN.md) | Streamlit Front 전용 WU-F1~F8 기술 설계 |
+| [AI_MAFIA_FRONTEND_TECHNICAL_DESIGN.md](docs/개발상세플랜/AI_MAFIA_FRONTEND_TECHNICAL_DESIGN.md) | Streamlit Front 전용 WU-F1~F10 기술 설계 |
 | [AI_MAFIA_FRONTEND_BACKEND_HANDOFF.md](docs/개발상세플랜/AI_MAFIA_FRONTEND_BACKEND_HANDOFF.md) | Frontend–Backend 공개 API, SSE·CORS, 오류·private 경계 요약 |
 | [AI_MAFIA_INDEPENDENT_CONTRACT.md](docs/개발상세플랜/AI_MAFIA_INDEPENDENT_CONTRACT.md) | 세 섹터 독립 구현 시 공통 최소 연결 형식·경계 |
 | [AI_MAFIA_GAME_ENGINE_STRATEGY_DRAFT.md](docs/개발상세플랜/AI_MAFIA_GAME_ENGINE_STRATEGY_DRAFT.md) | 게임 엔진·Agent Manager 모듈화 전략 임시 초안 |
@@ -140,7 +153,7 @@ Backend는 actor별 허용된 정보만 scope별로 투영하고, 밤 행동과 
 │   ├── core/                         # identity·session·api_client·sync
 │   ├── .streamlit/secrets.toml.example
 │   └── tests/
-├── frontend_admin/                   # read-only 관리자 운영 분석·피드백·로그
+├── frontend_admin/                   # read-only 관리자 운영 분석·발언 분석·피드백·로그
 ├── mcp_server/
 │   ├── pyproject.toml, uv.lock       # Python 3.12·MCP SDK 1.29.1 독립 실행 환경
 │   ├── mafia_game/                   # 최소 FastMCP 등록부·Backend HTTP adapter
@@ -343,9 +356,42 @@ tail -f backend/logs/game-progress.log
 Backend·UUID 없이 화면만 확인하려면 `ADMIN_DEMO_MODE=true`로 실행하면 합성
 데이터가 표시됩니다(실제 권한 검증을 대신하지 않습니다).
 
+### Backend와 관리자 Front만 실행
+
+기존 `run_openai.sh` 실행은 해당 터미널의 `Ctrl+C`로 Backend·MCP·사용자 Front를
+함께 종료하고, 별도로 실행한 관리자 Front도 종료합니다. 아래 명령은 저장소 루트의
+서로 다른 터미널에서 실행합니다. Backend는 `.env`의 팀 DB와 관리자 allowlist를
+사용하며, 관리자 조회에 필요 없는 게임·발언 분석 백그라운드 worker는 시작하지 않습니다.
+
+```bash
+# Backend: 관리자 조회용으로 백그라운드 게임 진행을 중지한 상태로 실행합니다.
+CORS_ALLOWED_ORIGINS=http://127.0.0.1:18502,http://localhost:18502 \
+  .venv/bin/python -c 'import uvicorn; from backend.app.main import create_app; uvicorn.run(create_app(enable_background_worker=False), host="127.0.0.1", port=18000)'
+
+# 관리자 Front: 기존 Backend의 실제 관리자 API에 연결합니다.
+BACKEND_API_URL=http://127.0.0.1:18000 ADMIN_DEMO_MODE=false \
+  .venv/bin/python -m streamlit run frontend_admin/app.py \
+  --server.address 127.0.0.1 --server.port 18502 --server.headless true
+```
+
+접속 주소는 Backend `http://127.0.0.1:18000`, 관리자 Front
+`http://127.0.0.1:18502`입니다. 기동 확인은 각각 `/health`, `/_stcore/health`로
+수행합니다. 이 구성에서는 MCP·사용자 Front를 실행하지 않으며 실제 게임 진행에는
+전체 실행 구성이 필요합니다.
+Backend만 리로드할 때는 Backend 터미널에서 `Ctrl+C` 후 위 Backend 명령을 다시
+실행합니다. 관리자 Front는 그대로 유지하고 `/health`의 정상 응답을 확인합니다.
+
 ## 테스트와 정적 검사
 
 DB·Redis·유료 Provider 없이 실행할 범위:
+
+반복 발언 장애 복구의 집중 검증은 `backend/tests/test_b6_agent_manager.py`와
+`backend/tests/test_agent_activity.py`를 사용합니다. API 대기로 MCP 응답이 막히는지
+확인하는 합성 동시성 사례는 기존 `test_mcp_registry_api.py`와 `test_b8_admin_api.py`에
+포함합니다. 2026-09-08 최종 Backend 회귀는 1,011건 통과·17건 선택 생략·기존 실패
+6건이었습니다. 외부 유료 API 자동 테스트와 DB 정리형 통합 테스트는 실행하지 않았습니다.
+기존 실패는 Agent/Redis/SQL 계층 경계 검사 3건과 MCP public context fixture의
+`cache_public_history` 누락 3건이며 이번 발언 복구 변경에서는 수정하지 않았습니다.
 
 ```bash
 TEAM_DATABASE_URL='postgresql://test:synthetic@127.0.0.1:1/mafia_tests' \
@@ -384,6 +430,14 @@ Backend 전체 회귀는 Streamlit 관리자 연동과 FastMCP context 테스트
 실제 유료/Local LLM의 추론 품질·운영 DDL 권한·기존 데이터 암호화 전환·운영 TLS는
 이 명령으로 검증하지 않습니다.
 
+관리자 발언 분석 API는 `GET /api/v1/admin/speech-analytics`이며 기존 관리자 UUID
+allowlist와 감사 기록을 그대로 사용합니다. 화면의 분석 조건에서 기간·에이전트·라운드·
+게임 UUID를 좁혀 조회할 수 있고, 최대 500건의 결정적 표본을 Backend에서
+저장 벡터의 앞 96차원 투영으로 cosine 유사도(0.78)를 계산해 묶고, 미완료 분석과
+표본 제한을 coverage에 표시합니다. API는
+공개 AI 발언만 반환하며 벡터·역할·진영·개별 행동·투표·private context는 노출하지
+않습니다. 운영 화면에서 임베딩 행이 없으면 주제 대신 분석 대기 상태를 표시합니다.
+
 ## 보안 원칙과 알려진 제약
 
 - `.env`, 실제 `secrets.toml`, token과 모든 실제 자격증명을 커밋하지 않습니다.
@@ -408,6 +462,11 @@ Backend 전체 회귀는 Streamlit 관리자 연동과 FastMCP context 테스트
   로컬 적용 로그가 없는 첫날 AI PASS와 마감이 없는 HUMAN 창이 관찰됐고, DB job·receipt와
   lease 시간 비교는 다른 버전의 worker 개입을 강하게 시사했습니다. 저장된 정보만으로
   호스트는 특정할 수 없으며 다른 개발자의 프로세스나 게임은 변경하지 않았습니다.
+  반복 발언 재현에서도 같은 게임의 MCP_UNAVAILABLE 기본 발언과 첫날 PASS가
+  다른 실행에서 적용됐고, 로컬 작업자가 정상 생성한 발언은 서로 달랐습니다.
+  로컬 재시작·코드 수정만으로 다른 worker의 대체 발언을 막을 수는 없습니다.
+  게임을 점검할 때는 Backend·MCP를 함께 최신 코드로 재시작하고 DB job 결과를
+  로컬 `game-progress.log`의 실행 식별자·상태 버전과 대조해야 합니다.
 
 비밀값 노출이 의심되면 값을 다시 출력하지 말고 즉시 폐기·재발급한 뒤 Git 이력과
 외부 로그를 별도로 점검하세요.
@@ -450,6 +509,8 @@ Backend 전체 회귀는 Streamlit 관리자 연동과 FastMCP context 테스트
 추가하고 MCP 담당자가 실제 환경에서 실행·재실행 검증
 - Agent·LLM·MCP client: `backend/app/agent/`, `backend/app/llm_provider/`,
 `backend/app/mcp/`
+- 관리자 발언 분석: `backend/app/repositories/admin_repository.py`,
+  `backend/app/services/admin_service.py`, `frontend_admin/app_pages/dashboard_page.py`
 - 독립 MCP 기능: `mcp_server/mafia_game/` 또는 `mcp_server/mcp_2/` 내부 계층에만 추가
 
 ## 기여

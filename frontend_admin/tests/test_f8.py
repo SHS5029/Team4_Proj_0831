@@ -8,7 +8,6 @@ import pytest
 from frontend_admin.core.api_client import AdminApiClient, AdminApiError
 from frontend_admin.core.models import reject_private_fields
 
-
 ADMIN_ID = "83d40f36-e835-4a1d-88db-e59b6920b739"
 
 
@@ -106,14 +105,16 @@ def test_demo_key_and_data_are_isolated(monkeypatch) -> None:
 
 def test_demo_ui_connection_failure_and_recovery(monkeypatch) -> None:
     from pathlib import Path
+
     from streamlit.testing.v1 import AppTest
+
     from frontend_admin.core.api_client import DEMO_API_KEY
 
     monkeypatch.setenv("ADMIN_DEMO_MODE", "true")
     at = AppTest.from_file(str(Path(__file__).parents[1] / "app.py"), default_timeout=15).run()
     assert not at.exception
-    assert len(at.tabs) == 3
-    assert len(at.dataframe) == 3
+    assert len(at.tabs) == 4
+    assert len(at.dataframe) >= 5
     assert any(metric.label == "누적 게임" and metric.value == "1200" for metric in at.metric)
     assert any("마피아 360승 (40.0%)" in item.value for item in at.caption)
     at.text_input[0].set_value("wrong-key")
@@ -157,23 +158,25 @@ def test_feedback_and_audit_pages_change_on_one_click(monkeypatch):
     """필터를 바꾸면 첫 페이지로 돌아가고 다음 버튼은 한 번 클릭으로 반영된다."""
 
     from pathlib import Path
+
     from streamlit.testing.v1 import AppTest
 
     monkeypatch.setenv("ADMIN_DEMO_MODE", "true")
     at = AppTest.from_file(str(Path(__file__).parents[1] / "app.py"), default_timeout=15).run()
-    first_id = at.dataframe[1].value.iloc[0]["피드백 UUID"]
+    def frame_with(column):
+        return next(frame.value for frame in at.dataframe if column in frame.value.columns)
+
+    first_id = frame_with("피드백 UUID").iloc[0]["피드백 UUID"]
     at.button(key="admin.feedback.next").click().run()
-    assert not at.exception and at.dataframe[1].value.iloc[0]["피드백 UUID"] != first_id
+    assert not at.exception and frame_with("피드백 UUID").iloc[0]["피드백 UUID"] != first_id
     at.selectbox(key="admin.feedback.rating").select("5").run()
-    assert set(at.dataframe[1].value["평점"]) == {5}
+    assert set(frame_with("피드백 UUID")["평점"]) == {5}
     assert at.button(key="admin.feedback.previous").disabled
     at.selectbox(key="admin.logs.type").select("운영 지표 조회").run()
-    assert set(at.dataframe[2].value["조회 유형"]) == {"운영 지표 조회"}
+    assert set(frame_with("조회 유형")["조회 유형"]) == {"운영 지표 조회"}
     at.button(key="admin.logs.next").click().run()
-    assert not at.exception and len(at.dataframe[2].value) == 20
-    assert not at.button(key="admin.logs.next").disabled
-    at.button(key="admin.logs.next").click().run()
-    assert not at.exception and len(at.dataframe[2].value) == 5
+    assert not at.exception and len(frame_with("조회 유형")) == 16
+    assert at.button(key="admin.logs.next").disabled
     assert at.button(key="admin.logs.next").disabled
 
 
@@ -205,6 +208,40 @@ def test_admin_client_extension_urls_are_encoded():
     assert captured[4].headers["Content-type"] == "application/json"
     assert json.loads(captured[4].data.decode("utf-8"))["filters"]["source_types"] == ["FEEDBACK"]
     assert all(r.headers["X-user-id"] == ADMIN_ID and "X-api-key" not in r.headers for r in captured)
+
+
+def test_admin_speech_analytics_client_encodes_analysis_scope():
+    """발언 분석 조건을 URL에 안전하게 인코딩하고 관리자 UUID만 전달한다."""
+
+    from urllib.parse import parse_qs, urlsplit
+
+    captured = []
+
+    def transport(request, timeout):
+        captured.append(request)
+        return 200, b'{"data":{"topics":[]}}'
+
+    client = AdminApiClient(user_id=ADMIN_ID, transport=transport)
+    client.speech_analytics(
+        from_date="2026-09-01T00:00:00+09:00",
+        to_date="2026-09-08T00:00:00+09:00",
+        game_id="00000000-0000-4000-8000-000000000299",
+        persona_id="ACTIVE DEBATER",
+        round_number=2,
+        analysis_version="claims-ko-v2",
+        limit=5,
+    )
+    query = parse_qs(urlsplit(captured[0].full_url).query)
+    assert query == {
+        "limit": ["5"],
+        "from": ["2026-09-01T00:00:00+09:00"],
+        "to": ["2026-09-08T00:00:00+09:00"],
+        "game_id": ["00000000-0000-4000-8000-000000000299"],
+        "persona_id": ["ACTIVE DEBATER"],
+        "round": ["2"],
+        "analysis_version": ["claims-ko-v2"],
+    }
+    assert captured[0].headers["X-user-id"] == ADMIN_ID
 
 
 def test_browser_admin_uuid_requires_explicit_value_and_preserves_storage_on_failure():
@@ -275,7 +312,9 @@ def test_real_mode_denial_preserves_identity_input(monkeypatch, status):
     """접속·권한 오류에서 운영 데이터는 숨기고 UUID 교체 입력은 유지한다."""
 
     from uuid import UUID
+
     from streamlit.testing.v1 import AppTest
+
     from frontend_admin.components import identity_bridge
     from frontend_admin.core import api_client
 

@@ -11,7 +11,7 @@ from uuid import uuid4
 import pytest
 
 from backend.app.agent.activity import AgentActivity
-from backend.app.agent.orchestrator import AgentRunResult
+from backend.app.agent.orchestrator import AgentOrchestrator, AgentRunResult
 from backend.app.llm_provider.schemas import NormalizedAgentProposal
 from backend.app.services.game.postgres_runtime import PostgresGameRuntime
 from backend.app.services.game.ai_progress_worker import AiProgressWorker, _log_worker_error
@@ -90,7 +90,12 @@ def runtime_fixture():
     activity, stream = collector()
     runtime._activity = activity
     runtime._mutation_lock = RLock()
-    game = {"phase": "DAY_DISCUSSION", "state_version": 2, "status": "IN_PROGRESS"}
+    runtime._ai_worker = SimpleNamespace(wake_votes=lambda: None)
+    runtime._settings = SimpleNamespace(
+        mcp_server_url="http://synthetic.invalid", llm_max_output_tokens=8192,
+        llm_timeout_seconds=30,
+    )
+    game = {"phase": "DAY_DISCUSSION", "day_number": 2, "state_version": 2, "status": "IN_PROGRESS"}
     runtime._read = SimpleNamespace(snapshot=lambda *args: {"game": dict(game)})
     return runtime, game, stream
 
@@ -251,7 +256,6 @@ def test_access_status_filter_and_dependency_warnings_are_preserved(isolated_log
 async def test_speech_applied_only_after_tool_or_fallback_success(monkeypatch, status):
     runtime, game, stream = runtime_fixture()
     owner, game_id, actor, window = uuid4(), uuid4(), uuid4(), uuid4()
-    runtime._settings = SimpleNamespace(mcp_server_url="http://synthetic.invalid")
     runtime._agent_repository = object()
     runtime._read.snapshot = lambda *args: {"game": dict(game), "action_window": {"window_id": str(window), "turn_player_id": str(actor)}}
     calls = []
@@ -267,6 +271,8 @@ async def test_speech_applied_only_after_tool_or_fallback_success(monkeypatch, s
             return {"result": {"result_state_version": 3}, "replayed": False}
 
     class Orchestrator:
+        _fallback_proposal = staticmethod(AgentOrchestrator._fallback_proposal)
+
         def __init__(self, **kwargs):
             assert kwargs["close_context"] is False
         async def run(self, spec):
@@ -310,13 +316,19 @@ async def test_private_batch_rollback_has_no_applied_activity():
 
 
 @pytest.mark.asyncio
-async def test_tool_response_loss_fallback_cannot_apply_to_new_window(monkeypatch):
+@pytest.mark.parametrize("day_number, action_type", [(1, "SPEAK"), (2, "SPEAK"), (2, "PASS")])
+async def test_tool_response_loss_fallback_cannot_apply_to_new_window(monkeypatch, day_number, action_type):
+    """MCP가 저장 후 응답을 잃어도 같은 행동을 새 window로 옮겨 적용하지 않는다."""
+
     runtime, game, stream = runtime_fixture()
+    game["day_number"] = day_number
     owner, game_id, actor, window = uuid4(), uuid4(), uuid4(), uuid4()
-    runtime._settings = SimpleNamespace(mcp_server_url="http://synthetic.invalid")
     runtime._agent_repository = object()
-    runtime._read.snapshot = lambda *args: {"game": dict(game), "action_window": {"window_id": str(window), "turn_player_id": str(actor)}}
+    active_window = {"window_id": str(window), "turn_player_id": str(actor)}
+    runtime._read.snapshot = lambda *args: {"game": dict(game), "action_window": dict(active_window)}
+    proposal = NormalizedAgentProposal(type=action_type, message="저장한 합성 발언" if action_type == "SPEAK" else None)
     seen = []
+    committed = []
 
     class Context:
         def __init__(self, *args, **kwargs):
@@ -324,28 +336,35 @@ async def test_tool_response_loss_fallback_cannot_apply_to_new_window(monkeypatc
         async def close(self):
             pass
         async def submit_action(self, **kwargs):
+            committed.append(kwargs["action"])
             game["state_version"] = 3
+            active_window["window_id"] = str(uuid4())
             raise RuntimeError("synthetic response loss after commit")
 
     class Orchestrator:
+        _fallback_proposal = staticmethod(AgentOrchestrator._fallback_proposal)
+
         def __init__(self, **kwargs):
             pass
         async def run(self, spec):
-            return AgentRunResult(status="SUCCEEDED", proposal=NormalizedAgentProposal(type="PASS"))
+            return AgentRunResult(status="SUCCEEDED", proposal=proposal)
 
-    def fenced_pass(*args, **kwargs):
-        seen.append(kwargs)
+    def fenced_submission(*args, **kwargs):
+        seen.append((args[3] if len(args) == 4 else None, kwargs))
         assert kwargs["expected_state_version"] != game["state_version"]
+        assert str(kwargs["window_id"]) != active_window["window_id"]
         raise RuntimeError("synthetic stale rejection")
 
-    runtime.agent_pass = fenced_pass
+    runtime.agent_pass = fenced_submission
+    runtime.agent_speak = fenced_submission
     module = "backend.app.services.game.postgres_runtime"
     monkeypatch.setattr(module + ".FastMcpGameContextClient", Context)
     monkeypatch.setattr(module + ".AgentOrchestrator", Orchestrator)
     monkeypatch.setattr(module + ".get_llm_provider", lambda settings: object())
     with pytest.raises(RuntimeError):
         await runtime.run_agent_turn(owner, game_id, actor)
-    assert seen == [{"expected_state_version": 2, "window_id": window}]
+    assert seen == [(proposal.message, {"expected_state_version": 2, "window_id": window})]
+    assert committed == [proposal.model_dump(mode="json")]
     stages = [item["stage"] for item in runtime._activity.recent(owner, game_id)]
     assert stages == ["FALLBACK", "FAILED"]
 
@@ -453,7 +472,6 @@ async def test_recovered_speech_rollback_releases_token_and_replays_same_speak(m
     runtime, game, stream = runtime_fixture()
     owner, game_id, actor, window = uuid4(), uuid4(), uuid4(), uuid4()
     reservation = AgentReservation(uuid4(), game_id, actor, window, "SPEECH", 2, uuid4(), datetime.now(UTC) + timedelta(seconds=15))
-    runtime._settings = SimpleNamespace(mcp_server_url="http://synthetic.invalid")
     released = []
     runtime._agent_repository = SimpleNamespace(release_unapplied_job=lambda item: released.append(item))
     runtime._read.snapshot = lambda *args: {"game": dict(game), "action_window": {"window_id": str(window), "turn_player_id": str(actor)}}
@@ -468,6 +486,8 @@ async def test_recovered_speech_rollback_releases_token_and_replays_same_speak(m
             raise AssertionError("복구 결과에는 새 MCP 선택을 요청하지 않습니다.")
 
     class Orchestrator:
+        _fallback_proposal = staticmethod(AgentOrchestrator._fallback_proposal)
+
         def __init__(self, **kwargs):
             pass
         async def run(self, spec):
@@ -525,15 +545,17 @@ def test_activity_rejects_untrusted_diagnostic_strings(value):
 
 
 @pytest.mark.asyncio
-async def test_model_speech_reaches_tool_and_activity_with_public_basis(monkeypatch):
-    """실제 orchestrator부터 Tool 제출까지 연결해 발언이 PASS로 바뀌지 않음을 검증한다."""
+@pytest.mark.parametrize("day_number", [1, 2])
+@pytest.mark.parametrize("submission_fails", [False, True])
+async def test_model_speech_reaches_tool_and_activity_with_public_basis(monkeypatch, day_number, submission_fails):
+    """정상 생성한 첫날·이후 발언은 MCP 제출 장애에도 원문과 최초 제출 범위를 유지한다."""
 
     from datetime import UTC, datetime, timedelta
     from backend.app.repositories.agent_repository import AgentReservation, CapabilityGrant
     from backend.app.llm_provider.base import LLMResponse
-    runtime, game, _ = runtime_fixture()
+    runtime, game, stream = runtime_fixture()
+    game["day_number"] = day_number
     owner, game_id, actor, window = uuid4(), uuid4(), uuid4(), uuid4()
-    runtime._settings = SimpleNamespace(mcp_server_url="http://synthetic.invalid")
     reservation = AgentReservation(uuid4(), game_id, actor, window, "SPEECH", 2, uuid4(), datetime.now(UTC) + timedelta(seconds=15))
     runtime._agent_repository = SimpleNamespace(
         reserve_job=lambda **kw: reservation,
@@ -542,6 +564,7 @@ async def test_model_speech_reaches_tool_and_activity_with_public_basis(monkeypa
     )
     runtime._read.snapshot = lambda *a: {"game": dict(game), "action_window": {"window_id": str(window), "turn_player_id": str(actor)}}
     submitted = []
+    direct_submissions = []
     class Context:
         def __init__(self, *args, **kwargs):
             pass
@@ -551,6 +574,8 @@ async def test_model_speech_reaches_tool_and_activity_with_public_basis(monkeypa
             return {"data": {}}
         async def submit_action(self, **kwargs):
             submitted.append(kwargs["action"])
+            if submission_fails:
+                raise RuntimeError("합성 MCP 제출 연결 장애")
             return {"result": {"result_state_version": 3}, "replayed": False}
     class Provider:
         async def generate(self, request):
@@ -558,13 +583,27 @@ async def test_model_speech_reaches_tool_and_activity_with_public_basis(monkeypa
                 "type": "SPEAK", "message": "사건 당시 어디에 계셨나요?", "public_rationale": "ASK_FOR_CLARIFICATION"})
     def unexpected_pass(*args, **kwargs):
         pytest.fail("정상 발언에 PASS fallback이 실행되었습니다.")
+    def direct_speak(owner_id, identifier, player, message, **kwargs):
+        assert "APPLIED" not in stream.getvalue()
+        direct_submissions.append((owner_id, identifier, player, message, kwargs))
+        return {"result_state_version": 3}, False
     runtime.agent_pass = unexpected_pass
+    runtime.agent_speak = direct_speak
     module = "backend.app.services.game.postgres_runtime"
     monkeypatch.setattr(module + ".FastMcpGameContextClient", Context)
     monkeypatch.setattr(module + ".get_llm_provider", lambda settings: Provider())
     await runtime.run_agent_turn(owner, game_id, actor)
-    assert submitted[0]["type"] == "SPEAK"
+    assert len(submitted) == 1 and submitted[0]["type"] == "SPEAK"
+    if submission_fails:
+        assert direct_submissions == [(owner, game_id, actor, submitted[0]["message"],
+                                       {"expected_state_version": 2, "window_id": window})]
+    else:
+        assert direct_submissions == []
     latest = runtime._activity.recent(owner, game_id)[-1]
     assert latest["stage"] == "APPLIED" and latest["action"] == "SPEAK"
-    assert latest["decision_basis"] == "ASK_FOR_CLARIFICATION"
-    assert latest["decision_source"] == "MODEL"
+    if submission_fails:
+        assert latest["reason_code"] == "MCP_SUBMISSION_FAILED"
+        assert latest["decision_source"] == "FALLBACK"
+    else:
+        assert latest["decision_basis"] == "ASK_FOR_CLARIFICATION"
+        assert latest["decision_source"] == "MODEL"

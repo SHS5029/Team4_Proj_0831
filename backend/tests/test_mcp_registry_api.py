@@ -620,3 +620,72 @@ def test_turn_projection_preserves_service_candidate_subset_and_public_fields():
     context = build_context(record.state, subject_type="AI_PLAYER", subject_id=ACTOR_ID, scope="turn",
                             window_id=UUID(WINDOW_ID), window=reader.window, now=NOW, valid_target_ids=(OTHER_ID,))
     assert context["data"]["valid_targets"] == [{"player_id": str(OTHER_ID), "display_name": "좌석 3"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runtime_method,http_method,path,payload", [
+    ("snapshot", "GET", f"/api/v1/games/{GAME_ID}", None),
+    ("command", "POST", f"/api/v1/games/{GAME_ID}/commands",
+     {"type": "BEGIN_GAME", "expected_state_version": 1}),
+    ("sync", "GET", f"/api/v1/games/{GAME_ID}/sync?after_state_version=0&after_sequence=0", None),
+    ("create", "POST", "/api/v1/games",
+     {"player_count": 6, "ruleset_version": "mystery-v1", "scenario_version": "scenario-v1"}),
+    ("list_games", "GET", "/api/v1/games", None),
+    ("feedback", "POST", "/api/v1/feedback", {"feedback_type": "GENERAL", "rating": 3}),
+], ids=["snapshot", "command", "sync", "create", "list", "feedback"])
+async def test_public_game_storage_does_not_delay_mcp_context(
+    monkeypatch, runtime_method, http_method, path, payload,
+):
+    """사용자 요청의 저장소 대기 중에도 같은 앱의 MCP 조회가 먼저 완료되어야 한다."""
+
+    import asyncio
+    from threading import Event
+
+    import httpx
+    from fastapi import FastAPI
+
+    from backend.app.routers.game_router import feedback_router, router as game_router
+    from backend.app.routers.mcp_registry_router import router as mcp_router
+
+    entered, release, finished = Event(), Event(), Event()
+
+    def blocked_storage(*args, **kwargs):
+        """실제 DB 없이 대기 경계를 만들며 회귀가 있어도 제한 시간 뒤 스레드를 해제한다."""
+
+        entered.set()
+        try:
+            release.wait(timeout=2)
+            if runtime_method == "list_games":
+                return []
+            result = {"game_id": GAME_ID}
+            return (result, False) if runtime_method in {"create", "command", "feedback"} else result
+        finally:
+            finished.set()
+
+    context = {"scope": "public", "data": {"game": {"game_id": GAME_ID}, "public_events": []}}
+    # 이번 검증은 HTTP 동시성 경계만 다룬다. 실제 projection·DB fixture와 분리해
+    # 사용자 저장소가 대기하는 동안 내부 MCP 응답을 전달할 수 있는지 확인한다.
+    monkeypatch.setattr("backend.app.routers.mcp_registry_router.read_actor_context",
+                        lambda *args, **kwargs: context)
+    application = FastAPI()
+    application.state.game_runtime = SimpleNamespace(
+        _read=object(), _agent_repository=object(), **{runtime_method: blocked_storage},
+    )
+    application.include_router(game_router)
+    application.include_router(feedback_router)
+    application.include_router(mcp_router)
+    headers = {"X-User-Id": USER_ID, "Idempotency-Key": "00000000-0000-4000-8000-000000000004"}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=application),
+                                base_url="http://synthetic.invalid") as client:
+        slow_request = asyncio.create_task(client.request(http_method, path, headers=headers, json=payload))
+        try:
+            assert await asyncio.to_thread(entered.wait, 1), "합성 저장소 호출이 시작되지 않았습니다."
+            response = await asyncio.wait_for(client.get(
+                "/internal/mcp/context", params={"game_id": GAME_ID, "user_id": USER_ID},
+            ), timeout=1)
+            assert response.status_code == 200 and response.json() == context
+            assert not finished.is_set(), "사용자 저장소 대기가 끝날 때까지 MCP 응답이 막혔습니다."
+        finally:
+            release.set()
+            slow_response = await asyncio.wait_for(slow_request, timeout=3)
+        assert slow_response.status_code == (201 if runtime_method in {"create", "feedback"} else 200)

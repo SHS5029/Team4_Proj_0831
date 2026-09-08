@@ -600,7 +600,7 @@ class AgentOrchestrator:
         if spec.job_kind == "SPEECH":
             if AgentOrchestrator._first_day_speech(spec, context):
                 return NormalizedAgentProposal(
-                    type="SPEAK", message="난 앞으로 나온 주장과 그 근거가 맞는지 비교해 볼게.",
+                    type="SPEAK", message=AgentOrchestrator._fallback_speech(spec, context),
                 )
             return NormalizedAgentProposal(type="PASS")
         if spec.job_kind not in {"NIGHT_ACTION", "VOTE"}:
@@ -621,6 +621,49 @@ class AgentOrchestrator:
         )
         proposal_type = "NIGHT_ACTION" if spec.job_kind == "NIGHT_ACTION" else "VOTE"
         return NormalizedAgentProposal(type=proposal_type, target_player_id=target)
+
+    @staticmethod
+    def _fallback_speech(spec: AgentJobSpec, context: dict[str, Any]) -> str:
+        """장애 시 사실을 꾸미지 않는 질문을 고르고 확인한 공개 대사와 중복을 피한다.
+
+        MCP가 일부 scope까지 반환했다면 public만 사용한다. 비공개 역할·관찰이나
+        사용자 문자열을 새 대사에 끼워 넣지 않는다. 이력까지 읽지 못한 장애에서는
+        중복 배제를 보장할 수 없지만 예약별 결정성은 유지해 복구 결과가 흔들리지 않는다.
+        """
+
+        questions = (
+            "각자 직접 확인한 사실과 추측을 나눠서 말해 줄래?",
+            "사건 직전에 마지막으로 확인한 상황부터 설명해 줄래?",
+            "지금 나온 이야기 중 다른 사람도 확인할 수 있는 부분은 뭘까?",
+            "누군가를 의심한다면 가장 중요한 근거 하나를 알려 줄래?",
+            "아직 서로 확인하지 못한 시간대가 있다면 어디일까?",
+            "직접 본 내용과 다른 사람에게 들은 내용을 구분해 줄래?",
+            "지금 판단을 바꿀 만한 정보가 있다면 무엇일까?",
+            "각자 이동한 순서를 시간 흐름에 맞춰 설명해 줄래?",
+            "서로의 설명에서 일치하는 부분부터 확인해 볼까?",
+            "아직 답하지 않은 질문이 있다면 먼저 설명해 줄래?",
+            "의심하는 이유와 그 이유를 확인할 방법을 함께 말해 줄래?",
+            "놓친 사실이 없는지 사건 전후의 행동을 하나씩 확인해 볼까?",
+        )
+        public = context.get("public")
+        data = public.get("data") if isinstance(public, dict) else None
+        events = data.get("public_events") if isinstance(data, dict) else None
+        last_seen = {}
+        for index, event in enumerate(events if isinstance(events, list) else []):
+            if not isinstance(event, dict) or event.get("event_type") != "PLAYER_SPOKE":
+                continue
+            payload = event.get("data")
+            message = payload.get("message") if isinstance(payload, dict) else None
+            if isinstance(message, str):
+                last_seen[" ".join(message.split())] = index
+        # 모든 질문을 소진했더라도 바로 앞 대사를 재사용하지 않고 가장 오래전에
+        # 사용한 질문부터 순환한다. 이력 순서는 검증된 public event 순서를 따른다.
+        oldest = min(last_seen.get(question, -1) for question in questions)
+        candidates = [question for question in questions
+                      if last_seen.get(question, -1) == oldest]
+        return DeterministicRng(str(spec.game_id)).choice(
+            candidates, f"speech-fallback:{spec.window_id}:{spec.player_id}",
+        )
 
     @classmethod
     def _validate_proposal(

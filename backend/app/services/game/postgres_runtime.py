@@ -454,9 +454,9 @@ class PostgresGameRuntime:
                                                             action=proposal.model_dump(mode="json"))
                     receipt, replayed = accepted["result"], accepted["replayed"]
                 except Exception:
-                    # Tool 응답 유실 시 이미 commit한 행동을 반복하지 않는다. 원래
-                    # window/version에 고정한 대체 행동만 시도하므로 새 차례에는 적용될 수 없다.
-                    proposal = fallback_proposal
+                    # 제출 경로 장애만으로 검증된 발언을 기본 대사로 바꾸지 않는다.
+                    # 이미 commit된 응답이 유실돼도 최초 window/version 검증을 유지해
+                    # 같은 원문이 새 차례에 중복 적용되는 것을 막는다.
                     self._record_agent(owner_user_id, game_id, player_id, phase, version, "FALLBACK", proposal.type,
                                        reason_code="MCP_SUBMISSION_FAILED")
                     receipt, replayed = submit_bound_proposal(proposal)

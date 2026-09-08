@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable
 from copy import deepcopy
 from datetime import date, timedelta
-import os
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
@@ -24,6 +24,7 @@ AUDIT_EVENT_LABELS = {
     "전체": None,
     "운영 지표 조회": "ADMIN_GET_METRICS",
     "페르소나 승률 조회": "ADMIN_GET_PERSONA_WIN_RATES",
+    "AI 발언 분석 조회": "ADMIN_GET_SPEECH_ANALYTICS",
     "피드백 목록 조회": "ADMIN_LIST_FEEDBACK",
     "감사 로그 조회": "ADMIN_LIST_AUDIT_LOGS",
 }
@@ -105,6 +106,37 @@ class AdminApiClient:
 
         query = urlencode({k: v for k, v in {"from": from_date, "to": to_date}.items() if v})
         return self._request("/api/v1/admin/persona-win-rates" + (f"?{query}" if query else ""))
+
+    def speech_analytics(
+        self,
+        *,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        game_id: str | UUID | None = None,
+        persona_id: str | None = None,
+        round_number: int | None = None,
+        analysis_version: str | None = None,
+        limit: int = 12,
+    ) -> dict[str, Any]:
+        """공개 AI 발언 분석 집계를 조회하며 벡터는 관리자 화면에 전달하지 않는다."""
+
+        if not 1 <= limit <= 20:
+            raise ValueError("발언 분석 주제 수는 1부터 20까지여야 합니다.")
+        if round_number is not None and not 0 <= int(round_number) <= 5:
+            raise ValueError("발언 분석 round는 0부터 5까지여야 합니다.")
+        params: dict[str, Any] = {"limit": limit}
+        for key, value in {
+            "from": from_date,
+            "to": to_date,
+            "game_id": str(UUID(str(game_id))) if game_id is not None else None,
+            "persona_id": persona_id,
+            "round": round_number,
+            "analysis_version": analysis_version,
+        }.items():
+            if value is not None and value != "":
+                params[key] = value
+        query = urlencode(params)
+        return self._request("/api/v1/admin/speech-analytics?" + query)
 
     def feedback(self, *, feedback_type: str | None = None, rating: int | None = None,
                  cursor: str | None = None, limit: int = 20) -> dict:
@@ -225,6 +257,23 @@ class DemoAdminApiClient:
         """운영 API와 같은 집계 필드로 합성 페르소나 승률을 반환한다."""
 
         return {"data": {"items": deepcopy(DEMO_PREVIEW["personas"])} }
+
+    def speech_analytics(self, **kwargs: Any) -> dict[str, Any]:
+        """화면 확인용 합성 발언 분석을 실제 응답과 같은 구조로 반환한다."""
+
+        limit = int(kwargs.get("limit", 12))
+        if not 1 <= limit <= 20:
+            raise ValueError("가상 발언 분석 주제 수는 1부터 20까지여야 합니다.")
+        payload = deepcopy(DEMO_SPEECH_ANALYTICS)
+        payload["topics"] = payload["topics"][:limit]
+        visible_topic_ids = {topic["topic_id"] for topic in payload["topics"]}
+        for agent in payload["agents"]:
+            agent["top_topics"] = [
+                topic for topic in agent.get("top_topics", [])
+                if topic.get("topic_id") in visible_topic_ids
+            ]
+        payload["topic_count"] = len(DEMO_SPEECH_ANALYTICS["topics"])
+        return {"data": payload}
 
     def feedback(self, *, feedback_type: str | None = None, rating: int | None = None,
                  cursor: str | None = None, limit: int = 20) -> dict:
@@ -455,6 +504,184 @@ def _build_demo_data() -> tuple[list[dict], list[dict], dict, dict]:
 
 
 DEMO_GAMES, DEMO_GAME_DETAILS, DEMO_METRICS, DEMO_PREVIEW = _build_demo_data()
+
+# 관리자 화면에서 임베딩 기반 도식화 흐름을 확인하기 위한 합성 응답이다.
+# 실제 분석 결과·원문·사용자 식별자를 포함하지 않으며 운영 API와 같은 shape만 유지한다.
+DEMO_SPEECH_ANALYTICS = {
+    "analysis_version": "demo-v1",
+    "generated_at": "2026-09-08T02:00:00Z",
+    "coverage": {
+        "eligible_speeches": 248,
+        "analyzed_speeches": 242,
+        "embedding_ready": 238,
+        "claims_ready": 231,
+        "embedding_coverage": 0.9597,
+        "claims_coverage": 0.9315,
+        "sampled_speeches": 238,
+        "sample_limited": False,
+    },
+    "topics": [
+        {
+            "topic_id": "topic-001",
+            "label": "근거 · 투표 · 수상",
+            "speech_count": 86,
+            "agent_count": 5,
+            "agent_breakdown": [
+                {"persona_id": "ACTIVE_DEBATER", "persona_name": "적극적인 토론가", "speech_count": 25, "share": 0.2907},
+                {"persona_id": "CAUTIOUS_ANALYST", "persona_name": "신중한 분석가", "speech_count": 22, "share": 0.2558},
+                {"persona_id": "OBSERVANT_NOTEKEEPER", "persona_name": "관찰형 기록자", "speech_count": 18, "share": 0.2093},
+            ],
+            "stance_breakdown": [
+                {"stance": "SUSPICION", "count": 47, "share": 0.5109},
+                {"stance": "QUESTION", "count": 28, "share": 0.3043},
+                {"stance": "DEFENSE", "count": 17, "share": 0.1848},
+            ],
+            "keywords": [
+                {"term": "근거", "speech_count": 54, "occurrence_count": 69, "agent_count": 5},
+                {"term": "투표", "speech_count": 43, "occurrence_count": 51, "agent_count": 5},
+                {"term": "수상", "speech_count": 37, "occurrence_count": 42, "agent_count": 4},
+                {"term": "행동", "speech_count": 31, "occurrence_count": 36, "agent_count": 5},
+            ],
+            "related_terms": ["근거", "투표", "수상", "행동"],
+            "representative": {
+                "event_id": "40000000-0000-4000-8000-000000000001",
+                "game_id": "00000000-0000-4000-8000-000000000001",
+                "persona_id": "CAUTIOUS_ANALYST",
+                "persona_name": "신중한 분석가",
+                "round": 2,
+                "phase": "DAY_DISCUSSION",
+                "message": "지금까지 나온 근거와 투표 흐름을 함께 보면 이 선택이 가장 수상합니다.",
+                "created_at": "2026-09-08T01:59:00Z",
+            },
+            "evidence": [
+                {
+                    "event_id": "40000000-0000-4000-8000-000000000001",
+                    "game_id": "00000000-0000-4000-8000-000000000001",
+                    "persona_id": "CAUTIOUS_ANALYST",
+                    "persona_name": "신중한 분석가",
+                    "round": 2,
+                    "phase": "DAY_DISCUSSION",
+                    "message": "지금까지 나온 근거와 투표 흐름을 함께 보면 이 선택이 가장 수상합니다.",
+                    "created_at": "2026-09-08T01:59:00Z",
+                },
+                {
+                    "event_id": "40000000-0000-4000-8000-000000000002",
+                    "game_id": "00000000-0000-4000-8000-000000000001",
+                    "persona_id": "ACTIVE_DEBATER",
+                    "persona_name": "적극적인 토론가",
+                    "round": 2,
+                    "phase": "DAY_DISCUSSION",
+                    "message": "투표 전에 행동 근거를 먼저 설명해 주세요. 설명이 없으면 의심할 수밖에 없습니다.",
+                    "created_at": "2026-09-08T02:00:00Z",
+                },
+            ],
+        },
+        {
+            "topic_id": "topic-002",
+            "label": "방어 · 협력",
+            "speech_count": 71,
+            "agent_count": 4,
+            "agent_breakdown": [
+                {"persona_id": "COOPERATIVE_MEDIATOR", "persona_name": "협력형 조정자", "speech_count": 26, "share": 0.3662},
+                {"persona_id": "EMOTIONAL_REACTOR", "persona_name": "감정적인 반응가", "speech_count": 19, "share": 0.2676},
+                {"persona_id": "OBSERVANT_NOTEKEEPER", "persona_name": "관찰형 기록자", "speech_count": 14, "share": 0.1972},
+            ],
+            "stance_breakdown": [
+                {"stance": "DEFENSE", "count": 39, "share": 0.4333},
+                {"stance": "QUESTION", "count": 23, "share": 0.2556},
+                {"stance": "NEUTRAL", "count": 28, "share": 0.3111},
+            ],
+            "keywords": [
+                {"term": "방어", "speech_count": 41, "occurrence_count": 48, "agent_count": 4},
+                {"term": "협력", "speech_count": 34, "occurrence_count": 38, "agent_count": 4},
+                {"term": "설명", "speech_count": 29, "occurrence_count": 35, "agent_count": 4},
+            ],
+            "related_terms": ["방어", "협력", "설명"],
+            "representative": {
+                "event_id": "40000000-0000-4000-8000-000000000003",
+                "game_id": "00000000-0000-4000-8000-000000000002",
+                "persona_id": "COOPERATIVE_MEDIATOR",
+                "persona_name": "협력형 조정자",
+                "round": 1,
+                "phase": "DAY_DISCUSSION",
+                "message": "서로의 설명을 먼저 맞춰 보면 불필요한 오해를 줄일 수 있습니다.",
+                "created_at": "2026-09-08T01:40:00Z",
+            },
+            "evidence": [],
+        },
+        {
+            "topic_id": "topic-003",
+            "label": "조사 · 밤",
+            "speech_count": 43,
+            "agent_count": 3,
+            "agent_breakdown": [
+                {"persona_id": "OBSERVANT_NOTEKEEPER", "persona_name": "관찰형 기록자", "speech_count": 19, "share": 0.4419},
+                {"persona_id": "CAUTIOUS_ANALYST", "persona_name": "신중한 분석가", "speech_count": 13, "share": 0.3023},
+            ],
+            "stance_breakdown": [
+                {"stance": "QUESTION", "count": 31, "share": 0.5741},
+                {"stance": "NEUTRAL", "count": 23, "share": 0.4259},
+            ],
+            "keywords": [
+                {"term": "조사", "speech_count": 25, "occurrence_count": 29, "agent_count": 3},
+                {"term": "밤", "speech_count": 22, "occurrence_count": 25, "agent_count": 3},
+                {"term": "기록", "speech_count": 18, "occurrence_count": 22, "agent_count": 2},
+            ],
+            "related_terms": ["조사", "밤", "기록"],
+            "representative": {
+                "event_id": "40000000-0000-4000-8000-000000000004",
+                "game_id": "00000000-0000-4000-8000-000000000003",
+                "persona_id": "OBSERVANT_NOTEKEEPER",
+                "persona_name": "관찰형 기록자",
+                "round": 3,
+                "phase": "FINAL_DISCUSSION",
+                "message": "지난 밤의 기록과 오늘의 답변이 서로 맞는지 확인하고 싶습니다.",
+                "created_at": "2026-09-08T01:20:00Z",
+            },
+            "evidence": [],
+        },
+    ],
+    "topic_count": 3,
+    "agents": [
+        {
+            "persona_id": "ACTIVE_DEBATER",
+            "persona_name": "적극적인 토론가",
+            "speech_count": 58,
+            "share": 0.2437,
+            "top_topics": [{"topic_id": "topic-001", "label": "근거 · 투표 · 수상", "speech_count": 25}],
+            "top_keywords": [{"term": "투표", "speech_count": 30, "occurrence_count": 37, "agent_count": 1}, {"term": "근거", "speech_count": 26, "occurrence_count": 31, "agent_count": 1}],
+            "stance_breakdown": [{"stance": "SUSPICION", "count": 34, "share": 0.5484}, {"stance": "QUESTION", "count": 28, "share": 0.4516}],
+        },
+        {
+            "persona_id": "CAUTIOUS_ANALYST",
+            "persona_name": "신중한 분석가",
+            "speech_count": 52,
+            "share": 0.2185,
+            "top_topics": [{"topic_id": "topic-001", "label": "근거 · 투표 · 수상", "speech_count": 22}, {"topic_id": "topic-003", "label": "조사 · 밤", "speech_count": 13}],
+            "top_keywords": [{"term": "근거", "speech_count": 34, "occurrence_count": 41, "agent_count": 1}, {"term": "조사", "speech_count": 16, "occurrence_count": 19, "agent_count": 1}],
+            "stance_breakdown": [{"stance": "SUSPICION", "count": 29, "share": 0.5273}, {"stance": "QUESTION", "count": 18, "share": 0.3273}, {"stance": "DEFENSE", "count": 8, "share": 0.1455}],
+        },
+        {
+            "persona_id": "OBSERVANT_NOTEKEEPER",
+            "persona_name": "관찰형 기록자",
+            "speech_count": 49,
+            "share": 0.2059,
+            "top_topics": [{"topic_id": "topic-003", "label": "조사 · 밤", "speech_count": 19}, {"topic_id": "topic-001", "label": "근거 · 투표 · 수상", "speech_count": 18}],
+            "top_keywords": [{"term": "기록", "speech_count": 24, "occurrence_count": 29, "agent_count": 1}, {"term": "조사", "speech_count": 23, "occurrence_count": 27, "agent_count": 1}],
+            "stance_breakdown": [{"stance": "QUESTION", "count": 33, "share": 0.55}, {"stance": "NEUTRAL", "count": 27, "share": 0.45}],
+        },
+    ],
+    "keywords": [
+        {"term": "근거", "speech_count": 134, "occurrence_count": 168, "agent_count": 5},
+        {"term": "투표", "speech_count": 118, "occurrence_count": 139, "agent_count": 5},
+        {"term": "의심", "speech_count": 105, "occurrence_count": 121, "agent_count": 5},
+        {"term": "설명", "speech_count": 98, "occurrence_count": 116, "agent_count": 5},
+        {"term": "조사", "speech_count": 77, "occurrence_count": 89, "agent_count": 4},
+        {"term": "협력", "speech_count": 65, "occurrence_count": 72, "agent_count": 4},
+    ],
+    "method": {"similarity": "cosine", "threshold": 0.78, "projection_dimensions": 96,
+               "sample_limit": 500, "keyword_note": "원문 토큰과 같은 주제의 동시 출현 표현을 표시합니다."},
+}
 
 
 def _send(request: Request, timeout: float) -> tuple[int, bytes]:
