@@ -100,9 +100,9 @@ def test_round_count_uses_only_confirmed_result_rounds() -> None:
 
 
 @pytest.mark.parametrize("timestamp, expected", [
-    ("2026-09-07T01:02:03.123Z", "2026-09-07 10:02:03 KST"),
-    ("2026-09-07T10:02:03+09:00", "2026-09-07 10:02:03 KST"),
-    ("2026-09-07T23:02:03-04:00", "2026-09-08 12:02:03 KST"),
+    ("2026-09-07T01:02:03.123Z", "2026-09-07 10:02:03"),
+    ("2026-09-07T10:02:03+09:00", "2026-09-07 10:02:03"),
+    ("2026-09-07T23:02:03-04:00", "2026-09-08 12:02:03"),
 ])
 def test_finished_timestamp_converts_to_seoul_without_fraction(timestamp, expected):
     assert _display_timestamp(timestamp) == expected
@@ -121,7 +121,7 @@ def test_result_replays_named_choices_investigations_ballots_and_public_speech()
     app = AppTest.from_function(_result_app, args=(_snapshot(),)).run()
     assert not app.exception
     rendered = _text(app)
-    for expected in ("2026-09-07 10:02:03 KST", "마피아 선택: 바다 → 하늘", "조사: 하늘 → 바다",
+    for expected in ("2026-09-07 10:02:03", "마피아 선택: 바다 → 하늘", "조사: 하늘 → 바다",
                      "마피아", "자동 선택", "투표: 하늘 → 바다", "바다: 1표", "공개 발언 기록입니다."):
         assert expected in rendered
     assert PLAYER not in rendered and TARGET not in rendered
@@ -305,4 +305,4 @@ def test_public_chat_distinguishes_speech_and_actions_and_escapes_html():
     assert len(app.get("chat_message")) == 1
     rendered = _text(app)
     assert "&lt;script&gt;합성 발언&lt;/script&gt;" in rendered
-    assert "◈ 행동" in rendered and "발언을 넘겼습니다" in rendered
+    assert "PASS했습니다" in rendered

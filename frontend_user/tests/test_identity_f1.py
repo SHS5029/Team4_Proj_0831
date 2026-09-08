@@ -252,8 +252,8 @@ def test_settings_confirmation_queues_write_without_claiming_local_success(monke
     assert IDENTITY_PERSISTENCE_SESSION_KEY not in state
 
 
-def test_streamlit_disabled_home_uuid_updates_after_scope_replacement():
-    """실제 Streamlit widget state도 UUID 교체 뒤 이전 표시값을 다시 사용하지 않는다."""
+def test_streamlit_home_does_not_expose_uuid_after_scope_replacement():
+    """UUID 교체 전후에도 홈 화면이 내부 식별자 입력을 노출하지 않는다."""
 
     from streamlit.testing.v1 import AppTest
 
@@ -266,16 +266,15 @@ set_identity(
     user_id=UUID(st.session_state.get("synthetic.user_id", "{USER}")),
     persistence="LOCAL",
     session_state=st.session_state,
-)
-render(None)
+    )
+    render(None)
 ''').run()
     assert not tested.exception
-    assert tested.text_input(key="home.user_id").value == str(USER)
-    assert tested.text_input(key="home.user_id").disabled
+    assert not tested.text_input(key="home.user_id")
     tested.session_state["synthetic.user_id"] = str(REPLACEMENT)
     tested.run()
     assert not tested.exception
-    assert tested.text_input(key="home.user_id").value == str(REPLACEMENT)
+    assert not tested.text_input(key="home.user_id")
 
 
 def _run_main_with_identity(tested, identity):
@@ -331,6 +330,13 @@ def _main_with_mock_transport(monkeypatch, *, items=None, snapshots=None):
     return tested, requests
 
 
+def _confirm_home_player_info(tested) -> None:
+    """홈의 게임 진입 제어를 열기 위해 닉네임 적용이 끝난 상태를 만든다."""
+
+    tested.session_state["home.player_name_input"] = "테스터"
+    tested.session_state["home.player_name"] = "테스터"
+
+
 @pytest.mark.parametrize("cache_expired", [False, True])
 @pytest.mark.parametrize("button, page, destination", [
     ("home.new_game", "create", "game.create_submit"),
@@ -346,6 +352,9 @@ def test_actual_main_keeps_home_navigation_after_identity_rerun(
     _run_main_with_identity(tested, _response())
     if cache_expired:
         tested.session_state["home.games_loaded_at"] = 0
+    if button == "home.new_game":
+        _confirm_home_player_info(tested)
+        _run_main_with_identity(tested, _response())
     tested.button(key=button).click()
     _run_main_with_identity(tested, _response())
     assert tested.session_state["navigation.page"] == page
@@ -376,6 +385,8 @@ def test_actual_main_keeps_every_cached_card_click(monkeypatch, cache_expired, s
     items.clear()
     if cache_expired:
         tested.session_state["home.games_loaded_at"] = 0
+    _confirm_home_player_info(tested)
+    _run_main_with_identity(tested, _response())
     tested.button(key=f"home.game.{GAME_ID}").click()
     _run_main_with_identity(tested, _response())
 
@@ -397,6 +408,7 @@ def test_actual_main_refresh_renders_cached_cards_before_one_rerun(monkeypatch):
 
     items = [{"game_id": GAME_ID, "status": "IN_PROGRESS", "scenario_title": "변경 전 사건"}]
     tested, requests = _main_with_mock_transport(monkeypatch, items=items)
+    _confirm_home_player_info(tested)
     items[0] = {**items[0], "status": "SAVED", "scenario_title": "저장 후 사건"}
     tested.session_state["home.games_loaded_at"] = 0
     pending = {"status": "RETRYABLE_UNKNOWN", "player_count": 6, "idempotency_key": GAME_ID}
@@ -430,6 +442,8 @@ def test_actual_main_manual_refresh_failure_waits_for_explicit_retry(monkeypatch
 
     items = [{"game_id": GAME_ID, "status": "IN_PROGRESS", "scenario_title": "변경 전 사건"}]
     tested, requests = _main_with_mock_transport(monkeypatch, items=items)
+    _confirm_home_player_info(tested)
+    _run_main_with_identity(tested, _response())
     failure = Mock(return_value=(503, b'{"error":{"code":"DEPENDENCY_UNAVAILABLE"}}'))
     with monkeypatch.context() as failing:
         failing.setattr("frontend_user.core.api_client._send", failure)
@@ -446,19 +460,19 @@ def test_actual_main_manual_refresh_failure_waits_for_explicit_retry(monkeypatch
     assert "home.games_error" not in tested.session_state
     assert tested.session_state["home.games"] == items
     assert tested.button(key=f"home.game.{GAME_ID}").label == "불러오기  ›"
-    assert tested.text_input(key="home.user_id").value == str(USER)
+    assert not tested.text_input(key="home.user_id")
     assert len(requests) == 2
 
 
-def test_actual_main_refreshes_expired_home_without_losing_identity_controls(monkeypatch):
-    """이동 요청이 없으면 만료 목록을 한 번 갱신하고 홈의 UUID 제어를 유지한다."""
+def test_actual_main_refreshes_expired_home_without_exposing_identity(monkeypatch):
+    """이동 요청이 없으면 만료 목록을 한 번 갱신하고 UUID를 계속 숨긴다."""
 
     tested, requests = _main_with_mock_transport(monkeypatch)
     tested.session_state["home.games_loaded_at"] = 0
     _run_main_with_identity(tested, _response())
     assert len(requests) == 2
     assert tested.session_state["home.games_loading"] is False
-    assert tested.text_input(key="home.user_id").value == str(USER)
+    assert not tested.text_input(key="home.user_id")
     assert tested.button(key="identity.replace_button")
 
 
@@ -485,7 +499,7 @@ def test_actual_main_confirmation_waits_for_ack_then_replaces_uuid(monkeypatch, 
     _run_main_with_identity(tested, _response(scope_version=scope, user_id=str(REPLACEMENT)))
     assert get_identity(tested.session_state.filtered_state) == REPLACEMENT
     assert IDENTITY_WRITE_SESSION_KEY not in tested.session_state
-    assert tested.text_input(key="home.user_id").value == str(REPLACEMENT)
+    assert not tested.text_input(key="home.user_id")
     assert tested.text_input(key="identity.replacement_input").value == ""
     assert [request.headers["X-user-id"] for request in requests] == [str(USER), str(REPLACEMENT)]
 

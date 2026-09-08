@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import re
-from datetime import datetime
 from html import escape
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import streamlit as st
 
 from frontend_user.components.theme import render_application_header, render_header_back_button
+from frontend_user.core.scenario_images import scenario_image_path
+from frontend_user.core.time_display import display_timestamp
 
 RESULT_PAGE_CSS = """
 <style>
@@ -73,6 +72,14 @@ RESULT_PAGE_CSS = """
   margin-top: 1rem; padding: .9rem !important; border: 1px solid var(--result-border) !important;
   border-radius: .75rem !important; background: #fff !important;
 }
+[class*="st-key-result-hero"] img {
+  width: 100%; max-height: 11rem; object-fit: cover; position: relative; z-index: 1;
+  border-radius: .55rem; opacity: .96;
+}
+.result-last-vote {
+  margin-top: .55rem; color: var(--result-ink); font-size: .92rem; font-weight: 750;
+  line-height: 1.35; overflow-wrap: anywhere;
+}
 [class*="st-key-result-night-"],
 [class*="st-key-result-vote-"] {
   margin-bottom: .55rem; padding: .7rem .8rem !important;
@@ -124,7 +131,7 @@ ROLE_PRESENTATION = {
 
 WINNER_PRESENTATION = {
     "CITIZEN": ("시민 진영 승리", "모든 마피아를 찾아냈습니다!"),
-    "MAFIA": ("마피아 진영 승리", "마피아가 마을을 장악했습니다."),
+    "MAFIA": ("마피아 진영 승리", "마피아가 끝까지 정체를 숨겼습니다."),
 }
 
 WIN_REASON_LABELS = {
@@ -176,13 +183,18 @@ def render(snapshot: dict[str, Any]) -> None:
     hero_col, summary_col = st.columns([1.4, 1])
     with hero_col:
         with st.container(key="result-hero", border=True):
+            image_path = scenario_image_path(scenario)
+            if image_path is not None:
+                # 결과 배너에도 동일한 시나리오 이미지를 사용하되, 승패 문구를 가리지
+                # 않도록 이미지와 결과 문구를 분리해 표시한다.
+                st.image(str(image_path), width="stretch")
             st.markdown(f"# {winner_title}")
             st.markdown(f"### {winner_caption}")
             st.text(str(scenario.get("title", "AI 마피아 게임")))
     with summary_col:
         _render_summary(game=game, result=result)
 
-    _render_players(result=result)
+    _render_players(result=result, me=snapshot.get("me"))
     _render_records(result=result, public_events=snapshot.get("public_events"))
     _render_actions(show_feedback=True)
 
@@ -198,7 +210,11 @@ def _render_summary(*, game: dict[str, Any], result: dict[str, Any]) -> None:
         round_col, survivor_col, vote_col = st.columns(3)
         round_col.metric("🚩 진행 라운드", round_count)
         survivor_col.metric("👥 생존자", survivor_count)
-        vote_col.metric("🗳️ 마지막 투표", _last_vote_label(result=result))
+        vote_col.markdown("🗳️ 마지막 투표")
+        vote_col.markdown(
+            f'<div class="result-last-vote">{escape(_last_vote_label(result=result))}</div>',
+            unsafe_allow_html=True,
+        )
         st.divider()
         st.success("이 결과는 서버에서 확인되었습니다.")
         st.caption(f"완료 시간: {_display_timestamp(result.get('finished_at'))}")
@@ -206,11 +222,20 @@ def _render_summary(*, game: dict[str, Any], result: dict[str, Any]) -> None:
         st.caption(f"종료 이유: {reason}")
 
 
-def _render_players(*, result: dict[str, Any]) -> None:
+def _render_players(*, result: dict[str, Any], me: Any = None) -> None:
     """종료 result에 공개된 전체 player 역할과 탈락 상태를 카드로 표시한다."""
 
     players = _objects(result.get("players"))
     st.markdown("## 전체 역할")
+    if isinstance(me, dict):
+        my_role = ROLE_PRESENTATION.get(str(me.get("role")))
+        if my_role:
+            role_name, role_icon, _ = my_role
+            with st.container(key="result-my-role", border=True):
+                st.markdown(
+                    f"**내 역할** · {escape(role_icon)} {escape(role_name)}",
+                    unsafe_allow_html=True,
+                )
     if not players:
         st.info("표시할 최종 플레이어 정보가 없습니다.")
         return
@@ -251,7 +276,7 @@ def _render_records(*, result: dict[str, Any], public_events: Any = None) -> Non
         and isinstance(player.get("display_name"), str) and player["display_name"].strip()
     }
     with st.container(key="result-records", border=True):
-        with st.expander("▣ 게임 기록 보기", expanded=True):
+        with st.expander("▣ 게임 기록 보기", expanded=False):
             night_col, vote_col = st.columns(2)
             with night_col:
                 st.markdown("#### 밤별 주요 기록")
@@ -458,6 +483,9 @@ def _render_actions(*, show_feedback: bool) -> None:
                 type="primary",
                 use_container_width=True,
             ):
+                # 게임이 완료되기 전 조회한 홈 목록을 그대로 사용하면 새 완료 게임이
+                # 보이지 않는다. 피드백 화면을 거쳐 홈으로 가는 경로도 동일하게 갱신한다.
+                _invalidate_home_games()
                 st.session_state["navigation.page"] = "game_feedback"
                 st.rerun()
         else:
@@ -477,14 +505,22 @@ def _render_actions(*, show_feedback: bool) -> None:
                     st.session_state.pop("game.create_pending", None)
                 st.rerun()
         if home_column.button(
-            "⌂ 홈으로",
+            "홈으로",
             key="result.home",
             use_container_width=True,
         ):
+            _invalidate_home_games()
             st.session_state["navigation.page"] = "home"
             st.session_state.pop("game.game_id", None)
             st.rerun()
         st.caption("게임 기록과 결과는 홈의 완료 게임 목록에서 다시 확인할 수 있습니다.")
+
+
+def _invalidate_home_games() -> None:
+    """게임 완료 직후 홈에 오래된 목록이 남지 않도록 목록 캐시만 비운다."""
+
+    for key in ("home.games", "home.games_error", "home.games_loaded_at", "home.games_loading"):
+        st.session_state.pop(key, None)
 
 
 def _render_failed(*, scenario: dict[str, Any]) -> None:
@@ -529,8 +565,7 @@ def _last_vote_label(*, result: dict[str, Any]) -> str:
     votes = _objects(result.get("votes"))
     if votes:
         vote = votes[-1]
-        phase = _phase_label(str(vote.get("phase", "")))
-        return f"라운드 {_record_round(vote.get('round'))} · {phase}"
+        return f"라운드 {_record_round(vote.get('round'))}"
     return "기록 없음"
 
 
@@ -560,17 +595,6 @@ def _objects(value: Any) -> list[dict[str, Any]]:
 
 
 def _display_timestamp(value: Any) -> str:
-    """시간대가 명시된 RFC 3339만 서울 시각으로 표시하고 무효값은 되출력하지 않는다."""
+    """결과 화면에서 사용하는 공통 시각 표시 함수의 호환용 진입점이다."""
 
-    # datetime의 관대한 ISO 파서에 맡기기 전에 시간대·초·offset 범위를 확인한다.
-    # 화면 시각은 표시 전용이며 종료 판정이나 서버 deadline을 변경하지 않는다.
-    if not isinstance(value, str) or not re.fullmatch(
-        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)",
-        value,
-    ):
-        return "확인할 수 없음"
-    try:
-        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return moment.astimezone(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S KST")
-    except (ValueError, OverflowError):
-        return "확인할 수 없음"
+    return display_timestamp(value)

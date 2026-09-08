@@ -11,6 +11,7 @@ import streamlit as st
 
 from frontend_user.components.theme import render_application_header
 from frontend_user.core.api_client import ApiClient, ApiResponseError, ApiUnavailableError
+from frontend_user.core.scenario_images import scenario_image_path
 
 HOME_GAMES_TTL_SECONDS = 30
 
@@ -37,11 +38,13 @@ HOME_CSS = """
 .home-section-title { margin:1.3rem 0 .7rem; color:var(--home-ink); font-size:1.25rem; font-weight:800; }
 .home-player-box { padding:1rem 1.15rem; border:1px solid var(--home-border); border-radius:.65rem; background:#fff; }
 .home-player-title { margin-bottom:.5rem; color:var(--home-ink); font-weight:800; }
-.home-card { min-height:10rem; padding:.75rem; border:1px solid var(--home-border); border-radius:.65rem; background:#fff; box-shadow:0 .35rem 1rem rgba(20,42,81,.05); }
-.home-card-thumb { display:grid; min-height:7.1rem; place-items:center; overflow:hidden; border-radius:.45rem; color:#fff; background:linear-gradient(145deg,#0a1c39,#315a86); font-size:2rem; }
+.home-card { min-height:8.5rem; padding:.55rem; border:1px solid var(--home-border); border-radius:.65rem; background:#fff; box-shadow:0 .35rem 1rem rgba(20,42,81,.05); }
+.home-card-thumb { display:grid; min-height:6.5rem; place-items:center; overflow:hidden; border-radius:.45rem; color:#fff; background:linear-gradient(145deg,#0a1c39,#315a86); font-size:2rem; }
 .home-card-thumb.snow { background:linear-gradient(145deg,#20395d,#8eb2da); }
 .home-card-title { margin-top:.65rem; color:var(--home-ink); font-size:1rem; font-weight:800; }
 .home-card-meta { margin:.25rem 0 .6rem; color:var(--home-muted); font-size:.75rem; }
+[class*="st-key-home-game-card"] { padding:.55rem !important; }
+[class*="st-key-home-game-card"] [data-testid="stImage"] img { height:6.5rem; object-fit:cover; }
 .home-card-badge { display:inline-block; padding:.25rem .45rem; border-radius:.35rem; color:#16864d; background:#e5f8ec; font-size:.72rem; }
 .home-card-badge.saved { color:#c66c08; background:#fff2d9; }
 [data-testid="stButton"] button:not([kind="primary"]), [data-testid="baseButton-secondary"] { color:#1f4fbd !important; background:#f7faff !important; border:1px solid #b8cdf8 !important; }
@@ -76,12 +79,19 @@ def _invalidate_games() -> None:
         st.session_state.pop(key, None)
 
 
+def _player_info_ready() -> bool:
+    """앱 시작 시 생성·확인된 UUID가 있을 때 게임 진입을 허용한다."""
+
+    user_id = st.session_state.get("identity.user_id")
+    return bool(user_id)
+
+
 def render(client: ApiClient) -> None:
     """게임 목록의 loading·empty·error·success 상태를 홈 레이아웃 안에서 표시한다."""
 
     st.markdown(HOME_CSS, unsafe_allow_html=True)
     def render_header_actions() -> None:
-        if st.button("▣ 피드백", key="home.feedback", width="stretch"):
+        if st.button("피드백", key="home.feedback", width="stretch"):
             _invalidate_games()
             st.session_state["navigation.page"] = "feedback"
             st.rerun()
@@ -91,50 +101,97 @@ def render(client: ApiClient) -> None:
         '<section class="home-hero"><div class="home-hero-copy">'
         "<h1>AI 마피아게임</h1>"
         "<p>한 명의 플레이어와 개성 있는 AI들이 펼치는 마피아 게임</p>"
+        "<p>6~9명 · 약 15분</p>"
         '</div><div class="home-hero-art"><span class="home-hero-scene">▰ ▰ ▰ ▰ ▰</span></div></section>',
         unsafe_allow_html=True,
     )
-    if st.button("새 게임 시작  ›", type="primary", key="home.new_game", width="stretch"):
-        _invalidate_games()
-        st.session_state["navigation.page"] = "create"
-        st.rerun()
-    st.caption("6~9명 · 약 15분")
     with st.container(border=True):
         st.markdown('<div class="home-player-title">플레이어 정보</div>', unsafe_allow_html=True)
         st.caption("현재 구조에서는 UUID를 게임 식별자로 사용합니다. 닉네임은 저장하지 않습니다.")
         user_id = st.session_state.get("identity.user_id")
         st.text_input(
-            "게임 식별자 (UUID)", value=str(user_id or ""), disabled=True, key="home.user_id"
+            "게임 식별자 (UUID)",
+            value=str(user_id or ""),
+            disabled=True,
+            key="home.user_id",
         )
-    st.markdown('<div class="home-section-title">게임 불러오기</div>', unsafe_allow_html=True)
-    if st.button("목록 새로고침", key="home.refresh"):
+
+    player_info_ready = _player_info_ready()
+    if st.button(
+        "새 게임 시작  ›",
+        type="primary",
+        key="home.new_game",
+        disabled=not player_info_ready,
+        width="stretch",
+    ):
         _invalidate_games()
+        st.session_state["navigation.page"] = "create"
         st.rerun()
-    if st.session_state.get("home.games_loading"):
-        st.info("게임 목록을 불러오는 중이에요.")
-        return
-    error = st.session_state.get("home.games_error")
-    if isinstance(error, str):
-        st.error("게임 목록을 불러오지 못했어요.")
-        if st.button("다시 시도", key="home.retry"):
-            _invalidate_games()
-            st.rerun()
-        return
-    games = st.session_state.get("home.games", [])
-    if not isinstance(games, list) or not games:
-        st.info("아직 게임이 없어요. 새 게임을 시작해 보세요.")
-        return
-    groups = (
-        ("이어하기", {"IN_PROGRESS", "SAVED"}, "진행 중이거나 저장된 게임이 없습니다."),
-        ("최근 완료 게임", {"COMPLETED"}, "아직 완료한 게임이 없습니다."),
-        ("복구 필요", {"FAILED"}, "복구가 필요한 게임이 없습니다."),
+
+    home_tab, custom_role_tab, rules_tab = st.tabs(
+        ["홈", "직업 생성 커스텀", "게임 규칙 확인"]
     )
-    for title, statuses, empty_message in groups:
-        st.markdown(f'<div class="home-section-title">{title}</div>', unsafe_allow_html=True)
-        _render_group(
-            [game for game in games if isinstance(game, dict) and game.get("status") in statuses][:3],
-            empty_message=empty_message,
-        )
+    with home_tab:
+        # UUID를 확인하기 전에는 다른 게임의 시나리오·진행 상태를 노출하지 않는다.
+        # UUID가 준비된 뒤에만 목록 API cache를 화면에 사용한다.
+        if not player_info_ready:
+            st.info("게임 식별자를 확인한 뒤 게임 목록을 불러올 수 있어요.")
+        else:
+            st.markdown('<div class="home-section-title">게임 불러오기</div>', unsafe_allow_html=True)
+            if st.button("새로고침", key="home.refresh"):
+                _invalidate_games()
+                st.rerun()
+            if st.session_state.get("home.games_loading"):
+                st.info("게임 목록을 불러오는 중이에요.")
+            else:
+                error = st.session_state.get("home.games_error")
+                if isinstance(error, str):
+                    st.error("게임 목록을 불러오지 못했어요.")
+                    if st.button("다시 시도", key="home.retry"):
+                        _invalidate_games()
+                        st.rerun()
+                else:
+                    games = st.session_state.get("home.games", [])
+                    if not isinstance(games, list) or not games:
+                        st.info("아직 게임이 없어요. 새 게임을 시작해 보세요.")
+                    else:
+                        groups = (
+                            ("이어하기", {"IN_PROGRESS", "SAVED"}, "진행 중이거나 저장된 게임이 없습니다."),
+                            ("최근 완료 게임", {"COMPLETED"}, "아직 완료한 게임이 없습니다."),
+                            ("복구 필요", {"FAILED"}, "복구가 필요한 게임이 없습니다."),
+                        )
+                        for title, statuses, empty_message in groups:
+                            st.markdown(
+                                f'<div class="home-section-title">{title}</div>',
+                                unsafe_allow_html=True,
+                            )
+                            _render_group(
+                                [
+                                    game for game in games
+                                    if isinstance(game, dict) and game.get("status") in statuses
+                                ][:3],
+                                empty_message=empty_message,
+                                player_info_ready=player_info_ready,
+                            )
+
+    with custom_role_tab:
+        st.markdown('<div class="home-section-title">직업 생성 커스텀</div>', unsafe_allow_html=True)
+        with st.container(border=True):
+            st.subheader("나만의 직업 설정")
+            st.info("커스텀 직업은 백엔드 연결 후 사용할 수 있어요.")
+            st.caption("새 게임 설정에서 커스텀 직업 사용 여부를 확인할 수 있습니다.")
+
+    with rules_tab:
+        st.markdown('<div class="home-section-title">게임 규칙 확인</div>', unsafe_allow_html=True)
+        with st.container(border=True):
+            st.subheader("AI 마피아 게임 규칙")
+            st.markdown(
+                "- 6~9명의 플레이어로 진행합니다.\n"
+                "- 역할은 게임 시작 시 무작위로 배정됩니다.\n"
+                "- 낮에는 토론과 투표, 밤에는 역할별 행동을 진행합니다.\n"
+                "- 게임은 최대 5번째 밤까지 진행될 수 있습니다.\n"
+                "- 진행 중인 게임은 언제든 저장하고 나중에 이어할 수 있습니다."
+            )
 
 
 def load_games(client: ApiClient) -> None:
@@ -165,7 +222,9 @@ def load_games(client: ApiClient) -> None:
         st.session_state["home.games_loading"] = False
 
 
-def _render_group(games: list[dict[str, Any]], *, empty_message: str) -> None:
+def _render_group(
+    games: list[dict[str, Any]], *, empty_message: str, player_info_ready: bool,
+) -> None:
     """공개 요약 필드만 카드에 표시하고 게임 상태 변경은 Backend에 위임한다."""
 
     if not games:
@@ -176,29 +235,43 @@ def _render_group(games: list[dict[str, Any]], *, empty_message: str) -> None:
         with column:
             status = game.get("status")
             title = escape(str(game.get("scenario_title", "사건 정보 없음")))
-            thumb_class = " snow" if "SNOW" in str(game.get("scenario_id", "")) else ""
-            icon = "❄️" if thumb_class else "📺"
             label = {
                 "IN_PROGRESS": "진행 중", "SAVED": "저장됨",
                 "COMPLETED": "완료", "FAILED": "복구 필요",
             }.get(status, "상태 확인 필요")
+            action_label = {
+                "IN_PROGRESS": "이어하기",
+                "SAVED": "불러오기",
+                "COMPLETED": "결과 보기",
+                "FAILED": "복구하기",
+            }.get(status, "게임 열기")
+            game_id = game.get("game_id")
             badge_class = " saved" if status == "SAVED" else ""
-            st.markdown(
-                f'<article class="home-card"><div class="home-card-thumb{thumb_class}">{icon}</div>'
-                f'<div class="home-card-title">{title}</div>'
-                f'<div class="home-card-meta"><span class="home-card-badge{badge_class}">{label}</span>'
-                f" · Day {escape(str(game.get('day_number', 1)))} · Round {escape(str(game.get('round', 0)))}</div></article>",
-                unsafe_allow_html=True,
-            )
-            action = {
-                "IN_PROGRESS": "계속하기", "SAVED": "불러오기", "COMPLETED": "결과 보기",
-            }.get(status, "불러오기")
+            with st.container(key=f"home-game-card.{game_id}", border=True):
+                image_path = scenario_image_path(game)
+                if image_path is not None:
+                    st.image(str(image_path), width="stretch")
+                else:
+                    st.markdown('<div class="home-card-thumb">📺</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="home-card-title">{title}</div>', unsafe_allow_html=True)
+                st.markdown(
+                    f'<div class="home-card-meta"><span class="home-card-badge{badge_class}">{label}</span>'
+                    f" · Day {escape(str(game.get('day_number', 1)))} · Round {escape(str(game.get('round', 0)))}</div>",
+                    unsafe_allow_html=True,
+                )
             if st.button(
-                action + "  ›", key=f"home.game.{game.get('game_id')}", width="stretch"
-            ):
-                game_id = game.get("game_id")
-                if isinstance(game_id, str):
-                    _invalidate_games()
-                    st.session_state["game.game_id"] = game_id
-                    st.session_state["navigation.page"] = "game"
-                    st.rerun()
+                action_label + "  ›",
+                key=f"home.card.{game_id}",
+                disabled=not player_info_ready,
+                width="stretch",
+            ) and isinstance(game_id, str):
+                _open_game(game_id)
+
+
+def _open_game(game_id: str) -> None:
+    """카드 이미지와 하단 CTA가 공유하는 기존 게임 진입 이벤트를 실행한다."""
+
+    _invalidate_games()
+    st.session_state["game.game_id"] = game_id
+    st.session_state["navigation.page"] = "game"
+    st.rerun()

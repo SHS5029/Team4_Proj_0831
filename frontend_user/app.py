@@ -138,7 +138,7 @@ def main() -> None:
                     and pending_delete.get("game_id") == game_id):
                 finish_deleted_game()
             st.error("게임 상태를 불러오지 못했어요.")
-            if st.button("홈으로 이동", key="game.load_home"):
+            if st.button("홈으로", key="game.load_home"):
                 st.session_state["navigation.page"] = "home"
                 st.session_state.pop("game.game_id", None)
                 st.rerun()
