@@ -44,8 +44,8 @@ def mount_sse(*, backend_url: str, game_id: str, user_id: UUID, last_sequence: i
                   "backend_url": backend_url, "game_id": game_id, "user_id": str(user_id),
                   "last_sequence": last_sequence, "after_sequence": last_sequence,
                   "after_state_version": after_state_version, "policy": asdict(DEFAULT_SYNC_POLICY)},
-            # SSE heartbeat마다 rerun하지 않고 별도 tick을 foreground 2초로 제한한다.
-            # 게임 페이지는 tick 변화 때 snapshot의 agent_activity를 함께 갱신한다.
+            # component는 공개 기록 fragment 안에서만 실행한다. 2초 진행 tick도
+            # 해당 fragment만 갱신하므로 전체 앱과 작성 중인 입력은 재실행하지 않는다.
             default={"envelope": None, "status_tick": None},
             on_envelope_change=lambda: None,
             on_status_tick_change=lambda: None,

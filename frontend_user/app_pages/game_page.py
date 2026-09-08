@@ -10,7 +10,11 @@ from uuid import UUID, uuid4
 
 import streamlit as st
 
+from frontend_user.components import vote_insights
 from frontend_user.components.action_panel import render as render_action_panel
+from frontend_user.components.action_panel import (
+    maintain_speech_queue, prefer_current_snapshot, speech_queue_busy,
+)
 from frontend_user.components.sync_bridge import apply_sync, mount_sse
 from frontend_user.components.theme import render_application_header, render_header_back_button
 from frontend_user.core.api_client import ApiResponseError, ApiUnavailableError
@@ -223,73 +227,7 @@ def render(snapshot: dict[str, Any]) -> None:
     game = snapshot.get("game", {})
     game_id = game.get("game_id")
     _process_shell_pending(client=client, game_id=str(game_id))
-    envelope = mount_sse(
-        backend_url=client.config.api_url,
-        game_id=str(game.get("game_id")),
-        user_id=client.user_id,
-        last_sequence=int(game.get("last_sequence", 0)),
-        after_state_version=int(game.get("state_version", 0)),
-    )
-    tick = st.session_state.get("game.sync_tick", 0)
-    if envelope is None and (not tick or st.session_state.get("game.sync_component_failed")):
-        try:
-            envelope = client.get_sync(
-                game_id=str(game.get("game_id")),
-                after_state_version=int(game.get("state_version", 0)),
-                after_sequence=int(game.get("last_sequence", 0)),
-            )
-        except Exception:
-            envelope = None
-    try:
-        snapshot = apply_sync(snapshot=snapshot, envelope=envelope)
-        tick = st.session_state.get("game.sync_tick")
-        tick_changed = tick is not None and tick != st.session_state.get("game.activity_tick")
-        if _has_sync_updates(envelope) or tick_changed:
-            # SSE delta는 공통 공개 operation 중심이므로 사용자별 legal_actions와
-            # valid_targets가 비어 있을 수 있고, sync SNAPSHOT에는 메모리의 AI
-            # 기록이 없을 수 있다. 실제 수신 때 같은 사용자·게임의 GET으로 보강하며
-            # 재시작 전 run의 기록을 복사하지 않고 최신 응답의 빈 배열도 그대로 따른다.
-            try:
-                response = client.get_game(str(game.get("game_id")))
-                refreshed = response.get("data") if isinstance(response.get("data"), dict) else response
-                if isinstance(refreshed, dict) and isinstance(refreshed.get("game"), dict):
-                    refreshed_game = refreshed["game"]
-                    if (refreshed_game.get("game_id") != game_id
-                            or refreshed.get("me", {}).get("player_id") != snapshot.get("me", {}).get("player_id")
-                            or any(type(refreshed_game.get(key)) is not int
-                                   or refreshed_game[key] < snapshot["game"][key]
-                                   for key in ("state_version", "last_sequence"))):
-                        raise ValueError("INVALID_RESPONSE")
-                    snapshot = refreshed
-                    st.session_state["game.activity_tick"] = tick
-            except Exception:
-                # sync는 이미 원자적으로 반영했으므로 재조회 일시 실패 시에도
-                # 화면을 비우지 않고 다음 event 또는 polling에서 다시 시도한다.
-                pass
-    except SyncEnvelopeError:
-        # sequence/version gap은 기존 화면을 계속 신뢰하면 안 되므로, 부분 적용
-        # 없이 Backend의 전체 snapshot을 다시 읽는다. 재조회도 실패한 경우에만
-        # STALE로 전환해 사용자가 명시적으로 복구를 시도할 수 있게 한다.
-        try:
-            response = client.get_game(str(game.get("game_id")))
-            refreshed = response.get("data") if isinstance(response.get("data"), dict) else response
-            if not isinstance(refreshed, dict) or not isinstance(refreshed.get("game"), dict):
-                raise ValueError("INVALID_RESPONSE")
-            snapshot = refreshed
-            st.session_state["game.latest_snapshot"] = snapshot
-            st.session_state["game.sync_status"] = "POLLING"
-        except Exception:
-            st.session_state["game.sync_status"] = "STALE"
-            st.warning("게임 상태를 다시 확인하고 있어요.")
-    else:
-        # SSE·polling으로 반영한 authoritative snapshot을 다음 Streamlit rerun에도
-        # 보존한다. 이 값을 저장하지 않으면 component 상태만 갱신되고, 다른 화면
-        # 전환이나 재렌더링에서 이전 phase·action window가 다시 사용될 수 있다.
-        st.session_state["game.latest_snapshot"] = snapshot
-        st.session_state.setdefault("game.sync_status", "POLLING")
-
     game = snapshot.get("game", {})
-    scenario = snapshot.get("scenario", {})
     me = own_private_view(snapshot)
     connection = st.session_state.get("game.sync_status", "POLLING")
     connection_label = {
@@ -346,8 +284,7 @@ def render(snapshot: dict[str, Any]) -> None:
         with left:
             _render_players(snapshot=snapshot, me=me, phase=str(phase))
         with center:
-            _render_agent_activity(snapshot=snapshot)
-            _render_timeline(snapshot=snapshot, scenario=scenario, phase=str(phase), day_number=day_number)
+            _render_live_updates(client=client, snapshot=snapshot)
         with right:
             _render_private_panel(snapshot=snapshot, me=me)
         return
@@ -366,13 +303,7 @@ def render(snapshot: dict[str, Any]) -> None:
     with left:
         _render_players(snapshot=snapshot, me=me, phase=str(phase))
     with center:
-        _render_agent_activity(snapshot=snapshot)
-        _render_timeline(
-            snapshot=snapshot,
-            scenario=scenario,
-            phase=str(phase),
-            day_number=day_number,
-        )
+        _render_live_updates(client=client, snapshot=snapshot)
         if not action_in_right_panel:
             # 낮 토론의 발언 입력만 공개 대화 바로 아래에 두어, 맥락을 보며
             # 작성할 수 있게 한다. 밤 행동·투표는 우측 독립 panel로 분리한다.
@@ -394,6 +325,155 @@ def render(snapshot: dict[str, Any]) -> None:
             _render_private_panel(snapshot=snapshot, me=me)
 
     # 사망자는 위의 전용 분기에서 반환되므로 이 아래에는 생존자 입력만 존재한다.
+
+
+def _sync_snapshot(*, client: Any, snapshot: dict[str, Any]) -> dict[str, Any]:
+    """읽기 fragment에서만 sync를 적용하고 필요한 GET을 한 번 수행한다."""
+
+    game = snapshot.get("game", {})
+    game_id = game.get("game_id")
+    reserved = speech_queue_busy(game_id)
+    envelope = mount_sse(
+        backend_url=client.config.api_url,
+        game_id=str(game.get("game_id")),
+        user_id=client.user_id,
+        last_sequence=int(game.get("last_sequence", 0)),
+        after_state_version=int(game.get("state_version", 0)),
+    )
+    if envelope is None and st.session_state.get("game.sync_component_failed") and not reserved:
+        try:
+            envelope = client.get_sync(
+                game_id=str(game.get("game_id")),
+                after_state_version=int(game.get("state_version", 0)),
+                after_sequence=int(game.get("last_sequence", 0)),
+            )
+        except Exception:
+            envelope = None
+    try:
+        snapshot = apply_sync(snapshot=snapshot, envelope=envelope)
+        tick = st.session_state.get("game.sync_tick")
+        tick_changed = bool(tick) and tick != st.session_state.get("game.activity_tick")
+        if not reserved and (_has_sync_updates(envelope) or tick_changed):
+            # SSE delta는 공통 공개 operation 중심이므로 사용자별 legal_actions와
+            # valid_targets가 비어 있을 수 있고, sync SNAPSHOT에는 메모리의 AI
+            # 기록이 없을 수 있다. 실제 수신 때 같은 사용자·게임의 GET으로 보강하며
+            # 재시작 전 run의 기록을 복사하지 않고 최신 응답의 빈 배열도 그대로 따른다.
+            try:
+                response = client.get_game(str(game.get("game_id")))
+                refreshed = response.get("data") if isinstance(response.get("data"), dict) else response
+                if isinstance(refreshed, dict) and isinstance(refreshed.get("game"), dict):
+                    refreshed_game = refreshed["game"]
+                    if (refreshed_game.get("game_id") != game_id
+                            or refreshed.get("me", {}).get("player_id") != snapshot.get("me", {}).get("player_id")
+                            or any(type(refreshed_game.get(key)) is not int
+                                   or refreshed_game[key] < snapshot["game"][key]
+                                   for key in ("state_version", "last_sequence"))):
+                        raise ValueError("INVALID_RESPONSE")
+                    snapshot = refreshed
+                    st.session_state["game.activity_tick"] = tick
+            except Exception:
+                # sync는 이미 원자적으로 반영했으므로 재조회 일시 실패 시에도
+                # 화면을 비우지 않고 다음 event 또는 polling에서 다시 시도한다.
+                pass
+    except SyncEnvelopeError:
+        # sequence/version gap은 기존 화면을 계속 신뢰하면 안 되므로, 부분 적용
+        # 없이 Backend의 전체 snapshot을 다시 읽는다. 재조회도 실패한 경우에만
+        # STALE로 전환해 사용자가 명시적으로 복구를 시도할 수 있게 한다.
+        if reserved:
+            # 대기열의 최신 상태 조회가 끝날 때까지 기존 화면을 유지한다. 입력 callback
+            # 앞에 동기 복구 GET을 끼우지 않으며 다음 sync에서 동일 gap을 복구한다.
+            return st.session_state.get("game.latest_snapshot", snapshot)
+        try:
+            response = client.get_game(str(game.get("game_id")))
+            refreshed = response.get("data") if isinstance(response.get("data"), dict) else response
+            if not isinstance(refreshed, dict) or not isinstance(refreshed.get("game"), dict):
+                raise ValueError("INVALID_RESPONSE")
+            snapshot = prefer_current_snapshot(snapshot=refreshed, game_id=game_id, user_id=client.user_id)
+            st.session_state["game.latest_snapshot"] = snapshot
+            st.session_state["game.sync_status"] = "POLLING"
+        except Exception:
+            st.session_state["game.sync_status"] = "STALE"
+            st.warning("게임 상태를 다시 확인하고 있어요.")
+    else:
+        # SSE·polling으로 반영한 authoritative snapshot을 다음 Streamlit rerun에도
+        # 보존한다. 이 값을 저장하지 않으면 component 상태만 갱신되고, 다른 화면
+        # 전환이나 재렌더링에서 이전 phase·action window가 다시 사용될 수 있다.
+        snapshot = prefer_current_snapshot(snapshot=snapshot, game_id=game_id, user_id=client.user_id)
+        st.session_state["game.latest_snapshot"] = snapshot
+        st.session_state.setdefault("game.sync_status", "POLLING")
+
+    return snapshot
+
+
+def _shell_projection(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """공개 발언·진행 기록과 시계 변화는 입력을 다시 그릴 이유에서 제외한다.
+
+    자유 토론의 window는 AI 예약 단위다. 같은 토론 deadline 안에서는 사용자
+    입력이 유지되지만, 권한·후보·본인 상태·단계 변화는 즉시 전체 화면에 반영한다.
+    """
+
+    game = snapshot.get("game", {})
+    window = snapshot.get("action_window") or {}
+    window = {key: value for key, value in window.items()
+              if key not in {"remaining_ms", "server_time"}}
+    timed_discussion = game.get("phase") in {"DAY_DISCUSSION", "FINAL_DISCUSSION"} and window.get("deadline_at")
+    if timed_discussion:
+        window = {key: value for key, value in window.items()
+                  if key not in {"window_id", "turn_player_id", "opened_state_version", "valid_targets", "has_submitted"}}
+        if "legal_actions" in window:
+            window["legal_actions"] = [action for action in window["legal_actions"] if action != "SPEAK"]
+    legal = snapshot.get("legal_actions")
+    if timed_discussion and isinstance(legal, list):
+        # 7회 제한에 따른 SPEAK/has_submitted 변경은 예약 입력 구조를 바꾸지 않는다.
+        # 전송 시점의 허가 검사는 대기열이 수행하고 시계 fragment가 대기 상태를 표시한다.
+        legal = [action for action in legal if action != "SPEAK"]
+    return {
+        "game": {key: value for key, value in game.items()
+                 if key not in {"state_version", "last_sequence", "updated_at"}},
+        "window": window,
+        **{key: snapshot.get(key) for key in
+           ("me", "players", "private_events", "result", "scenario")},
+        "legal_actions": legal,
+    }
+
+
+@st.fragment(run_every=2)
+def _render_live_updates(*, client: Any, snapshot: dict[str, Any]) -> None:
+    """자동 조회와 공개 기록을 입력 위젯 밖에서 갱신해 작성 중인 DOM을 보존한다."""
+
+    latest = st.session_state.get("game.latest_snapshot", snapshot)
+    if latest.get("game", {}).get("game_id") != snapshot.get("game", {}).get("game_id"):
+        return
+    pending = st.session_state.get("game.command_pending")
+    sending = (isinstance(pending, dict)
+               and pending.get("game_id") == snapshot.get("game", {}).get("game_id")
+               and pending.get("status") in {"PENDING_TO_RENDER", "IN_FLIGHT"})
+    reserved = speech_queue_busy(snapshot.get("game", {}).get("game_id"))
+    connection = (st.session_state.get("game.sync_status"), st.session_state.get("game.sync_hidden"))
+    # Enter/PASS callback이 보존한 요청을 action panel이 먼저 처리하게 한다.
+    # 이 짧은 제출 경계에서는 sync·분석 GET과 화면 전환이 trigger를 앞서지 않는다.
+    # 제출 중에는 SSE component를 그리지 않아도 그 자리 자체는 유지한다. 이 자리가
+    # 사라지면 아래 타임라인의 delta 경로가 이동해 중단된 rerun의 회색 복사본이 남는다.
+    with st.container(key="game-sync-region"):
+        if not sending:
+            latest = _sync_snapshot(client=client, snapshot=latest)
+    changed_connection = connection != (
+        st.session_state.get("game.sync_status"), st.session_state.get("game.sync_hidden")
+    )
+    if not sending and (_shell_projection(latest) != _shell_projection(snapshot) or changed_connection):
+        # GET은 이 fragment에서 끝났다. 입력 구조 변경에 필요한 다음 전체 실행은
+        # 방금 검증한 snapshot을 사용해 네트워크 대기 없이 화면만 전환한다.
+        st.session_state["game.sync_render_snapshot"] = True
+        st.rerun()
+    game = latest.get("game", {})
+    _render_agent_activity(snapshot=latest)
+    if own_private_view(latest).get("alive") is False:
+        _render_spectator_timeline(snapshot=latest)
+    else:
+        _render_timeline(snapshot=latest, scenario=latest.get("scenario", {}),
+                         phase=str(game.get("phase", "")), day_number=game.get("day_number", 1))
+    if not sending and not reserved:
+        vote_insights.render(client=client, game_id=str(game.get("game_id")), snapshot=latest)
 
 
 def _render_visible_action_panel(**kwargs: Any) -> None:
@@ -473,8 +553,7 @@ def _render_spectator_layout(
         with st.container(key="spectator-notice", border=True):
             st.markdown("### ℹ️ 플레이어가 사망하여 관전 모드로 전환되었습니다.")
             st.caption("게임은 AI 플레이어끼리 계속 진행되며 공개 범위의 정보만 표시됩니다.")
-        _render_spectator_timeline(snapshot=snapshot)
-        _render_agent_activity(snapshot=snapshot)
+        _render_live_updates(client=client, snapshot=snapshot)
         _render_spectator_controls(client=client, game_id=game_id, snapshot=snapshot)
     with right:
         _render_spectator_private(snapshot=snapshot, me=me)
@@ -1409,6 +1488,9 @@ def _queue_shell_command(*, game_id: str, snapshot: dict[str, Any], command_type
         "expected_state_version": snapshot["game"]["state_version"],
         "idempotency_key": str(uuid4()),
     }
+    if command_type == "SAVE_AND_EXIT":
+        maintain_speech_queue(user_id=getattr(st.session_state.get("game.client"), "user_id", None),
+                              page="game", game_id=game_id)
 
 
 def _process_shell_pending(*, client: Any, game_id: str) -> None:

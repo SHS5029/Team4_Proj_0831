@@ -585,6 +585,22 @@ phase와 action panel이 중간 상태로 보이지 않게 한다.
 Streamlit rerun은 transport reconnect를 일으킬 수 있으므로 화면 widget state와
 authoritative game state를 분리한다. callback 안에서 domain phase를 직접 바꾸지 않는다.
 
+자동 sync·AI 진행·공개 기록 갱신은 채팅 입력 영역을 로딩 상태로 만들지 않는다.
+countdown 표시는 입력과 분리해 갱신하며, 같은 자유 토론 안에서 AI 예약 window가
+교체돼도 작성 중인 초안·선택·포커스를 유지한다. 실제 단계·행동 허용·생존 상태의
+변경은 서버 snapshot에 맞춰 입력을 갱신한다. 발언과 PASS 제출에는 같은 게임의
+최신 검증 상태를 사용하고, 결과 불명 요청의 기존 body와 idempotency key는 보존한다.
+Shift+Enter로 작성한 줄바꿈은 전송 전에 공백으로 정리한다. 자유 토론의 연속 발언은
+Front 세션의 대기열에 입력 순서대로 예약하며, 전송 중에도 다음 발언을 입력할 수 있다.
+예약 내용과 대기 상태를 표시한다. 동일 토론 범위에서 확정된 버전/창 충돌은 최신
+상태로 자동 재시도하고, 발언 빈도 제한은 예약 순서를 유지하며 기다린다. 응답 불명
+요청은 최초 body/key로만 재확인한다. 입력 형식 오류는 원문을 보존해 수정할 수 있다.
+빈도 제한으로 `SPEAK`가 없어지고 `has_submitted=true`가 되어도 같은 자유 토론의
+예약 입력·초안·포커스는 유지한다. 실제 전송은 `SPEAK`가 다시 허용된 뒤에만 수행한다.
+토론 종료·사망·저장·이탈·사용자 변경 시 아직 보내지 않은 예약은 취소한다. 이미
+서버로 보낸 요청을 취소한 것으로 표시하지 않으며 다른 토론으로 예약을 넘기지 않는다.
+예약은 현재 Front 세션에만 유지되며 새로고침·재접속 후 영구 복원하지 않는다.
+
 ## 18. 접근성·반응형
 
 - 모든 입력은 보이는 label과 programmatic label을 가진다.
@@ -669,7 +685,7 @@ authoritative game state를 분리한다. callback 안에서 domain phase를 직
 - 공개 AI 발언 기준이며 사실 판정이 아니라는 안내, 범위, 분석 단계별 완료/전체/실패 수,
   부분 결과 표시를 항상 제공한다. 빈 READY와 PENDING/PARTIAL/UNAVAILABLE을 구분한다.
   READY/UNAVAILABLE/실패는 같은 창·범위에서 반복 조회하지 않고 PENDING/PARTIAL만
-  기존 전체 화면 rerun 주기에 재조회한다. 매초 countdown fragment에서는 조회하지 않는다.
+  공개 기록 갱신 fragment에서 재조회한다. 매초 countdown fragment에서는 조회하지 않는다.
   보조 조회 timeout은 최대 0.75초로 제한한다.
 - 현재 timeline에는 event별 deep link가 없으므로 원문 expander의 event ID·시점·sequence와
   공개 발언 전문을 최소 대체로 제공한다. 이름은 공개 player 목록으로 매핑하고
@@ -686,7 +702,7 @@ authoritative game state를 분리한다. callback 안에서 domain phase를 직
 핵심 주장과 원문을 안전한 st.text로 표시하고 최신 20발언 제한과 생략 수를 안내한다.
 별도 모델의 전체 대화 종합문으로 표현하지 않는다. coverage와 부분 결과를 함께 표시한다.
 토론 중에는 지목 순위·후보 선택을 표시하지 않고 투표 화면에서는 기존 카드를 유지한다.
-토론 응답은 READY라도 기존 전체 화면 rerun마다 다시 조회한다. 실패도 다음 rerun에
+토론 응답은 READY라도 공개 기록 갱신 fragment에서 다시 조회한다. 실패도 다음 갱신에
 재시도하며 초당 countdown fragment에서는 조회하지 않는다. 투표는 고정 cutoff의
 완료 캐시를 재사용한다. 저장·일시정지 중에는 조회하지 않고 재개 후 이어간다.
 

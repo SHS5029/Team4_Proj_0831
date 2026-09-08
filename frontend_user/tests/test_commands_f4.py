@@ -91,7 +91,7 @@ def _action_snapshot(phase="DAY_VOTE"):
     """실제 시각·DB 없이 후보와 서버 마감 계약을 검증하는 합성 snapshot을 만든다."""
 
     snapshot = _snapshot()
-    snapshot["game"].update(game_id=GAME, status="IN_PROGRESS", phase=phase)
+    snapshot["game"].update(game_id=GAME, status="IN_PROGRESS", phase=phase, last_sequence=42)
     snapshot["me"]["role"] = "DOCTOR"
     snapshot["players"] = [
         {"player_id": HUMAN, "display_name": "나", "alive": True},
@@ -247,6 +247,8 @@ def _action_app(snapshot, client):
     from frontend_user.components import action_panel
 
     current = st.session_state.setdefault("test.snapshot", snapshot)
+    st.session_state["game.client"] = client
+    st.session_state["game.latest_snapshot"] = current
     # AppTest는 v2 component registry를 초기화하지 않으므로 브라우저 focus bridge만
     # 대체한다. 행동 패널·countdown·live region은 실제 Python 렌더 경로를 사용한다.
     with patch.object(action_panel, "ACTION_ATTENTION_COMPONENT"):
@@ -434,22 +436,28 @@ def test_fragment_schedules_only_the_active_clock_and_never_reprocesses_pending(
         snapshot["action_window"].update(deadline_at=None, remaining_ms=None)
     elif mode == "expired":
         snapshot["action_window"]["remaining_ms"] = 0
-    pending, panel = Mock(), Mock()
+    pending = Mock()
+    panel = Mock(side_effect=lambda **kwargs: action_panel._render_clock(**kwargs))
+    status = Mock()
     fragment = Mock(side_effect=lambda *, run_every: lambda function: function)
     monkeypatch.setattr(action_panel.st, "fragment", fragment)
     monkeypatch.setattr(action_panel.st, "markdown", Mock())
     monkeypatch.setattr(action_panel, "_process_pending", pending)
     monkeypatch.setattr(action_panel, "_render_vote_action", panel)
+    monkeypatch.setattr(action_panel, "_render_action_status", status)
+    monkeypatch.setattr(action_panel, "_mount_action_attention", Mock())
+    monkeypatch.setattr(action_panel.st, "columns", Mock(return_value=[Mock(), Mock()]))
     client = Mock()
     action_panel.render(client=client, game_id=GAME, snapshot=snapshot)
     fragment.assert_called_once_with(run_every=interval)
     pending.assert_called_once()
     if mode == "active":
         monkeypatch.setattr(action_panel, "monotonic", lambda: 1001.0)
-        action_panel._render_actions(game_id=GAME, snapshot=snapshot)
-        assert panel.call_args.kwargs["snapshot"]["action_window"]["remaining_ms"] == 29000
+        action_panel._render_clock_tick(game_id=GAME, snapshot=snapshot, running=True)
+        assert status.call_args.kwargs["snapshot"]["action_window"]["remaining_ms"] == 29000
         assert snapshot["action_window"]["remaining_ms"] == 30000
         pending.assert_called_once()
+        panel.assert_called_once()
     assert client.mock_calls == []
 
 
@@ -502,23 +510,464 @@ def test_free_discussion_uses_same_draft_widget_after_another_player_speaks():
 
 
 def test_free_discussion_chat_input_submits_message():
-    """채팅 입력의 Enter 제출 이벤트가 기존 SPEAK command 경로를 사용하는지 확인한다."""
+    """채팅 Enter가 비동기 큐에 정규화한 발언을 예약하고 정확히 한 번 전송한다."""
 
-    snapshot = _action_snapshot("DAY_DISCUSSION")
-    snapshot["legal_actions"] = ["SPEAK", "PASS"]
-    snapshot["action_window"].update(
-        kind="SPEECH",
-        deadline_at="2026-09-07T00:01:45Z",
-        remaining_ms=105_000,
-        legal_actions=snapshot["legal_actions"],
-    )
-    client = Mock()
-    client.submit_command.return_value = {"data": {"command_type": "SPEAK"}}
-    client.get_game.return_value = snapshot
+    snapshot = _speech_queue_snapshot()
+    client = _SpeechQueueClient()
     app = AppTest.from_function(_action_app, args=(snapshot, client)).run()
 
     app.chat_input[0].set_value("  작성 중인 의견입니다.  ").run()
 
     assert not app.exception
-    assert client.submit_command.call_count == 1
-    assert client.submit_command.call_args.kwargs["command"]["message"] == "작성 중인 의견입니다."
+    queue = app.session_state["game.speech_queue"]
+    _speech_queue_drive(queue, lambda: queue.view()["completed"] == 1)
+    assert len(client.calls) == 1
+    assert client.calls[0][0]["message"] == "작성 중인 의견입니다."
+
+
+def _speech_queue_snapshot(version=12, *, window_id=None):
+    """서버 시각만으로 마감을 계산할 수 있는 자유 토론 합성 상태를 만든다."""
+
+    snapshot = _action_snapshot("DAY_DISCUSSION")
+    snapshot["game"].update(state_version=version, last_sequence=version + 30,
+                            round=0, day_number=1)
+    snapshot["legal_actions"] = ["SPEAK", "PASS"]
+    snapshot["action_window"].update(
+        kind="SPEECH", window_id=window_id or TARGET,
+        deadline_at="2026-09-07T00:01:45Z", remaining_ms=105_000,
+        legal_actions=["SPEAK", "PASS"],
+    )
+    return snapshot
+
+
+class _SpeechQueueClient:
+    """외부 API 없이 호출 순서·멱등 key·동시 전송 수를 관찰하는 fake client다."""
+
+    user_id = HUMAN
+
+    def __init__(self):
+        self.snapshot = _speech_queue_snapshot()
+        self.calls = []
+        self.get_calls = 0
+        self.active = 0
+        self.max_active = 0
+        self.on_get = None
+        self.on_post = None
+
+    def get_game(self, game_id):
+        self.get_calls += 1
+        if self.on_get:
+            return self.on_get(self.get_calls)
+        return deepcopy(self.snapshot)
+
+    def submit_command(self, *, game_id, command, idempotency_key):
+        self.calls.append((deepcopy(command), idempotency_key))
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            if self.on_post:
+                return self.on_post(command, idempotency_key, len(self.calls))
+            return self.receipt(command, idempotency_key)
+        finally:
+            self.active -= 1
+
+    def receipt(self, command, key):
+        self.snapshot = _speech_queue_snapshot(command["expected_state_version"] + 1)
+        return {"data": {"command_id": key, "command_type": "SPEAK",
+                         "accepted_state_version": command["expected_state_version"],
+                         "result_state_version": command["expected_state_version"] + 1,
+                         "sync_url": f"/api/v1/games/{GAME}/sync"}}
+
+
+def _speech_queue_drive(queue, condition, *, timeout=3):
+    """짧은 실제 스케줄링 양보만 사용하고 작업 완료 조건에 도달하면 즉시 끝낸다."""
+
+    from threading import Event
+    from time import monotonic
+
+    deadline = monotonic() + timeout
+    snapshots = []
+    while monotonic() < deadline:
+        result = queue.advance()
+        if result is not None:
+            snapshots.append(result)
+        if condition():
+            return snapshots
+        Event().wait(0.002)
+    pytest.fail(f"발언 큐 완료 조건을 만족하지 못했습니다: {queue.view()}")
+
+
+def test_speech_queue_accepts_three_entries_during_post_and_preserves_fifo():
+    """첫 HTTP가 막혀도 입력 예약은 즉시 끝나고 여러 runner가 POST를 중복 시작하지 않는다."""
+
+    from threading import Event, Thread
+
+    from frontend_user.core.commands import SpeechQueue
+
+    client = _SpeechQueueClient()
+    started, release, added = Event(), Event(), Event()
+
+    def post(command, key, count):
+        if count == 1:
+            started.set()
+            assert release.wait(3)
+        return client.receipt(command, key)
+
+    client.on_post = post
+    queue = SpeechQueue(client, client.snapshot)
+    displayed = deepcopy(client.snapshot)
+    client.snapshot = _speech_queue_snapshot(15)
+    queue.enqueue("  첫   발언  ")
+    queue.advance()
+    assert started.wait(1)
+    assert queue.matches(displayed, client.user_id)
+
+    def enqueue_followers():
+        for message in ["둘째", "셋째", "넷째"]:
+            queue.enqueue(message)
+            queue.advance()
+        added.set()
+
+    producer = Thread(target=enqueue_followers, daemon=True)
+    producer.start()
+    try:
+        assert added.wait(0.5), "네트워크 대기가 입력 예약의 잠금을 점유했습니다."
+        assert queue.view()["pending"] == ["첫 발언", "둘째", "셋째", "넷째"]
+        runners = [Thread(target=queue.advance) for _ in range(6)]
+        for runner in runners:
+            runner.start()
+        for runner in runners:
+            runner.join(1)
+        assert len(client.calls) == 1
+    finally:
+        release.set()
+        producer.join(1)
+    _speech_queue_drive(queue, lambda: queue.view()["completed"] == 4)
+    assert [body["message"] for body, _ in client.calls] == ["첫 발언", "둘째", "셋째", "넷째"]
+    assert client.max_active == 1
+    assert not queue.busy
+
+
+@pytest.mark.parametrize("code", ["STALE_STATE_VERSION", "WINDOW_CLOSED"])
+def test_speech_queue_rebuilds_only_after_definite_conflict_and_fresh_get(code):
+    """같은 deadline의 AI 창 교체는 원문을 유지한 새 body/key 시도로 이어진다."""
+
+    from frontend_user.core.api_client import ApiResponseError
+    from frontend_user.core.commands import SpeechQueue
+
+    client = _SpeechQueueClient()
+
+    def post(command, key, count):
+        if count == 1:
+            client.snapshot = _speech_queue_snapshot(15, window_id=OUTSIDER)
+            raise ApiResponseError(status_code=409, code=code)
+        return client.receipt(command, key)
+
+    client.on_post = post
+    queue = SpeechQueue(client, client.snapshot)
+    queue.enqueue("그대로 보낼 의견")
+    _speech_queue_drive(queue, lambda: queue.view()["completed"] == 1)
+    first, second = client.calls
+    assert first[1] != second[1]
+    assert second[0]["expected_state_version"] == 15
+    assert second[0]["window_id"] == OUTSIDER
+    assert second[0]["message"] == first[0]["message"]
+    assert client.get_calls >= 3
+
+
+@pytest.mark.parametrize("failure", ["network", "malformed"])
+def test_speech_queue_unknown_reuses_body_key_and_blocks_followers(failure):
+    """응답 유실과 계약을 만족하지 않는 성공 응답 모두 같은 요청 재확인만 허용한다."""
+
+    from frontend_user.core.commands import SpeechQueue
+
+    client = _SpeechQueueClient()
+    now = [100.0]
+
+    def post(command, key, count):
+        if count == 1:
+            client.snapshot = _speech_queue_snapshot(20, window_id=OUTSIDER)
+            if failure == "malformed":
+                return {"data": {"command_type": "SPEAK"}}
+            raise ApiUnavailableError(status_code=503, code="DEPENDENCY_UNAVAILABLE")
+        return client.receipt(command, key)
+
+    client.on_post = post
+    queue = SpeechQueue(client, client.snapshot, clock=lambda: now[0])
+    queue.enqueue("첫째")
+    queue.enqueue("둘째")
+    _speech_queue_drive(queue, lambda: queue.view()["status"] == "UNKNOWN")
+    for _ in range(5):
+        queue.advance()
+    assert len(client.calls) == 1
+    now[0] += 2
+    _speech_queue_drive(queue, lambda: queue.view()["completed"] == 2)
+    assert client.calls[0] == client.calls[1]
+    assert [body["message"] for body, _ in client.calls] == ["첫째", "첫째", "둘째"]
+
+
+def test_speech_queue_rate_limit_waits_then_fetches_and_rebuilds():
+    """발언 제한은 원문을 버리지 않고 monotonic 대기 뒤 새 상태로 다시 예약한다."""
+
+    from frontend_user.core.api_client import ApiResponseError
+    from frontend_user.core.commands import SpeechQueue
+
+    client = _SpeechQueueClient()
+    now = [100.0]
+
+    def post(command, key, count):
+        if count == 1:
+            raise ApiResponseError(status_code=429, code="SPEECH_RATE_LIMITED")
+        return client.receipt(command, key)
+
+    client.on_post = post
+    queue = SpeechQueue(client, client.snapshot, clock=lambda: now[0])
+    queue.enqueue("대기할 발언")
+    _speech_queue_drive(queue, lambda: queue.view()["status"] == "WAITING" and len(client.calls) == 1)
+    now[0] += 1.9
+    queue.advance()
+    assert len(client.calls) == 1
+    now[0] += 0.2
+    _speech_queue_drive(queue, lambda: queue.view()["completed"] == 1)
+    assert client.calls[0][1] != client.calls[1][1]
+
+
+def test_speech_queue_success_is_not_replayed_when_followup_get_fails():
+    """receipt가 검증된 성공은 조회 장애와 분리해 한 번만 완료 처리한다."""
+
+    from frontend_user.core.commands import SpeechQueue
+
+    client = _SpeechQueueClient()
+
+    def get(count):
+        if count == 2:
+            raise ApiUnavailableError(status_code=503, code="DEPENDENCY_UNAVAILABLE")
+        return deepcopy(client.snapshot)
+
+    client.on_get = get
+    queue = SpeechQueue(client, client.snapshot)
+    queue.enqueue("첫째")
+    queue.enqueue("둘째")
+    _speech_queue_drive(queue, lambda: queue.view()["completed"] == 2)
+    assert [body["message"] for body, _ in client.calls] == ["첫째", "둘째"]
+
+
+def test_speech_queue_cancel_during_get_prevents_post():
+    """fresh GET이 반환되기 전에 취소되면 뒤따르는 POST는 시작되지 않는다."""
+
+    from threading import Event
+
+    from frontend_user.core.commands import SpeechQueue
+
+    client = _SpeechQueueClient()
+    started, release = Event(), Event()
+
+    def get(count):
+        started.set()
+        assert release.wait(3)
+        return deepcopy(client.snapshot)
+
+    client.on_get = get
+    queue = SpeechQueue(client, client.snapshot)
+    queue.enqueue("보내지 않을 발언")
+    queue.advance()
+    try:
+        assert started.wait(1)
+        queue.cancel("게임에서 나갔습니다.")
+    finally:
+        release.set()
+    assert _speech_queue_drive(queue, lambda: not queue.busy) == []
+    assert not client.calls
+    assert queue.view()["status"] == "CANCELLED"
+
+
+@pytest.mark.parametrize("change", ["user", "game", "phase", "saved", "dead", "deadline", "kind"])
+def test_speech_queue_scope_change_discards_late_completion(change):
+    """이미 시작된 POST가 끝나도 교체된 사용자·게임·토론에 결과를 적용하지 않는다."""
+
+    from threading import Event
+
+    from frontend_user.core.commands import SpeechQueue
+
+    client = _SpeechQueueClient()
+    started, release = Event(), Event()
+
+    def post(command, key, count):
+        started.set()
+        assert release.wait(3)
+        return client.receipt(command, key)
+
+    client.on_post = post
+    queue = SpeechQueue(client, client.snapshot)
+    queue.enqueue("전송 중인 발언")
+    queue.enqueue("미전송 발언")
+    queue.advance()
+    try:
+        assert started.wait(1)
+        changed = deepcopy(client.snapshot)
+        user_id = client.user_id
+        if change == "user":
+            user_id = OUTSIDER
+        elif change == "game":
+            changed["game"]["game_id"] = OUTSIDER
+        elif change == "phase":
+            changed["game"]["phase"] = "NIGHT_ACTION"
+        elif change == "saved":
+            changed["game"]["status"] = "SAVED"
+        elif change == "dead":
+            changed["me"]["alive"] = False
+        elif change == "deadline":
+            changed["action_window"]["deadline_at"] = "2026-09-07T00:02:00Z"
+        else:
+            changed["action_window"]["kind"] = "VOTE"
+        queue.observe(changed, user_id)
+    finally:
+        release.set()
+    assert _speech_queue_drive(queue, lambda: not queue.busy) == []
+    assert len(client.calls) == 1
+    assert queue.view()["pending"] == []
+    assert queue.view()["status"] == "CANCELLED"
+
+
+def test_speech_queue_ignores_regressing_observation_and_get():
+    """cursor가 뒤로 간 GET은 POST 근거로 쓰지 않고 기존 최신 상태를 유지한다."""
+
+    from frontend_user.core.commands import SpeechQueue
+
+    client = _SpeechQueueClient()
+    now = [100.0]
+    queue = SpeechQueue(client, client.snapshot, clock=lambda: now[0])
+    newer = _speech_queue_snapshot(20)
+    queue.observe(newer, client.user_id)
+    assert queue.matches(client.snapshot, client.user_id)
+    queue.observe(client.snapshot, client.user_id)
+    assert queue.matches(newer, client.user_id)
+    queue.enqueue("최신 상태를 기다릴 발언")
+    _speech_queue_drive(queue, lambda: queue.view()["status"] == "WAITING" and client.get_calls > 0)
+    assert not client.calls
+    client.snapshot = newer
+    now[0] += 2
+    _speech_queue_drive(queue, lambda: queue.view()["completed"] == 1)
+    assert client.calls[0][0]["expected_state_version"] == 20
+
+
+def test_speech_queue_deadline_uses_server_remaining_and_monotonic():
+    """예전 날짜의 합성 서버 시각에도 브라우저 시계와 무관하게 잔여 시간만 소진한다."""
+
+    from frontend_user.core.commands import SpeechQueue
+
+    client = _SpeechQueueClient()
+    now = [100.0]
+    queue = SpeechQueue(client, client.snapshot, clock=lambda: now[0])
+    queue.enqueue("마감 후 보내면 안 되는 발언")
+    now[0] += 106
+    queue.observe(client.snapshot, client.user_id)
+    queue.advance()
+    assert queue.view()["status"] == "CANCELLED"
+    assert not client.calls
+
+
+def test_speech_queue_permanent_rejection_removes_only_rejected_entry():
+    """확정 영구 거부는 그 발언만 제거하고 뒤의 발언을 원래 순서로 처리한다."""
+
+    from frontend_user.core.api_client import ApiResponseError
+    from frontend_user.core.commands import SpeechQueue
+
+    client = _SpeechQueueClient()
+
+    def post(command, key, count):
+        if count == 1:
+            raise ApiResponseError(status_code=422, code="VALIDATION_ERROR")
+        return client.receipt(command, key)
+
+    client.on_post = post
+    queue = SpeechQueue(client, client.snapshot)
+    queue.enqueue("거부될 발언")
+    queue.enqueue("다음 발언")
+    _speech_queue_drive(queue, lambda: queue.view()["completed"] == 1)
+    assert len(client.calls) == 2
+    assert not queue.busy
+
+
+@pytest.mark.parametrize("limited_at_creation", [False, True])
+@pytest.mark.parametrize("next_state", ["allowed", "expired"])
+def test_speech_queue_missing_speak_during_rate_limit_keeps_reservations(limited_at_creation, next_state):
+    """7회 제한의 제출 완료 표시는 8·9번 예약을 유지하고, 실제 마감만 예약을 취소한다."""
+
+    from frontend_user.core.commands import SpeechQueue
+
+    client = _SpeechQueueClient()
+    limited = deepcopy(client.snapshot)
+    limited["legal_actions"] = ["SAVE_AND_EXIT"]
+    limited["action_window"].update(legal_actions=["SAVE_AND_EXIT"], has_submitted=True)
+    if limited_at_creation:
+        client.snapshot = limited
+    now = [100.0]
+    queue = SpeechQueue(client, client.snapshot, clock=lambda: now[0])
+    messages = ["8번째 예약 발언", "9번째 예약 발언"]
+    for message in messages:
+        queue.enqueue(message)
+    client.snapshot = limited
+    queue.observe(client.snapshot, client.user_id)
+    _speech_queue_drive(queue, lambda: client.get_calls == 1 and queue.view()["status"] == "WAITING")
+    assert queue.view()["pending"] == messages
+    assert not client.calls
+    if next_state == "expired":
+        client.snapshot["action_window"]["remaining_ms"] = 0
+        queue.observe(client.snapshot, client.user_id)
+        queue.advance()
+        assert queue.view()["status"] == "CANCELLED"
+        assert queue.view()["pending"] == []
+        assert queue.view()["completed"] == 0
+        assert not client.calls
+        return
+    client.snapshot["legal_actions"] = ["SPEAK", "PASS"]
+    client.snapshot["action_window"].update(legal_actions=["SPEAK", "PASS"], has_submitted=False)
+    now[0] += 2
+    _speech_queue_drive(queue, lambda: queue.view()["completed"] == 2)
+    assert [command["message"] for command, _ in client.calls] == messages
+    assert len({key for _, key in client.calls}) == 2
+    assert queue.view()["pending"] == []
+    assert not queue.busy
+
+
+def test_speech_queue_stale_phase_get_does_not_cancel_current_scope():
+    """cursor가 오래된 이전 phase 응답은 실제 phase 전환으로 오해하지 않는다."""
+
+    from frontend_user.core.commands import SpeechQueue
+
+    client = _SpeechQueueClient()
+    initial = _speech_queue_snapshot(20)
+    client.snapshot["game"]["phase"] = "NIGHT_ACTION"
+    now = [100.0]
+    queue = SpeechQueue(client, initial, clock=lambda: now[0])
+    queue.enqueue("현재 토론의 발언")
+    _speech_queue_drive(queue, lambda: client.get_calls == 1 and queue.view()["status"] == "WAITING")
+    assert queue.matches(initial, client.user_id)
+    assert not client.calls
+    client.snapshot = initial
+    now[0] += 2
+    _speech_queue_drive(queue, lambda: queue.view()["completed"] == 1)
+
+
+def test_speech_queue_success_then_new_phase_counts_success_and_cancels_followers():
+    """성공 뒤 실제 phase 전환은 성공 receipt를 보존하고 미전송 follower만 없앤다."""
+
+    from frontend_user.core.commands import SpeechQueue
+
+    client = _SpeechQueueClient()
+
+    def post(command, key, count):
+        receipt = client.receipt(command, key)
+        client.snapshot["game"]["phase"] = "NIGHT_ACTION"
+        return receipt
+
+    client.on_post = post
+    queue = SpeechQueue(client, client.snapshot)
+    queue.enqueue("이미 제출한 발언")
+    queue.enqueue("취소할 예약")
+    snapshots = _speech_queue_drive(queue, lambda: queue.view()["status"] == "CANCELLED")
+    assert queue.view()["completed"] == 1
+    assert queue.view()["pending"] == []
+    assert len(client.calls) == 1
+    assert snapshots[-1]["game"]["phase"] == "NIGHT_ACTION"

@@ -27,6 +27,9 @@ from frontend_user.components.identity_bridge import (  # noqa: E402
     load_identity,
 )
 from frontend_user.components.theme import render_app_theme, sync_page_navigation  # noqa: E402
+from frontend_user.components.action_panel import (  # noqa: E402
+    maintain_speech_queue, prefer_current_snapshot, speech_queue_busy,
+)
 from frontend_user.core.api_client import ApiClient, ApiResponseError  # noqa: E402
 from frontend_user.core.identity import parse_uuid_v4  # noqa: E402
 from frontend_user.core.session import (  # noqa: E402
@@ -57,6 +60,7 @@ def main() -> None:
     )
     st.session_state.pop(IDENTITY_COMPONENT_CHANGED_SESSION_KEY, None)
     if user_id is None:
+        maintain_speech_queue(user_id=None, page="home", game_id=None)
         if error_code == "INVALID_STORED_UUID":
             st.error("저장된 게임 식별자가 손상됐어요. 새 UUID를 생성해 주세요.")
             if st.button("새 UUID 생성", key="identity.reset_stored"):
@@ -79,6 +83,7 @@ def main() -> None:
         st.warning("브라우저 저장소를 사용할 수 없어 이번 세션에서만 게임을 복구할 수 있어요.")
     page = st.session_state.get("navigation.page", "home")
     page = sync_page_navigation(page)
+    maintain_speech_queue(user_id=user_id, page=page, game_id=st.session_state.get("game.game_id"))
     load_home_games = False
     if page == "feedback":
         render_feedback(client=client, feedback_type="GENERAL")
@@ -104,11 +109,26 @@ def main() -> None:
             st.session_state["navigation.page"] = "home"
             st.rerun()
         try:
-            response = client.get_game(game_id)
+            # 제출 callback이 보존한 최초 body를 처리하기 전에 GET으로 대기하거나
+            # 다른 rerun을 일으키지 않는다. 재진입·일반 조회는 기존 경로를 유지한다.
+            # 재사용 표식이 있어도 아래에서 현재 게임 ID가 일치하는 캐시만 선택한다.
+            cached = st.session_state.get("game.latest_snapshot")
+            reuse = st.session_state.pop("game.sync_render_snapshot", False)
+            pending = st.session_state.get("game.command_pending")
+            reuse = reuse or (isinstance(pending, dict) and pending.get("game_id") == game_id
+                              and pending.get("status") in {"PENDING_TO_RENDER", "IN_FLIGHT"})
+            reuse = reuse or speech_queue_busy(game_id)
+            if (reuse and isinstance(cached, dict)
+                    and cached.get("game", {}).get("game_id") == game_id):
+                response = cached
+            else:
+                response = client.get_game(game_id)
             snapshot = response.get("data") if isinstance(response.get("data"), dict) else response
             if not isinstance(snapshot, dict) or not isinstance(snapshot.get("game"), dict):
                 raise ValueError("INVALID_RESPONSE")
+            snapshot = prefer_current_snapshot(snapshot=snapshot, game_id=game_id, user_id=user_id)
             st.session_state["game.latest_snapshot"] = snapshot
+            maintain_speech_queue(user_id=user_id, page=page, game_id=game_id, snapshot=snapshot)
         except Exception as error:
             # DELETE 응답 유실 뒤 첫 재조회가 404라면 팝업을 다시 그릴 snapshot이 없다.
             # 이 게임에 사용자가 제출한 삭제 요청이 있을 때만 이탈 완료로 처리한다.

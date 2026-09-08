@@ -171,7 +171,13 @@ Backend까지 전달하고, Front에는 proxy origin만 Backend URL로 제공한
 - 같은 key와 다른 request hash는 `409 IDEMPOTENCY_KEY_REUSED`다.
 - game command body는 `expected_state_version`을 필수로 가진다.
 - version 불일치 command를 자동 재적용하지 않는다. Front가 sync한 뒤 사용자의
-  의도를 다시 확인한다. 단, `SAVE_AND_EXIT`은 화면 버전과의 일치 검사를 하지 않고
+  의도를 다시 확인한다. 단, 사용자 요청으로 예약한 자유 토론 `SPEAK`는 동일
+  사용자·게임·생존자·단계·회차·마감 범위와 최신 `legal_actions`를 검증한 뒤,
+  확정된 `409 STALE_STATE_VERSION` 또는 같은 토론의 AI 창 교체로 인한
+  `409 WINDOW_CLOSED`에 한해 최신 버전/창과 새 key로 순서대로 자동 재시도할 수 있다.
+  `429 SPEECH_RATE_LIMITED`는 순서를 유지하며 대기하고, 응답 불명 요청은 최초
+  body/key로만 확인한다. 다른 단계로 예약을 옮기지 않는다. Backend의 버전·마감
+  검사와 멱등성 계약은 그대로 유지한다. `SAVE_AND_EXIT`은 화면 버전과의 일치 검사를 하지 않고
   게임 행 잠금 뒤 서버의 마지막 확정 상태를 저장한다. 해당 요청의 양의 정수
   `expected_state_version`은 요청 hash에 남겨 동일 요청 재전송을 구분하는 데만 사용한다.
 - 다른 AI의 미해소 private submission과 Agent reservation은 Front projection을

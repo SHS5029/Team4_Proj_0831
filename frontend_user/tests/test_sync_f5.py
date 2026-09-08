@@ -1,11 +1,1066 @@
 import pytest
 
 from copy import deepcopy
+from concurrent.futures import Future
+from contextlib import nullcontext
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from frontend_user.core.sync import SyncEnvelopeError, apply_envelope
 
 
 GAME_ID = "d9ae9b5d-1d17-4f80-8f1a-276bfe170412"
+
+
+class _SpeechQueueDouble:
+    """UI 경계만 관찰하며 전송 완료 시점은 테스트가 Future로 직접 결정한다."""
+
+    def __init__(self, client, snapshot):
+        self.user_id = str(client.user_id)
+        self.game_id = snapshot["game"]["game_id"]
+        self.snapshot = deepcopy(snapshot)
+        self.messages = []
+        self.future = Future()
+        self.advance_calls = 0
+        self.observed = []
+        self.cancellations = []
+
+    @property
+    def busy(self):
+        return bool(self.messages)
+
+    def matches(self, snapshot, user_id):
+        from frontend_user.components.action_panel import _speech_scope
+
+        return (_speech_scope(snapshot=snapshot, user_id=user_id)
+                == _speech_scope(snapshot=self.snapshot, user_id=self.user_id))
+
+    def enqueue(self, message):
+        from frontend_user.core.commands import normalize_message
+
+        self.messages.append(normalize_message(message))
+
+    def observe(self, snapshot, user_id):
+        self.observed.append((snapshot, user_id))
+
+    def cancel(self, reason):
+        self.cancellations.append(reason)
+        self.messages.clear()
+
+    def advance(self):
+        self.advance_calls += 1
+        return self.future.result() if self.future.done() else None
+
+    def view(self):
+        return {"pending": list(self.messages), "notice": None}
+
+
+def _discussion_snapshot():
+    """AI 예약 창이 바뀌어도 인간이 계속 입력할 수 있는 합성 자유 토론이다."""
+
+    return {**_snapshot(),
+            "game": {**_snapshot()["game"], "phase": "DAY_DISCUSSION", "status": "IN_PROGRESS"},
+            "me": {"player_id": "human", "alive": True}, "legal_actions": ["SPEAK", "PASS"],
+            "action_window": {"window_id": "00000000-0000-4000-8000-000000000001",
+                              "turn_player_id": "ai-one", "kind": "SPEECH", "has_submitted": False,
+                              "opened_state_version": 12,
+                              "deadline_at": "2026-09-08T00:01:45Z",
+                              "server_time": "2026-09-08T00:00:00Z", "remaining_ms": 105000}}
+
+
+def _speech_recovery_app(initial, client):
+    """실제 dispatcher의 pending 재사용과 재조회 순서를 합성 client로 재현한다."""
+
+    import streamlit as st
+    from frontend_user.app_pages import game_page
+
+    st.session_state.setdefault("game.latest_snapshot", initial)
+    st.session_state.setdefault("game.sync_status", "LIVE")
+    st.session_state["game.client"] = client
+    pending = st.session_state.get("game.command_pending") or {}
+    reuse = st.session_state.pop("game.sync_render_snapshot", False)
+    reuse = reuse or pending.get("status") in {"PENDING_TO_RENDER", "IN_FLIGHT"}
+    response = st.session_state["game.latest_snapshot"] if reuse else client.get_game(initial["game"]["game_id"])
+    snapshot = response.get("data", response)
+    st.session_state["game.latest_snapshot"] = snapshot
+    game_page.render(snapshot)
+
+
+def _speech_recovery_view(monkeypatch):
+    """브라우저·네트워크 없이 실제 채팅 callback과 화면 rerun을 실행한다."""
+
+    from streamlit.testing.v1 import AppTest
+    from frontend_user.app_pages import game_page
+    from frontend_user.components import action_panel
+
+    current = _discussion_snapshot()
+    client = Mock(user_id="synthetic")
+    client.get_game.side_effect = lambda *_: {"data": deepcopy(current)}
+    client.submit_command.return_value = {"data": {"command_type": "SPEAK"}}
+    monkeypatch.setattr(action_panel, "_render_clock", Mock())
+    monkeypatch.setattr(action_panel, "SpeechQueue", _SpeechQueueDouble)
+    monkeypatch.setattr(game_page, "_sync_snapshot", lambda **kwargs: kwargs["snapshot"])
+    monkeypatch.setattr(game_page.vote_insights, "render", Mock())
+    view = AppTest.from_function(_speech_recovery_app, args=(current, client)).run()
+    assert not view.exception
+    return view, current, client
+
+
+@pytest.mark.parametrize("message", ["첫 줄\n다음 줄", "첫 줄\r다음 줄", "첫 줄\r\n다음 줄"])
+def test_speech_callback_normalizes_only_line_breaks(monkeypatch, message):
+    """UI의 CR/LF만 공백으로 바꾸고 기존 command 정규화가 최종 본문을 만든다."""
+
+    view, _, client = _speech_recovery_view(monkeypatch)
+    view.chat_input[0].set_value(message).run()
+    assert not view.exception
+    assert view.session_state["game.speech_queue"].messages == ["첫 줄 다음 줄"]
+    client.submit_command.assert_not_called()
+
+
+@pytest.mark.parametrize("message", ["거부\t본문", "거부\x00본문", "거부\u200b본문", "가" * 201])
+def test_speech_validation_failure_survives_connection_rerun(monkeypatch, message):
+    """입력 거부와 연결 전환이 겹쳐도 오류와 수정할 원문이 화면에 남아야 한다."""
+
+    from frontend_user.app_pages import game_page
+
+    view, current, client = _speech_recovery_view(monkeypatch)
+
+    def sync(**kwargs):
+        game_page.st.session_state["game.sync_status"] = "POLLING"
+        return kwargs["snapshot"]
+
+    monkeypatch.setattr(game_page, "_sync_snapshot", sync)
+    view.chat_input[0].set_value(message).run()
+    assert not view.exception
+    assert any("발언은 제어 문자 없이" in error.value for error in view.error)
+    assert view.chat_input[0].proto.set_value
+    assert view.chat_input[0].proto.value == message
+    client.submit_command.assert_not_called()
+    current["game"].update(state_version=13, last_sequence=43)
+    current["action_window"]["window_id"] = "00000000-0000-4000-8000-000000000002"
+    view.run()
+    assert not view.exception
+    assert view.error
+    # 원문을 매번 위젯으로 밀어 넣으면 사용자가 수정 중인 초안을 다시 덮게 된다.
+    assert not view.chat_input[0].proto.set_value
+    client.submit_command.assert_not_called()
+    view.chat_input[0].set_value("수정한 정상 발언").run()
+    assert view.session_state["game.speech_queue"].messages == ["수정한 정상 발언"]
+    client.submit_command.assert_not_called()
+    assert not view.error
+
+
+def test_speech_fifo_busy_queue_keeps_chat_enabled_and_pass_locked(monkeypatch):
+    """응답 대기 중에도 같은 입력 위젯을 사용하고 순서를 깨는 PASS만 막는다."""
+
+    view, _, client = _speech_recovery_view(monkeypatch)
+    widget_id = view.chat_input[0].proto.id
+    for message in ["첫 발언", "두 줄\n발언", "세 번째 발언"]:
+        view.chat_input[0].set_value(message).run()
+        assert not view.exception and not view.error
+        assert len(view.chat_input) == 1
+        assert view.chat_input[0].proto.id == widget_id
+        assert not view.chat_input[0].disabled
+        assert view.button(key="action.PASS").disabled
+    queue = view.session_state["game.speech_queue"]
+    assert queue.messages == ["첫 발언", "두 줄 발언", "세 번째 발언"]
+    assert not queue.future.done()
+    assert "game.command_pending" not in view.session_state
+    client.submit_command.assert_not_called()
+    client.get_game.assert_called_once()
+
+
+@pytest.mark.parametrize("boundary", ["phase", "deadline", "user", "game", "player", "round"])
+def test_failed_speech_draft_is_not_restored_across_scope_changes(monkeypatch, boundary):
+    """입력 형식 오류의 원문은 다른 사용자·게임·토론으로 복원하지 않는다."""
+
+    view, current, client = _speech_recovery_view(monkeypatch)
+    original = "거부\t원문"
+    view.chat_input[0].set_value(original).run()
+    assert view.error
+    if boundary == "phase":
+        current["game"]["phase"] = "FINAL_DISCUSSION"
+    elif boundary == "deadline":
+        current["action_window"]["deadline_at"] = "2026-09-08T00:02:00Z"
+    elif boundary == "user":
+        client.user_id = "other-user"
+    elif boundary == "game":
+        current["game"]["game_id"] = "00000000-0000-4000-8000-000000000009"
+    elif boundary == "player":
+        current["me"]["player_id"] = "other-player"
+    else:
+        current["game"]["round"] = 2
+    view.run()
+    assert not view.exception and not view.error
+    assert "game.command_pending" not in view.session_state
+    assert all(widget.proto.value != original for widget in view.chat_input)
+    client.submit_command.assert_not_called()
+
+
+def test_new_speech_uses_latest_validated_window_and_version(monkeypatch):
+    """첫 GET 이후 sync가 AI 예약 창을 바꾸면 새 발언 body는 최신 창으로 고정한다."""
+
+    from frontend_user.components import action_panel
+
+    current = _discussion_snapshot()
+    latest = deepcopy(current)
+    latest["game"].update(state_version=13, last_sequence=43)
+    latest["action_window"].update(window_id="00000000-0000-4000-8000-000000000002",
+                                   opened_state_version=13, turn_player_id="ai-two")
+    state = {"game.latest_snapshot": latest}
+    monkeypatch.setattr(action_panel.st, "session_state", state)
+    monkeypatch.setattr(action_panel.st, "rerun", Mock(side_effect=RuntimeError("rerun")))
+    with pytest.raises(RuntimeError, match="rerun"):
+        action_panel._queue_command(game_id=GAME_ID, snapshot=current, command_type="SPEAK", message="합성 발언")
+    command = state["game.command_pending"]["command"]
+    assert command["expected_state_version"] == 13
+    assert command["window_id"] == latest["action_window"]["window_id"]
+
+
+@pytest.mark.parametrize("pending_status", ["PENDING_TO_RENDER", "IN_FLIGHT", "RETRYABLE_UNKNOWN"])
+def test_unknown_pending_survives_window_change_and_new_submission(monkeypatch, pending_status):
+    """응답 불명 요청은 AI 창이 넘어가도 본문·멱등 키를 유지하고 새 입력으로 덮지 않는다."""
+
+    from frontend_user.components import action_panel
+
+    current = _discussion_snapshot()
+    pending = {"game_id": GAME_ID, "status": pending_status, "idempotency_key": "fixed-key",
+               "command": {"type": "SPEAK", "expected_state_version": 11,
+                           "window_id": "previous-window", "message": "기존 발언"}}
+    state = {"game.latest_snapshot": current, "game.command_pending": deepcopy(pending),
+             "game.client": Mock(user_id="synthetic")}
+    monkeypatch.setattr(action_panel, "SpeechQueue", _SpeechQueueDouble)
+    monkeypatch.setattr(action_panel.st, "session_state", state)
+    monkeypatch.setattr(action_panel.st, "rerun", Mock())
+    assert action_panel._pending_for_window(game_id=GAME_ID, window=current["action_window"]) == pending
+    action_panel._queue_command(game_id=GAME_ID, snapshot=current, command_type="SPEAK", message="새 발언")
+    assert state["game.command_pending"] == pending
+    state[f"form.message.{GAME_ID}"] = "새 줄바꿈\n발언"
+    action_panel._capture_discussion_command(game_id=GAME_ID, snapshot=current,
+                                             command_type="SPEAK", user_id="synthetic")
+    assert state["game.command_pending"] == pending
+    assert "game.speech_queue" not in state
+    state["game.client"].submit_command.assert_not_called()
+
+
+@pytest.mark.parametrize("command_type", ["SPEAK", "PASS"])
+def test_enter_is_captured_before_the_next_script_reads(monkeypatch, command_type):
+    """채팅 예약과 PASS 의도가 본 실행의 조회 전에 각각의 저장 경계에 남는다."""
+
+    from streamlit.testing.v1 import AppTest
+    from frontend_user.components import action_panel
+
+    monkeypatch.setattr(action_panel, "_render_clock", Mock())
+
+    monkeypatch.setattr(action_panel, "SpeechQueue", _SpeechQueueDouble)
+
+    def app_body(current):
+        import streamlit as st
+        from types import SimpleNamespace
+        from frontend_user.components import action_panel
+
+        st.session_state["game.latest_snapshot"] = current
+        st.session_state["game.client"] = SimpleNamespace(user_id="synthetic")
+        observed = st.session_state.setdefault("test.before_reads", [])
+        observed.append(bool(st.session_state.get("game.command_pending")
+                             or st.session_state.get("game.speech_queue")))
+        action_panel._render_discussion(game_id=current["game"]["game_id"], snapshot=current)
+
+    view = AppTest.from_function(app_body, args=(_discussion_snapshot(),)).run()
+    if command_type == "SPEAK":
+        view.chat_input[0].set_value("조회 전 보존할 합성 발언").run()
+    else:
+        view.button(key="action.PASS").click().run()
+    assert not view.exception
+    assert view.session_state["test.before_reads"][1] is True
+
+
+@pytest.mark.parametrize("change", ["user", "game", "player", "phase", "round", "status",
+                                   "permission", "version", "window", "deadline", "submitted", "expired"])
+def test_new_command_rejects_changed_scope_or_action_boundary(monkeypatch, change):
+    """새 입력을 다른 소유자·행동 구간·마감 이후 상태로 자동 재해석하지 않는다."""
+
+    from frontend_user.components import action_panel
+
+    current = _discussion_snapshot()
+    latest = deepcopy(current)
+    state = {"game.latest_snapshot": latest, "game.client": SimpleNamespace(user_id="original")}
+    if change == "user":
+        state["game.client"] = SimpleNamespace(user_id="other")
+    elif change == "game":
+        latest["game"]["game_id"] = "other"
+    elif change == "player":
+        latest["me"]["player_id"] = "other"
+    elif change == "phase":
+        latest["game"]["phase"] = "FINAL_DISCUSSION"
+    elif change == "round":
+        latest["game"]["round"] = 2
+    elif change == "status":
+        latest["game"]["status"] = "SAVED"
+    elif change == "permission":
+        latest["legal_actions"] = []
+    elif change == "version":
+        latest["game"]["state_version"] = 11
+    elif change == "window":
+        current["action_window"]["deadline_at"] = latest["action_window"]["deadline_at"] = None
+        latest["action_window"]["window_id"] = "other"
+    elif change == "deadline":
+        latest["action_window"]["deadline_at"] = "2026-09-08T00:02:00Z"
+    elif change == "submitted":
+        latest["action_window"]["has_submitted"] = True
+    else:
+        latest["action_window"]["remaining_ms"] = 0
+    monkeypatch.setattr(action_panel.st, "session_state", state)
+    error = Mock()
+    monkeypatch.setattr(action_panel.st, "error", error)
+    action_panel._queue_command(game_id=GAME_ID, snapshot=current, command_type="SPEAK",
+                                message="합성 발언", user_id="original", rerun=False)
+    error.assert_called_once()
+    assert "game.command_pending" not in state
+
+
+def test_clock_does_not_drop_unknown_body_and_retry_keeps_original_key(monkeypatch):
+    """읽기 전용 clock이 새 창을 보더라도 불명 요청의 재전송은 최초 body·키로 수행한다."""
+
+    from frontend_user.components import action_panel
+
+    current = _discussion_snapshot()
+    pending = {"game_id": GAME_ID, "status": "RETRYABLE_UNKNOWN", "idempotency_key": "fixed-key",
+               "command": {"type": "SPEAK", "expected_state_version": 11,
+                           "window_id": "previous-window", "message": "기존 발언"}}
+    state = {"game.latest_snapshot": current, "game.command_pending": deepcopy(pending)}
+    monkeypatch.setattr(action_panel.st, "session_state", state)
+    monkeypatch.setattr(action_panel, "ACTION_ATTENTION_COMPONENT", Mock())
+    for _ in range(3):
+        action_panel._render_clock_tick(game_id=GAME_ID, snapshot=current, running=True)
+    assert state["game.command_pending"] == pending
+    state["game.command_pending"]["status"] = "IN_FLIGHT"
+    client = Mock()
+    client.get_game.return_value = {"data": current}
+    monkeypatch.setattr(action_panel.st, "rerun", Mock(side_effect=RuntimeError("rerun")))
+    with pytest.raises(RuntimeError, match="rerun"):
+        action_panel._process_pending(client=client, game_id=GAME_ID, snapshot=current)
+    client.submit_command.assert_called_once_with(
+        game_id=GAME_ID, command=pending["command"], idempotency_key=pending["idempotency_key"])
+
+
+def test_speech_fifo_connection_change_cannot_consume_enter(monkeypatch):
+    """연결 표시가 바뀌어도 최신 상태로 예약한 발언을 잃거나 중복 전송하지 않는다."""
+
+    from streamlit.testing.v1 import AppTest
+    from frontend_user.app_pages import game_page
+    from frontend_user.components import action_panel
+
+    current = _discussion_snapshot()
+    latest = deepcopy(current)
+    latest["game"].update(state_version=13, last_sequence=43)
+    latest["action_window"]["window_id"] = "00000000-0000-4000-8000-000000000002"
+    sync_calls = []
+
+    def sync(**kwargs):
+        sync_calls.append(True)
+        game_page.st.session_state["game.latest_snapshot"] = latest
+        game_page.st.session_state["game.sync_status"] = "LIVE" if len(sync_calls) == 1 else "POLLING"
+        return latest
+
+    monkeypatch.setattr(game_page, "_sync_snapshot", sync)
+    monkeypatch.setattr(game_page.vote_insights, "render", Mock())
+    monkeypatch.setattr(action_panel, "_render_clock", Mock())
+    monkeypatch.setattr(action_panel, "SpeechQueue", _SpeechQueueDouble)
+    client = Mock(user_id="synthetic")
+    client.get_game.return_value = {"data": latest}
+
+    def app_body(current, client):
+        import streamlit as st
+        from frontend_user.app_pages import game_page
+
+        st.session_state.setdefault("game.latest_snapshot", current)
+        st.session_state.setdefault("game.sync_status", "LIVE")
+        st.session_state["game.client"] = client
+        st.session_state["game.game_id"] = current["game"]["game_id"]
+        value = st.session_state["game.latest_snapshot"]
+        # 실제 dispatcher와 같이 command GET의 envelope를 화면용 snapshot으로 푼다.
+        st.session_state["game.latest_snapshot"] = value.get("data", value)
+        game_page.render(st.session_state["game.latest_snapshot"])
+
+    view = AppTest.from_function(app_body, args=(current, client)).run()
+    view.chat_input[0].set_value("연결 변경에도 보존할 발언").run()
+    assert not view.exception
+    queue = view.session_state["game.speech_queue"]
+    assert queue.snapshot["game"]["state_version"] == 13
+    assert queue.snapshot["action_window"]["window_id"] == latest["action_window"]["window_id"]
+    assert queue.messages == ["연결 변경에도 보존할 발언"]
+    assert not view.chat_input[0].disabled
+    client.submit_command.assert_not_called()
+    client.get_game.assert_not_called()
+    assert view.session_state["game.sync_status"] == "POLLING"
+
+
+def test_activity_tick_refreshes_once_without_bootstrap_or_duplicate_get(monkeypatch):
+    """첫 화면과 동일 tick은 GET을 반복하지 않고 새 tick만 부가 상태를 조회한다."""
+
+    from frontend_user.app_pages import game_page
+
+    current = _discussion_snapshot()
+    state = {"game.sync_tick": 0, "game.latest_snapshot": current}
+    client = Mock(config=SimpleNamespace(api_url="http://localhost"), user_id="synthetic")
+    state["game.client"] = client
+    client.get_game.return_value = {"data": current}
+    monkeypatch.setattr(game_page.st, "session_state", state)
+    monkeypatch.setattr(game_page, "mount_sse", lambda **kwargs: None)
+    game_page._sync_snapshot(client=client, snapshot=current)
+    client.get_game.assert_not_called()
+    client.get_sync.assert_not_called()
+    state["game.sync_tick"] = 1000
+    game_page._sync_snapshot(client=client, snapshot=current)
+    game_page._sync_snapshot(client=client, snapshot=current)
+    client.get_game.assert_called_once_with(GAME_ID)
+    assert state["game.activity_tick"] == 1000
+
+
+@pytest.mark.parametrize("rate_limited", [False, True])
+def test_public_updates_preserve_input_shell_and_focus_scope(monkeypatch, rate_limited):
+    """AI 갱신과 발언 제한 응답은 같은 토론의 입력 shell과 focus 단위를 보존한다."""
+
+    from frontend_user.app_pages import game_page
+    from frontend_user.components import action_panel
+
+    monkeypatch.setattr(action_panel.st, "session_state", {})
+    current = _discussion_snapshot()
+    current["legal_actions"] = ["SPEAK", "SAVE_AND_EXIT"]
+    current["action_window"]["legal_actions"] = ["SPEAK", "SAVE_AND_EXIT"]
+    updated = deepcopy(current)
+    updated["game"].update(state_version=13, last_sequence=43)
+    updated["action_window"].update(window_id="00000000-0000-4000-8000-000000000002",
+                                    turn_player_id="ai-two", remaining_ms=100000,
+                                    opened_state_version=13,
+                                    server_time="2026-09-08T00:00:05Z")
+    updated["public_events"] = [{"event_id": "synthetic"}]
+    updated["agent_activity"] = [{"stage": "DECIDING"}]
+    if rate_limited:
+        updated["legal_actions"] = ["SAVE_AND_EXIT"]
+        updated["action_window"].update(legal_actions=["SAVE_AND_EXIT"], has_submitted=True)
+    assert game_page._shell_projection(current) == game_page._shell_projection(updated)
+    assert action_panel._attention_payload(current)["window_id"] == action_panel._attention_payload(updated)["window_id"]
+
+
+@pytest.mark.parametrize("boundary", ["phase", "dead", "legal", "deadline", "submitted", "targets"])
+def test_action_boundaries_require_shell_refresh(boundary):
+    """권한·마감·사망·후보 변화는 공개 기록 갱신과 구별해 입력을 즉시 교체한다."""
+
+    from frontend_user.app_pages import game_page
+
+    current = _discussion_snapshot()
+    updated = deepcopy(current)
+    if boundary == "phase":
+        updated["game"]["phase"] = "NIGHT_ACTION"
+    elif boundary == "dead":
+        updated["me"]["alive"] = False
+    elif boundary == "legal":
+        updated["legal_actions"] = []
+    elif boundary == "deadline":
+        updated["action_window"]["deadline_at"] = "2026-09-08T00:02:00Z"
+    elif boundary == "submitted":
+        # 차례제 제출 완료는 입력 경계이며 timed 토론의 일시 빈도 제한과 구별한다.
+        current["action_window"].update(deadline_at=None, remaining_ms=None)
+        updated["action_window"].update(deadline_at=None, remaining_ms=None)
+        updated["action_window"]["has_submitted"] = True
+    else:
+        current["game"]["phase"] = updated["game"]["phase"] = "DAY_VOTE"
+        updated["action_window"]["valid_targets"] = [{"player_id": "candidate"}]
+    assert game_page._shell_projection(current) != game_page._shell_projection(updated)
+
+
+def test_live_tick_updates_public_region_without_rendering_inputs(monkeypatch):
+    """느린 조회가 실행되는 fragment는 공개 영역만 출력하고 전체 rerun을 요청하지 않는다."""
+
+    from frontend_user.app_pages import game_page
+
+    current = _discussion_snapshot()
+    updated = deepcopy(current)
+    updated["game"].update(state_version=13, last_sequence=43)
+    updated["public_events"] = [{"event_id": "synthetic"}]
+    state = {"game.latest_snapshot": current, "game.sync_status": "LIVE", "game.sync_hidden": False}
+    monkeypatch.setattr(game_page.st, "session_state", state)
+    monkeypatch.setattr(game_page, "_sync_snapshot", Mock(return_value=updated))
+    timeline = Mock()
+    inputs = Mock()
+    rerun = Mock()
+    monkeypatch.setattr(game_page, "_render_timeline", timeline)
+    monkeypatch.setattr(game_page, "_render_agent_activity", Mock())
+    monkeypatch.setattr(game_page.vote_insights, "render", Mock())
+    monkeypatch.setattr(game_page, "render_action_panel", inputs)
+    monkeypatch.setattr(game_page.st, "rerun", rerun)
+    game_page._render_live_updates.__wrapped__(client=Mock(), snapshot=current)
+    assert timeline.call_args.kwargs["snapshot"] == updated
+    inputs.assert_not_called()
+    rerun.assert_not_called()
+
+
+def test_clock_expiry_requests_one_cached_shell_refresh(monkeypatch):
+    """표시 시간이 0에 도달하면 자동 제출 없이 입력 잠금을 위한 화면 전환만 요청한다."""
+
+    from frontend_user.components import action_panel
+
+    current = _discussion_snapshot()
+    state = {"game.latest_snapshot": current}
+    monkeypatch.setattr(action_panel.st, "session_state", state)
+    monkeypatch.setattr(action_panel, "_countdown_remaining_ms", lambda **kwargs: 0)
+    monkeypatch.setattr(action_panel.st, "rerun", Mock(side_effect=RuntimeError("rerun")))
+    with pytest.raises(RuntimeError, match="rerun"):
+        action_panel._render_clock_tick(game_id=GAME_ID, snapshot=current, running=True)
+    assert state["game.sync_render_snapshot"] is True
+    assert "game.command_pending" not in state
+
+
+def test_streamlit_assigns_sync_clock_and_chat_to_separate_render_scopes(monkeypatch):
+    """실제 Streamlit 실행에서도 GET fragment와 시계 fragment가 채팅을 소유하지 않는다."""
+
+    from streamlit.runtime.scriptrunner import get_script_run_ctx
+    from streamlit.testing.v1 import AppTest
+    from frontend_user.app_pages import game_page
+    from frontend_user.components import action_panel
+
+    owners = {}
+
+    def fragment_owner():
+        """지원 버전의 실행 context에서 현재 fragment 소유권만 관찰한다."""
+
+        context = get_script_run_ctx()
+        if hasattr(context, "current_fragment_id"):
+            return context.current_fragment_id
+        from streamlit.runtime.scriptrunner_utils.script_run_context import ThreadState
+        return ThreadState.get().fragment_id
+
+    def mount(**kwargs):
+        owners["sync"] = fragment_owner()
+        return None
+
+    original_discussion = action_panel._render_discussion
+
+    def discussion(**kwargs):
+        owners["chat"] = fragment_owner()
+        return original_discussion(**kwargs)
+
+    def attention(**kwargs):
+        owners["clock"] = fragment_owner()
+
+    monkeypatch.setattr(game_page, "mount_sse", mount)
+    monkeypatch.setattr(game_page.vote_insights, "render", Mock())
+    monkeypatch.setattr(action_panel, "_render_discussion", discussion)
+    monkeypatch.setattr(action_panel, "_mount_action_attention", attention)
+    current = _discussion_snapshot()
+    current["me"].update(role="CITIZEN")
+    current["players"] = []
+
+    def app_body(snapshot):
+        import streamlit as st
+        from types import SimpleNamespace
+        from frontend_user.app_pages import game_page
+
+        st.session_state["game.latest_snapshot"] = snapshot
+        st.session_state["game.game_id"] = snapshot["game"]["game_id"]
+        st.session_state["game.sync_status"] = "LIVE"
+        st.session_state["game.client"] = SimpleNamespace(
+            config=SimpleNamespace(api_url="http://localhost"), user_id="synthetic")
+        game_page.render(snapshot)
+
+    view = AppTest.from_function(app_body, args=(current,)).run()
+    assert not view.exception
+    assert owners["chat"] is None
+    assert owners["sync"] is not None and owners["clock"] is not None
+    assert owners["sync"] != owners["clock"]
+    assert len(view.chat_input) == 1 and view.chat_input[0].disabled is False
+
+
+@pytest.mark.parametrize("reuse_reason", ["sync", "PENDING_TO_RENDER", "IN_FLIGHT"])
+def test_dispatcher_reuses_sync_snapshot_only_for_the_immediate_game_refresh(monkeypatch, reuse_reason):
+    """화면 전환·전송 대기에는 선행 GET을 생략하고 이후 일반 실행은 서버를 확인한다."""
+
+    from uuid import UUID
+    from frontend_user import app
+    from frontend_user.components import action_panel
+
+    current = _discussion_snapshot()
+    state = {"navigation.page": "game", "game.game_id": GAME_ID,
+             "game.latest_snapshot": current}
+    if reuse_reason == "sync":
+        state["game.sync_render_snapshot"] = True
+    else:
+        state["game.command_pending"] = {"game_id": GAME_ID, "status": reuse_reason}
+    ui = Mock(session_state=state)
+    monkeypatch.setattr(app, "st", ui)
+    monkeypatch.setattr(action_panel, "st", ui)
+    monkeypatch.setattr(app, "render_app_theme", Mock())
+    monkeypatch.setattr(app, "sync_page_navigation", lambda page: page)
+    monkeypatch.setattr(app, "load_identity", lambda **kwargs: (
+        UUID("00000000-0000-4000-8000-000000000101"), "LOCAL", None))
+    monkeypatch.setattr(app, "set_identity", Mock())
+    client = Mock(user_id=UUID("00000000-0000-4000-8000-000000000101"))
+    client.get_game.return_value = {"data": current}
+    monkeypatch.setattr(app, "ApiClient", Mock(return_value=client))
+    render = Mock()
+    monkeypatch.setattr(app, "render_game", render)
+    app.main()
+    client.get_game.assert_not_called()
+    render.assert_called_once_with(current)
+    assert "game.sync_render_snapshot" not in state
+    state.pop("game.command_pending", None)
+    app.main()
+    client.get_game.assert_called_once_with(GAME_ID)
+
+
+@pytest.mark.parametrize("legacy_status", [None, "SUCCEEDED", "IN_FLIGHT", "RETRYABLE_UNKNOWN"])
+def test_speech_fifo_three_callbacks_reserve_in_order_without_http(monkeypatch, legacy_status):
+    """첫 응답 전 연속 Enter 세 건을 보존하고 기존 단일 요청의 본문·키는 건드리지 않는다."""
+
+    from frontend_user.components import action_panel
+
+    current = _discussion_snapshot()
+    latest = deepcopy(current)
+    latest["game"].update(state_version=13, last_sequence=43)
+    latest["action_window"]["window_id"] = "00000000-0000-4000-8000-000000000002"
+    client = Mock(user_id="synthetic")
+    state = {"game.latest_snapshot": latest, "game.client": client}
+    pending = {"game_id": GAME_ID, "status": legacy_status, "idempotency_key": "synthetic-fixed-key",
+               "command": {"type": "SUBMIT_VOTE", "expected_state_version": 11}}
+    if legacy_status is not None:
+        state["game.command_pending"] = deepcopy(pending)
+    monkeypatch.setattr(action_panel.st, "session_state", state)
+    monkeypatch.setattr(action_panel, "SpeechQueue", _SpeechQueueDouble)
+    rerun = Mock(side_effect=AssertionError("callback에서 전체 실행을 시작하면 안 됩니다"))
+    monkeypatch.setattr(action_panel.st, "rerun", rerun)
+    for message in ["첫 발언", "둘째\r\n발언", "셋째 발언"]:
+        state[f"form.message.{GAME_ID}"] = message
+        action_panel._capture_discussion_command(game_id=GAME_ID, snapshot=current,
+                                                  command_type="SPEAK", user_id="synthetic")
+    if legacy_status in {None, "SUCCEEDED"}:
+        queue = state["game.speech_queue"]
+        assert queue.messages == ["첫 발언", "둘째 발언", "셋째 발언"]
+        assert queue.snapshot == latest
+        assert queue.advance_calls == 0
+        assert state["game.sync_render_snapshot"] is True
+    else:
+        assert "game.speech_queue" not in state
+    assert state.get("game.command_pending") == (pending if legacy_status else None)
+    assert client.method_calls == []
+    rerun.assert_not_called()
+
+
+def test_speech_fifo_dispatcher_reuses_latest_snapshot_until_queue_finishes(monkeypatch):
+    """실제 앱 dispatcher의 연속 실행에서도 예약 전송 중 추가 GET이 입력 앞을 막지 않는다."""
+
+    from uuid import UUID
+    from frontend_user import app
+    from frontend_user.components import action_panel
+
+    user_id = UUID("00000000-0000-4000-8000-000000000101")
+    client = Mock(user_id=user_id)
+    current = _discussion_snapshot()
+    client.get_game.return_value = {"data": current}
+    queue = _SpeechQueueDouble(client, current)
+    queue.enqueue("조회보다 먼저 예약한 발언")
+    state = {"navigation.page": "game", "game.game_id": GAME_ID,
+             "game.latest_snapshot": current, "game.speech_queue": queue}
+    ui = Mock(session_state=state)
+    monkeypatch.setattr(app, "st", ui)
+    monkeypatch.setattr(action_panel, "st", ui)
+    monkeypatch.setattr(action_panel, "SpeechQueue", _SpeechQueueDouble)
+    monkeypatch.setattr(app, "render_app_theme", Mock())
+    monkeypatch.setattr(app, "sync_page_navigation", lambda page: page)
+    monkeypatch.setattr(app, "load_identity", lambda **kwargs: (user_id, "LOCAL", None))
+    monkeypatch.setattr(app, "set_identity", Mock())
+    monkeypatch.setattr(app, "ApiClient", Mock(return_value=client))
+    render = Mock()
+    monkeypatch.setattr(app, "render_game", render)
+    for _ in range(3):
+        app.main()
+    assert render.call_count == 3
+    assert all(call.args == (current,) for call in render.call_args_list)
+    client.get_game.assert_not_called()
+    client.submit_command.assert_not_called()
+    queue.messages.clear()
+    app.main()
+    client.get_game.assert_called_once_with(GAME_ID)
+
+
+def _speech_fifo_fragment_state(monkeypatch):
+    """fragment를 단독 실행해 입력 위젯 생성과 네트워크 대기를 감시한다."""
+
+    from frontend_user.components import action_panel
+
+    snapshot = _discussion_snapshot()
+    client = Mock(user_id="synthetic")
+    queue = _SpeechQueueDouble(client, snapshot)
+    queue.enqueue("미전송 발언")
+    state = {"game.client": client, "game.latest_snapshot": snapshot,
+             "game.speech_queue": queue, "navigation.page": "game"}
+    ui = Mock(session_state=state)
+    ui.container.side_effect = lambda **kwargs: nullcontext()
+    monkeypatch.setattr(action_panel, "st", ui)
+    monkeypatch.setattr(action_panel, "SpeechQueue", _SpeechQueueDouble)
+    return action_panel, state, queue, ui
+
+
+def test_speech_fifo_dispatch_fragment_returns_while_future_pending_without_input_widgets(monkeypatch):
+    """느린 요청은 Future 완료 전 즉시 반환하고 채팅·PASS 위젯을 새로 만들지 않는다."""
+
+    action_panel, state, queue, ui = _speech_fifo_fragment_state(monkeypatch)
+    original = state["game.latest_snapshot"]
+    for _ in range(3):
+        action_panel._render_speech_queue.__wrapped__(game_id=GAME_ID)
+    assert queue.advance_calls == 3
+    assert not queue.future.done()
+    assert state["game.latest_snapshot"] is original
+    assert queue.messages == ["미전송 발언"]
+    ui.chat_input.assert_not_called()
+    ui.text_input.assert_not_called()
+    ui.text_area.assert_not_called()
+    ui.button.assert_not_called()
+    ui.rerun.assert_not_called()
+    assert state["game.client"].method_calls == []
+
+
+@pytest.mark.parametrize("version,sequence,accepted", [
+    (11, 43, False), (13, 41, False), (12, 42, True), (13, 43, True),
+    (True, 43, False), (13, "43", False),
+])
+def test_speech_fifo_dispatch_result_never_reverses_either_cursor(monkeypatch, version, sequence, accepted):
+    """버전과 sequence 중 하나라도 역행하거나 정수가 아니면 현재 UI를 보존한다."""
+
+    action_panel, state, queue, _ = _speech_fifo_fragment_state(monkeypatch)
+    original = state["game.latest_snapshot"]
+    response = deepcopy(original)
+    response["game"].update(state_version=version, last_sequence=sequence)
+    response["public_events"] = [{"event_id": "synthetic-late-result"}]
+    queue.future.set_result(response)
+    action_panel._render_speech_queue.__wrapped__(game_id=GAME_ID)
+    assert state["game.latest_snapshot"] is (response if accepted else original)
+
+
+@pytest.mark.parametrize("boundary", ["user", "game", "player"])
+def test_speech_fifo_dispatch_discards_results_from_other_owner_or_game(monkeypatch, boundary):
+    """과거 요청의 결과가 다른 사용자의 게임 화면에 적용되는 것을 막는다."""
+
+    action_panel, state, queue, _ = _speech_fifo_fragment_state(monkeypatch)
+    original = state["game.latest_snapshot"]
+    response = deepcopy(original)
+    response["game"].update(state_version=20, last_sequence=50)
+    if boundary == "user":
+        state["game.client"].user_id = "other-user"
+    elif boundary == "game":
+        response["game"]["game_id"] = "00000000-0000-4000-8000-000000000009"
+    else:
+        response["me"]["player_id"] = "other-player"
+    queue.future.set_result(response)
+    action_panel._render_speech_queue.__wrapped__(game_id=GAME_ID)
+    assert state["game.latest_snapshot"] is original
+    assert queue.cancellations
+    if boundary == "user":
+        assert queue.advance_calls == 0
+        assert "game.speech_queue" not in state
+
+
+@pytest.mark.parametrize("boundary", ["navigation", "user", "no-user", "game", "save-pending",
+                                    "save-flight", "save-unknown", "save-refresh", "save-failed"])
+def test_speech_fifo_maintenance_cancels_unsent_on_save_or_navigation(monkeypatch, boundary):
+    """이탈과 저장 재확인 상태에서 미전송 예약을 남겨 뒤늦게 제출하지 않는다."""
+
+    action_panel, state, queue, _ = _speech_fifo_fragment_state(monkeypatch)
+    args = {"user_id": "synthetic", "page": "game", "game_id": GAME_ID,
+            "snapshot": state["game.latest_snapshot"]}
+    if boundary.startswith("save-"):
+        status = {"save-pending": "PENDING_TO_RENDER", "save-flight": "IN_FLIGHT",
+                  "save-unknown": "RETRYABLE_UNKNOWN", "save-refresh": "REFRESH_REQUIRED",
+                  "save-failed": "REFRESH_FAILED"}[boundary]
+        state["game.save_pending"] = {"game_id": GAME_ID, "status": status}
+    elif boundary == "navigation":
+        args["page"] = "home"
+    elif boundary == "game":
+        args["game_id"] = "other-game"
+    else:
+        args["user_id"] = None if boundary == "no-user" else "other-user"
+    action_panel.maintain_speech_queue(**args)
+    assert queue.messages == []
+    assert queue.cancellations
+    assert queue.advance_calls == 0
+    assert state["game.client"].method_calls == []
+
+
+@pytest.mark.parametrize("payload", ["delta", "tick", "gap", "component-failure"])
+def test_speech_fifo_busy_sync_applies_events_without_extra_get(monkeypatch, payload):
+    """대기열이 있어도 SSE를 유지하며 공개 delta는 적용하고 보강 GET만 미룬다."""
+
+    from frontend_user.app_pages import game_page
+    from frontend_user.components import action_panel
+
+    current = _discussion_snapshot()
+    client = Mock(user_id="synthetic", config=SimpleNamespace(api_url="http://localhost"))
+    queue = _SpeechQueueDouble(client, current)
+    queue.enqueue("전송 대기")
+    state = {"game.latest_snapshot": current, "game.client": client, "game.speech_queue": queue,
+             "game.sync_tick": 1000, "game.activity_tick": 0}
+    envelope = None
+    if payload in {"delta", "gap"}:
+        envelope = _envelope([_operation(front_sequence=43 if payload == "delta" else 45)])
+    elif payload == "component-failure":
+        state["game.sync_component_failed"] = True
+    mount = Mock(return_value=envelope)
+    monkeypatch.setattr(game_page.st, "session_state", state)
+    monkeypatch.setattr(action_panel, "SpeechQueue", _SpeechQueueDouble)
+    monkeypatch.setattr(game_page, "mount_sse", mount)
+    result = game_page._sync_snapshot(client=client, snapshot=current)
+    mount.assert_called_once()
+    assert mount.call_args.kwargs["last_sequence"] == 42
+    assert state["game.activity_tick"] == 0
+    if payload == "delta":
+        assert result["game"]["state_version"] == 13
+        assert result["game"]["last_sequence"] == 43
+        assert result["public_events"] == [_operation()["payload"]]
+        assert state["game.latest_snapshot"] == result
+    else:
+        assert result == current
+    client.get_game.assert_not_called()
+    client.get_sync.assert_not_called()
+    client.submit_command.assert_not_called()
+
+
+def _speech_fifo_controlled_engine(monkeypatch):
+    """실제 큐의 요청 스레드를 수동 실행해 sleep과 실서비스 없이 경합 순서를 고정한다."""
+
+    from frontend_user.components import action_panel
+    from frontend_user.core import commands
+
+    now = [0.0]
+    work = []
+
+    class ControlledThread:
+        """시작은 예약만 기록하고 요청 본문은 테스트가 선택한 시점에 실행한다."""
+
+        def __init__(self, *, target, args, **kwargs):
+            self.target = target
+            self.args = args
+
+        def start(self):
+            work.append(lambda: self.target(*self.args))
+
+    class ControlledQueue(commands.SpeechQueue):
+        """큐의 실제 상태 전이는 그대로 사용하고 경과 시간만 합성 시계로 제공한다."""
+
+        def __init__(self, client, snapshot):
+            super().__init__(client, snapshot, clock=lambda: now[0])
+
+    current = _discussion_snapshot()
+    client = Mock(user_id="synthetic")
+    client.get_game.side_effect = lambda *_: {"data": deepcopy(current)}
+
+    def succeed(**kwargs):
+        current["game"]["state_version"] += 1
+        current["game"]["last_sequence"] += 1
+        version = current["game"]["state_version"]
+        current["action_window"]["window_id"] = f"00000000-0000-4000-8000-{version:012d}"
+        return {"data": {"command_id": kwargs["idempotency_key"], "command_type": "SPEAK",
+                         "accepted_state_version": kwargs["command"]["expected_state_version"],
+                         "result_state_version": version,
+                         "sync_url": f"/api/v1/games/{GAME_ID}/sync"}}
+
+    client.submit_command.side_effect = succeed
+    state = {"game.client": client, "game.latest_snapshot": deepcopy(current),
+             "navigation.page": "game"}
+    ui = Mock(session_state=state)
+    ui.container.side_effect = lambda **kwargs: nullcontext()
+    monkeypatch.setattr(action_panel, "st", ui)
+    monkeypatch.setattr(action_panel, "SpeechQueue", ControlledQueue)
+    monkeypatch.setattr(commands, "Thread", ControlledThread)
+    return action_panel, state, current, client, work, now
+
+
+def test_speech_fifo_three_enters_dispatch_once_each_in_reserved_order(monkeypatch):
+    """첫 요청이 끝나기 전 입력한 세 발언이 실제 큐에서 최신 버전·독립 키로 전송된다."""
+
+    action_panel, state, _, client, work, _ = _speech_fifo_controlled_engine(monkeypatch)
+    initial = deepcopy(state["game.latest_snapshot"])
+    for message in ["첫 발언", "두 줄\n발언", "셋째 발언"]:
+        state[f"form.message.{GAME_ID}"] = message
+        action_panel._capture_discussion_command(game_id=GAME_ID, snapshot=initial,
+                                                  command_type="SPEAK", user_id="synthetic")
+    queue = state["game.speech_queue"]
+    assert queue.view()["pending"] == ["첫 발언", "두 줄 발언", "셋째 발언"]
+    assert client.method_calls == []
+    assert not work
+    for completed in range(3):
+        for _ in range(3):
+            action_panel._render_speech_queue.__wrapped__(game_id=GAME_ID)
+        assert len(work) == 1
+        assert client.submit_command.call_count == completed
+        work.pop(0)()
+        action_panel._render_speech_queue.__wrapped__(game_id=GAME_ID)
+        assert queue.view()["completed"] == completed + 1
+        assert state["game.latest_snapshot"]["game"]["state_version"] == 13 + completed
+    assert not queue.busy
+    assert queue.view()["pending"] == []
+    assert "game.command_pending" not in state
+    calls = [call.kwargs for call in client.submit_command.call_args_list]
+    assert [call["command"]["message"] for call in calls] == ["첫 발언", "두 줄 발언", "셋째 발언"]
+    assert [call["command"]["expected_state_version"] for call in calls] == [12, 13, 14]
+    assert len({call["idempotency_key"] for call in calls}) == 3
+
+
+def test_speech_fifo_conflict_retries_automatically_without_losing_next_message(monkeypatch):
+    """같은 토론의 명확한 버전 충돌은 원문을 다시 입력하지 않아도 새 창으로 재시도한다."""
+
+    from frontend_user.core.api_client import ApiResponseError
+
+    action_panel, state, current, client, work, _ = _speech_fifo_controlled_engine(monkeypatch)
+    succeed = client.submit_command.side_effect
+
+    def reject_first(**kwargs):
+        current["game"].update(state_version=13, last_sequence=43)
+        current["action_window"]["window_id"] = "00000000-0000-4000-8000-000000000002"
+        client.submit_command.side_effect = succeed
+        raise ApiResponseError(status_code=409, code="STALE_STATE_VERSION")
+
+    client.submit_command.side_effect = reject_first
+    for message in ["경합한 첫 발언", "대기 중인 둘째 발언"]:
+        state[f"form.message.{GAME_ID}"] = message
+        action_panel._capture_discussion_command(game_id=GAME_ID, snapshot=state["game.latest_snapshot"],
+                                                  command_type="SPEAK", user_id="synthetic")
+    for _ in range(3):
+        action_panel._render_speech_queue.__wrapped__(game_id=GAME_ID)
+        assert len(work) == 1
+        work.pop(0)()
+        action_panel._render_speech_queue.__wrapped__(game_id=GAME_ID)
+    calls = [call.kwargs for call in client.submit_command.call_args_list]
+    assert [call["command"]["message"] for call in calls] == [
+        "경합한 첫 발언", "경합한 첫 발언", "대기 중인 둘째 발언"]
+    assert [call["command"]["expected_state_version"] for call in calls] == [12, 13, 14]
+    assert calls[0]["idempotency_key"] != calls[1]["idempotency_key"]
+    assert state["game.speech_queue"].view()["completed"] == 2
+    assert "game.command_pending" not in state
+
+
+@pytest.mark.parametrize("boundary", ["phase", "dead", "saved", "round", "day", "deadline", "expired"])
+def test_speech_fifo_observed_scope_change_cancels_before_scheduled_request(monkeypatch, boundary):
+    """요청 스레드가 예약된 직후 토론 경계가 바뀌면 미전송 발언을 POST하지 않는다."""
+
+    action_panel, state, _, client, work, _ = _speech_fifo_controlled_engine(monkeypatch)
+    snapshot = state["game.latest_snapshot"]
+    state[f"form.message.{GAME_ID}"] = "경계 전 미전송 발언"
+    action_panel._capture_discussion_command(game_id=GAME_ID, snapshot=snapshot,
+                                              command_type="SPEAK", user_id="synthetic")
+    queue = state["game.speech_queue"]
+    action_panel._render_speech_queue.__wrapped__(game_id=GAME_ID)
+    changed = deepcopy(snapshot)
+    changed["game"].update(state_version=13, last_sequence=43)
+    if boundary == "phase":
+        changed["game"]["phase"] = "NIGHT_ACTION"
+    elif boundary == "dead":
+        changed["me"]["alive"] = False
+    elif boundary == "saved":
+        changed["game"]["status"] = "SAVED"
+    elif boundary in {"round", "day"}:
+        changed["game"]["round" if boundary == "round" else "day_number"] = 2
+    elif boundary == "deadline":
+        changed["action_window"]["deadline_at"] = "2026-09-08T00:02:00Z"
+    else:
+        changed["action_window"]["remaining_ms"] = 0
+    action_panel.maintain_speech_queue(user_id="synthetic", page="game", game_id=GAME_ID,
+                                       snapshot=changed)
+    assert queue.view()["pending"] == []
+    assert queue.view()["status"] == "CANCELLED"
+    assert len(work) == 1
+    work.pop(0)()
+    action_panel._render_speech_queue.__wrapped__(game_id=GAME_ID)
+    client.submit_command.assert_not_called()
+    assert not queue.busy
+
+
+@pytest.mark.parametrize("phase", ["DAY_DISCUSSION", "FINAL_DISCUSSION"])
+def test_speech_fifo_rate_limited_input_remains_available(monkeypatch, phase):
+    """제한 응답이 제출 완료를 표시해도 일반·최종 토론에서 8·9번 입력은 열어 둔다."""
+
+    from frontend_user.components import action_panel
+
+    view, current, client = _speech_recovery_view(monkeypatch)
+    current["game"]["phase"] = phase
+    current["legal_actions"] = ["SAVE_AND_EXIT"]
+    current["action_window"].update(legal_actions=["SAVE_AND_EXIT"], has_submitted=True)
+    view.run()
+    assert not view.exception
+    assert len(view.chat_input) == 1
+    assert not view.chat_input[0].disabled
+    status = action_panel._action_status(current)
+    assert status is not None and "예약" in status[0] and "발언 제한" in status[0]
+    widget_id = view.chat_input[0].proto.id
+    messages = ["8번째 예약 발언", "9번째 예약 발언"]
+    for index, message in enumerate(messages, start=1):
+        view.chat_input[0].set_value(message).run()
+        assert not view.exception and not view.error
+        assert view.session_state["game.speech_queue"].messages == messages[:index]
+        assert len(view.chat_input) == 1 and not view.chat_input[0].disabled
+        assert view.chat_input[0].proto.id == widget_id
+    client.submit_command.assert_not_called()
+
+
+@pytest.mark.parametrize("next_state", ["allowed", "expired", "paused", "dead", "saved"])
+def test_speech_fifo_rate_limit_preserves_order_until_permission_returns(monkeypatch, next_state):
+    """제출 완료를 동반한 제한은 8·9번을 보존하되 마감·정지·사망·저장은 취소한다."""
+
+    action_panel, state, current, client, work, now = _speech_fifo_controlled_engine(monkeypatch)
+    rendered = deepcopy(current)
+    current["legal_actions"] = ["SAVE_AND_EXIT"]
+    current["action_window"].update(legal_actions=["SAVE_AND_EXIT"], has_submitted=True)
+    state["game.latest_snapshot"] = deepcopy(current)
+    messages = ["8번째 예약 발언", "9번째 예약 발언"]
+    for message in messages:
+        state[f"form.message.{GAME_ID}"] = message
+        # 입력을 그린 뒤 제한 응답이 도착해도 callback은 최신 상태에서 예약을 유지한다.
+        action_panel._capture_discussion_command(game_id=GAME_ID, snapshot=rendered,
+                                                  command_type="SPEAK", user_id="synthetic")
+    queue = state["game.speech_queue"]
+    action_panel._render_speech_queue.__wrapped__(game_id=GAME_ID)
+    assert len(work) == 1
+    work.pop(0)()
+    action_panel._render_speech_queue.__wrapped__(game_id=GAME_ID)
+    assert queue.view()["pending"] == messages
+    assert queue.view()["status"] == "WAITING"
+    client.submit_command.assert_not_called()
+    for _ in range(3):
+        action_panel._render_speech_queue.__wrapped__(game_id=GAME_ID)
+    assert not work
+    if next_state != "allowed":
+        if next_state == "expired":
+            current["action_window"]["remaining_ms"] = 0
+        elif next_state == "paused":
+            current["action_window"]["paused"] = True
+        elif next_state == "dead":
+            current["me"]["alive"] = False
+        else:
+            current["game"]["status"] = "SAVED"
+        state["game.latest_snapshot"] = deepcopy(current)
+        action_panel.maintain_speech_queue(user_id="synthetic", page="game", game_id=GAME_ID,
+                                           snapshot=current)
+        action_panel._render_speech_queue.__wrapped__(game_id=GAME_ID)
+        assert queue.view()["status"] == "CANCELLED"
+        assert queue.view()["pending"] == []
+        assert queue.view()["completed"] == 0
+        assert not work and not queue.busy
+        client.submit_command.assert_not_called()
+        return
+    current["legal_actions"] = ["SPEAK", "PASS"]
+    current["action_window"].update(legal_actions=["SPEAK", "PASS"], has_submitted=False)
+    now[0] = 3.0
+    for _ in range(2):
+        action_panel._render_speech_queue.__wrapped__(game_id=GAME_ID)
+        assert len(work) == 1
+        work.pop(0)()
+        action_panel._render_speech_queue.__wrapped__(game_id=GAME_ID)
+    assert queue.view()["completed"] == 2
+    assert queue.view()["pending"] == []
+    calls = [call.kwargs for call in client.submit_command.call_args_list]
+    assert [call["command"]["message"] for call in calls] == messages
+    assert [call["command"]["expected_state_version"] for call in calls] == [12, 13]
+    assert len({call["idempotency_key"] for call in calls}) == 2
 
 
 def _snapshot():

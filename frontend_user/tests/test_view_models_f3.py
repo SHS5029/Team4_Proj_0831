@@ -473,15 +473,53 @@ def test_only_exact_dummy_summary_is_projected_as_fixed_action(stage, action, su
     assert "summary" not in record
 
 
-@pytest.mark.parametrize("tick,component_failed,expected", [(1, False, 0), (0, False, 1), (1, True, 1)])
-def test_python_sync_only_runs_before_tick_or_when_component_fails(tick, component_failed, expected):
+@pytest.mark.parametrize("tick", [0, 1])
+def test_python_sync_fallback_belongs_only_to_the_failed_component_refresh(monkeypatch, tick):
+    """초기 tick 여부와 무관하게 현재 component가 실패한 갱신만 Python fallback을 쓴다.
+
+    전체 페이지 fixture는 연결 라벨 초기화로 추가 rerun을 만들 수 있다. fallback
+    정책은 live fragment가 호출하는 한 번의 동기화 경계에서 검증하고, 실패 뒤 정상
+    복구 시에는 이전 실패 표시 때문에 Python polling이 계속되지 않는지도 확인한다.
+    """
+
+    from types import SimpleNamespace
     from unittest.mock import Mock
+
     snapshot = _snapshot()
     client = _Client(snapshot)
-    client.get_sync = Mock(return_value=None)
-    app = AppTest.from_function(_page_app, args=(client, snapshot, tick, True, False, component_failed)).run()
-    assert not app.exception
-    assert client.get_sync.call_count == expected
+    client.config = SimpleNamespace(api_url="http://127.0.0.1:1")
+    client.user_id = HUMAN
+    client.get_sync = Mock(return_value={"data": {
+        "game_id": GAME, "mode": "DELTA", "from_state_version": 12,
+        "state_version": 12, "last_sequence": 0, "operations": [], "snapshot": None,
+    }})
+    # 진행 표시 GET의 tick 처리와 transport fallback을 분리해 현재 갱신만 관찰한다.
+    state = {"game.sync_tick": tick, "game.activity_tick": tick, "game.client": client}
+    monkeypatch.setattr(game_page.st, "session_state", state)
+
+    for component_failed in (False, True, False, True):
+        def mount(**kwargs):
+            # 실제 bridge처럼 매 갱신에서 실패 표시를 다시 결정한다. 정상 component도
+            # 새 envelope가 없는 동안에는 None을 반환하므로 이를 실패로 간주하지 않는다.
+            state["game.sync_component_failed"] = component_failed
+            return None
+
+        mounted = Mock(side_effect=mount)
+        monkeypatch.setattr(game_page, "mount_sse", mounted)
+        client.get_sync.reset_mock()
+        assert game_page._sync_snapshot(client=client, snapshot=snapshot) == snapshot
+        mounted.assert_called_once_with(
+            backend_url=client.config.api_url, game_id=GAME, user_id=HUMAN,
+            last_sequence=0, after_state_version=12,
+        )
+        if component_failed:
+            client.get_sync.assert_called_once_with(
+                game_id=GAME, after_state_version=12, after_sequence=0,
+            )
+        else:
+            client.get_sync.assert_not_called()
+        assert state["game.latest_snapshot"] == snapshot
+    assert client.reads == 0 and client.calls == []
 
 
 def test_hidden_game_blocks_action_panel_and_shell_buttons():

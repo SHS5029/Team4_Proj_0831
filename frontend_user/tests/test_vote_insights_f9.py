@@ -400,7 +400,7 @@ def test_missing_or_malformed_summary_keeps_existing_game_usable(phase, summary)
 
 
 def test_action_countdown_fragment_does_not_query_insights(monkeypatch):
-    """타이머 callback만 재실행해 보조 조회가 전체 렌더 경계 밖으로 새지 않는지 확인한다."""
+    """시계 callback을 반복해도 입력·보조 조회가 다시 실행되지 않는지 확인한다."""
 
     from frontend_user.components import action_panel
 
@@ -413,16 +413,17 @@ def test_action_countdown_fragment_does_not_query_insights(monkeypatch):
         return decorate
 
     monkeypatch.setattr(action_panel.st, "markdown", lambda *args, **kwargs: None)
+    monkeypatch.setattr(action_panel.st, "session_state", {})
     monkeypatch.setattr(action_panel.st, "fragment", fragment)
     monkeypatch.setattr(action_panel, "_process_pending", lambda **kwargs: None)
     monkeypatch.setattr(action_panel, "_countdown_remaining_ms", lambda **kwargs: 25000)
     monkeypatch.setattr(action_panel, "_timer_is_running", lambda snapshot: True)
-    monkeypatch.setattr(action_panel, "_render_discussion", lambda **kwargs: None)
     monkeypatch.setattr(action_panel, "_render_action_status", lambda **kwargs: None)
     monkeypatch.setattr(action_panel, "_mount_action_attention", lambda **kwargs: None)
-    with patch.object(vote_insights, "render") as read:
+    with patch.object(vote_insights, "render") as read, patch.object(action_panel, "_render_actions") as inputs:
         current = snapshot("DAY_DISCUSSION")
-        action_panel.render(client=FakeClient(), game_id=GAME, snapshot=current)
+        action_panel._render_clock(game_id=GAME, snapshot=current)
         for _ in range(3):
-            callbacks[0](game_id=GAME, snapshot=current)
-        assert read.call_count == 1
+            callbacks[0](game_id=GAME, snapshot=current, running=True)
+        read.assert_not_called()
+        inputs.assert_not_called()
