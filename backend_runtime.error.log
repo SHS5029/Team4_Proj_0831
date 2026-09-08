@@ -6478,3 +6478,343 @@ RuntimeError: Event loop is closed
 {"sequence":2950,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:54:36.734477Z","player_id":null,"phase":"DAY_DISCUSSION","state_version":17,"stage":"COMMAND_APPLIED","action":null,"summary":"게임 행동을 저장했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
 {"sequence":2951,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:54:36.734477Z","player_id":null,"phase":"DAY_DISCUSSION","state_version":17,"stage":"PHASE_CHANGED","action":null,"summary":"게임 단계가 변경되었습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
 {"sequence":2952,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:54:37.283021Z","player_id":"a0299c48-83f6-4b54-9a03-c45d8c133786","phase":"DAY_DISCUSSION","state_version":24,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":2953,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:54:37.481252Z","player_id":"a0299c48-83f6-4b54-9a03-c45d8c133786","phase":"DAY_DISCUSSION","state_version":24,"stage":"SKIPPED","action":null,"summary":"중복되거나 지난 작업을 건너뛰었습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":2954,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:54:37.772709Z","player_id":"1c126ba0-1b20-4de8-97a1-6161f0792b9f","phase":"DAY_DISCUSSION","state_version":33,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"47abb28c-e831-449f-88ed-627908a877f7"}
+{"sequence":2955,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:54:37.906241Z","player_id":"1c126ba0-1b20-4de8-97a1-6161f0792b9f","phase":"DAY_DISCUSSION","state_version":33,"stage":"SKIPPED","action":null,"summary":"중복되거나 지난 작업을 건너뛰었습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"47abb28c-e831-449f-88ed-627908a877f7"}
+{"sequence":2956,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:54:38.175496Z","player_id":"6284fc9b-6f39-4a15-bea2-27a0ee9def51","phase":"DAY_DISCUSSION","state_version":17,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+2026-09-08 10:54:38,406 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:54:38,409 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 202 Accepted"
+2026-09-08 10:54:38,577 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:54:38,711 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:54:38,861 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:54:38,990 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+{"sequence":2957,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:54:38.990103Z","player_id":"6284fc9b-6f39-4a15-bea2-27a0ee9def51","phase":"DAY_DISCUSSION","state_version":17,"stage":"CONTEXT_READY","action":null,"summary":"허용된 게임 정보를 확인했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+{"sequence":2958,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:54:38.990103Z","player_id":"6284fc9b-6f39-4a15-bea2-27a0ee9def51","phase":"DAY_DISCUSSION","state_version":17,"stage":"DECIDING","action":null,"summary":"허용된 행동을 선택하고 있습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+2026-09-08 10:54:48,917 INFO httpx HTTP Request: POST https://api.openai.com/v1/responses "HTTP/1.1 200 OK"
+{"sequence":2959,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:54:48.976527Z","player_id":"6284fc9b-6f39-4a15-bea2-27a0ee9def51","phase":"DAY_DISCUSSION","state_version":17,"stage":"DECIDED","action":"SPEAK","summary":"행동 선택을 마쳤습니다. (발언)","decision_source":"MODEL","reason_code":null,"decision_basis":"COMPARE_STATEMENTS","game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+{"sequence":2960,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:54:49.897690Z","player_id":null,"phase":"DAY_DISCUSSION","state_version":18,"stage":"COMMAND_APPLIED","action":null,"summary":"게임 행동을 저장했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+2026-09-08 10:54:49,904 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+{"sequence":2961,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:54:49.904263Z","player_id":"6284fc9b-6f39-4a15-bea2-27a0ee9def51","phase":"DAY_DISCUSSION","state_version":17,"stage":"APPLIED","action":"SPEAK","summary":"선택한 행동을 게임에 반영했습니다. (발언)","decision_source":"MODEL","reason_code":null,"decision_basis":"COMPARE_STATEMENTS","game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+{"sequence":2962,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:54:51.855974Z","player_id":"a0299c48-83f6-4b54-9a03-c45d8c133786","phase":"DAY_DISCUSSION","state_version":25,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":2963,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:54:51.991099Z","player_id":"a0299c48-83f6-4b54-9a03-c45d8c133786","phase":"DAY_DISCUSSION","state_version":25,"stage":"SKIPPED","action":null,"summary":"중복되거나 지난 작업을 건너뛰었습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":2964,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:54:52.296229Z","player_id":"83e47d0a-a528-4f73-a37c-163b591698ff","phase":"DAY_DISCUSSION","state_version":34,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"47abb28c-e831-449f-88ed-627908a877f7"}
+{"sequence":2965,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:54:52.399806Z","player_id":"83e47d0a-a528-4f73-a37c-163b591698ff","phase":"DAY_DISCUSSION","state_version":34,"stage":"SKIPPED","action":null,"summary":"중복되거나 지난 작업을 건너뛰었습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"47abb28c-e831-449f-88ed-627908a877f7"}
+{"sequence":2966,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:54:52.748851Z","player_id":"51200aa3-8658-45c9-9b3c-856bdbfbd619","phase":"DAY_DISCUSSION","state_version":18,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+2026-09-08 10:54:52,974 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:54:52,978 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 202 Accepted"
+2026-09-08 10:54:53,162 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:54:53,303 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:54:53,435 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:54:53,552 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+{"sequence":2967,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:54:53.552455Z","player_id":"51200aa3-8658-45c9-9b3c-856bdbfbd619","phase":"DAY_DISCUSSION","state_version":18,"stage":"CONTEXT_READY","action":null,"summary":"허용된 게임 정보를 확인했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+{"sequence":2968,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:54:53.552455Z","player_id":"51200aa3-8658-45c9-9b3c-856bdbfbd619","phase":"DAY_DISCUSSION","state_version":18,"stage":"DECIDING","action":null,"summary":"허용된 행동을 선택하고 있습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+2026-09-08 10:54:56,799 INFO httpx HTTP Request: POST https://api.openai.com/v1/responses "HTTP/1.1 200 OK"
+{"sequence":2969,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:54:56.818747Z","player_id":"51200aa3-8658-45c9-9b3c-856bdbfbd619","phase":"DAY_DISCUSSION","state_version":18,"stage":"DECIDED","action":"SPEAK","summary":"행동 선택을 마쳤습니다. (발언)","decision_source":"MODEL","reason_code":null,"decision_basis":"COMPARE_STATEMENTS","game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+{"sequence":2970,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:54:57.985160Z","player_id":null,"phase":"DAY_DISCUSSION","state_version":19,"stage":"COMMAND_APPLIED","action":null,"summary":"게임 행동을 저장했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+2026-09-08 10:54:58,000 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+{"sequence":2971,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:54:58.000743Z","player_id":"51200aa3-8658-45c9-9b3c-856bdbfbd619","phase":"DAY_DISCUSSION","state_version":18,"stage":"APPLIED","action":"SPEAK","summary":"선택한 행동을 게임에 반영했습니다. (발언)","decision_source":"MODEL","reason_code":null,"decision_basis":"COMPARE_STATEMENTS","game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+{"sequence":2972,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:01.540738Z","player_id":"83e47d0a-a528-4f73-a37c-163b591698ff","phase":"DAY_DISCUSSION","state_version":34,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"47abb28c-e831-449f-88ed-627908a877f7"}
+{"sequence":2973,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:01.697569Z","player_id":"83e47d0a-a528-4f73-a37c-163b591698ff","phase":"DAY_DISCUSSION","state_version":34,"stage":"SKIPPED","action":null,"summary":"중복되거나 지난 작업을 건너뛰었습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"47abb28c-e831-449f-88ed-627908a877f7"}
+{"sequence":2974,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:02.028423Z","player_id":"cb71e07b-2fd2-4a42-a8cc-2026b8cc23c9","phase":"DAY_DISCUSSION","state_version":26,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":2975,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:02.147968Z","player_id":"cb71e07b-2fd2-4a42-a8cc-2026b8cc23c9","phase":"DAY_DISCUSSION","state_version":26,"stage":"SKIPPED","action":null,"summary":"중복되거나 지난 작업을 건너뛰었습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":2976,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:02.461725Z","player_id":"460c1a27-e9cd-4220-a963-831a07428560","phase":"DAY_DISCUSSION","state_version":19,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+2026-09-08 10:55:02,698 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:02,698 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 202 Accepted"
+2026-09-08 10:55:02,888 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:03,055 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:03,183 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:03,336 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+{"sequence":2977,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:03.338688Z","player_id":"460c1a27-e9cd-4220-a963-831a07428560","phase":"DAY_DISCUSSION","state_version":19,"stage":"CONTEXT_READY","action":null,"summary":"허용된 게임 정보를 확인했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+{"sequence":2978,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:03.339667Z","player_id":"460c1a27-e9cd-4220-a963-831a07428560","phase":"DAY_DISCUSSION","state_version":19,"stage":"DECIDING","action":null,"summary":"허용된 행동을 선택하고 있습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+2026-09-08 10:55:06,083 INFO httpx HTTP Request: POST https://api.openai.com/v1/responses "HTTP/1.1 200 OK"
+{"sequence":2979,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:06.140450Z","player_id":"460c1a27-e9cd-4220-a963-831a07428560","phase":"DAY_DISCUSSION","state_version":19,"stage":"DECIDED","action":"SPEAK","summary":"행동 선택을 마쳤습니다. (발언)","decision_source":"MODEL","reason_code":null,"decision_basis":"COMPARE_STATEMENTS","game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+{"sequence":2980,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:07.167341Z","player_id":null,"phase":"DAY_DISCUSSION","state_version":20,"stage":"COMMAND_APPLIED","action":null,"summary":"게임 행동을 저장했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+2026-09-08 10:55:07,176 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+{"sequence":2981,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:07.177777Z","player_id":"460c1a27-e9cd-4220-a963-831a07428560","phase":"DAY_DISCUSSION","state_version":19,"stage":"APPLIED","action":"SPEAK","summary":"선택한 행동을 게임에 반영했습니다. (발언)","decision_source":"MODEL","reason_code":null,"decision_basis":"COMPARE_STATEMENTS","game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+{"sequence":2982,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:07.647475Z","player_id":null,"phase":"DAY_VOTE","state_version":27,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":2983,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:07.680111Z","player_id":null,"phase":"DAY_VOTE","state_version":27,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":2984,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:07.711361Z","player_id":null,"phase":"DAY_VOTE","state_version":27,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":2985,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:07.771187Z","player_id":null,"phase":"DAY_VOTE","state_version":27,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+2026-09-08 10:55:08,030 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:08,033 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:08,040 ERROR asyncio Task exception was never retrieved
+future: <Task finished name='Task-5284' coro=<AsyncClient.aclose() done, defined at C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpx\_client.py:1978> exception=RuntimeError('Event loop is closed')>
+Traceback (most recent call last):
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpx\_client.py", line 1985, in aclose
+    await self._transport.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpx\_transports\default.py", line 406, in aclose
+    await self._pool.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_async\connection_pool.py", line 353, in aclose
+    await self._close_connections(closing_connections)
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_async\connection_pool.py", line 345, in _close_connections
+    await connection.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_async\connection.py", line 173, in aclose
+    await self._connection.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_async\http11.py", line 258, in aclose
+    await self._network_stream.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_backends\anyio.py", line 53, in aclose
+    await self._stream.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\anyio\streams\tls.py", line 248, in aclose
+    await self.transport_stream.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\anyio\_backends\_asyncio.py", line 1467, in aclose
+    self._transport.close()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\asyncio\proactor_events.py", line 109, in close
+    self._loop.call_soon(self._call_connection_lost, None)
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\asyncio\base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\asyncio\base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+2026-09-08 10:55:08,044 ERROR asyncio Task exception was never retrieved
+future: <Task finished name='Task-5285' coro=<AsyncClient.aclose() done, defined at C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpx\_client.py:1978> exception=RuntimeError('Event loop is closed')>
+Traceback (most recent call last):
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpx\_client.py", line 1985, in aclose
+    await self._transport.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpx\_transports\default.py", line 406, in aclose
+    await self._pool.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_async\connection_pool.py", line 353, in aclose
+    await self._close_connections(closing_connections)
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_async\connection_pool.py", line 345, in _close_connections
+    await connection.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_async\connection.py", line 173, in aclose
+    await self._connection.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_async\http11.py", line 258, in aclose
+    await self._network_stream.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_backends\anyio.py", line 53, in aclose
+    await self._stream.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\anyio\streams\tls.py", line 248, in aclose
+    await self.transport_stream.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\anyio\_backends\_asyncio.py", line 1467, in aclose
+    self._transport.close()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\asyncio\proactor_events.py", line 109, in close
+    self._loop.call_soon(self._call_connection_lost, None)
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\asyncio\base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\asyncio\base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+2026-09-08 10:55:08,048 ERROR asyncio Task exception was never retrieved
+future: <Task finished name='Task-5286' coro=<AsyncClient.aclose() done, defined at C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpx\_client.py:1978> exception=RuntimeError('Event loop is closed')>
+Traceback (most recent call last):
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpx\_client.py", line 1985, in aclose
+    await self._transport.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpx\_transports\default.py", line 406, in aclose
+    await self._pool.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_async\connection_pool.py", line 353, in aclose
+    await self._close_connections(closing_connections)
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_async\connection_pool.py", line 345, in _close_connections
+    await connection.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_async\connection.py", line 173, in aclose
+    await self._connection.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_async\http11.py", line 258, in aclose
+    await self._network_stream.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_backends\anyio.py", line 53, in aclose
+    await self._stream.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\anyio\streams\tls.py", line 248, in aclose
+    await self.transport_stream.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\anyio\_backends\_asyncio.py", line 1467, in aclose
+    self._transport.close()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\asyncio\proactor_events.py", line 109, in close
+    self._loop.call_soon(self._call_connection_lost, None)
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\asyncio\base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\asyncio\base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+2026-09-08 10:55:08,050 ERROR asyncio Task exception was never retrieved
+future: <Task finished name='Task-5287' coro=<AsyncClient.aclose() done, defined at C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpx\_client.py:1978> exception=RuntimeError('Event loop is closed')>
+Traceback (most recent call last):
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpx\_client.py", line 1985, in aclose
+    await self._transport.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpx\_transports\default.py", line 406, in aclose
+    await self._pool.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_async\connection_pool.py", line 353, in aclose
+    await self._close_connections(closing_connections)
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_async\connection_pool.py", line 345, in _close_connections
+    await connection.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_async\connection.py", line 173, in aclose
+    await self._connection.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_async\http11.py", line 258, in aclose
+    await self._network_stream.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_backends\anyio.py", line 53, in aclose
+    await self._stream.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\anyio\streams\tls.py", line 248, in aclose
+    await self.transport_stream.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\anyio\_backends\_asyncio.py", line 1467, in aclose
+    self._transport.close()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\asyncio\proactor_events.py", line 109, in close
+    self._loop.call_soon(self._call_connection_lost, None)
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\asyncio\base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\asyncio\base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+2026-09-08 10:55:08,054 ERROR asyncio Task exception was never retrieved
+future: <Task finished name='Task-5288' coro=<AsyncClient.aclose() done, defined at C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpx\_client.py:1978> exception=RuntimeError('Event loop is closed')>
+Traceback (most recent call last):
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpx\_client.py", line 1985, in aclose
+    await self._transport.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpx\_transports\default.py", line 406, in aclose
+    await self._pool.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_async\connection_pool.py", line 353, in aclose
+    await self._close_connections(closing_connections)
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_async\connection_pool.py", line 345, in _close_connections
+    await connection.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_async\connection.py", line 173, in aclose
+    await self._connection.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_async\http11.py", line 258, in aclose
+    await self._network_stream.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\httpcore\_backends\anyio.py", line 53, in aclose
+    await self._stream.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\anyio\streams\tls.py", line 248, in aclose
+    await self.transport_stream.aclose()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\anyio\_backends\_asyncio.py", line 1467, in aclose
+    self._transport.close()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\asyncio\proactor_events.py", line 109, in close
+    self._loop.call_soon(self._call_connection_lost, None)
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\asyncio\base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\asyncio\base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+2026-09-08 10:55:08,061 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 202 Accepted"
+2026-09-08 10:55:08,062 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 202 Accepted"
+2026-09-08 10:55:08,075 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:08,080 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 202 Accepted"
+2026-09-08 10:55:08,111 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:08,114 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 202 Accepted"
+2026-09-08 10:55:08,614 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:08,632 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:08,635 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:08,645 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:08,762 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:08,901 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:08,953 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:08,955 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:08,957 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:09,025 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+{"sequence":2986,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:09.027730Z","player_id":null,"phase":"DAY_VOTE","state_version":27,"stage":"CONTEXT_READY","action":null,"summary":"허용된 게임 정보를 확인했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":2987,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:09.028731Z","player_id":null,"phase":"DAY_VOTE","state_version":27,"stage":"DECIDING","action":null,"summary":"허용된 행동을 선택하고 있습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+2026-09-08 10:55:09,192 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:09,484 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:09,487 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:09,504 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+{"sequence":2988,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:09.506554Z","player_id":null,"phase":"DAY_VOTE","state_version":27,"stage":"CONTEXT_READY","action":null,"summary":"허용된 게임 정보를 확인했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":2989,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:09.506554Z","player_id":null,"phase":"DAY_VOTE","state_version":27,"stage":"DECIDING","action":null,"summary":"허용된 행동을 선택하고 있습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":2990,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:09.619386Z","player_id":"1c126ba0-1b20-4de8-97a1-6161f0792b9f","phase":"DAY_DISCUSSION","state_version":35,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"47abb28c-e831-449f-88ed-627908a877f7"}
+{"sequence":2991,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:09.727464Z","player_id":"1c126ba0-1b20-4de8-97a1-6161f0792b9f","phase":"DAY_DISCUSSION","state_version":35,"stage":"SKIPPED","action":null,"summary":"중복되거나 지난 작업을 건너뛰었습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"47abb28c-e831-449f-88ed-627908a877f7"}
+2026-09-08 10:55:09,763 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:09,765 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+{"sequence":2992,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:09.766019Z","player_id":null,"phase":"DAY_VOTE","state_version":27,"stage":"CONTEXT_READY","action":null,"summary":"허용된 게임 정보를 확인했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":2993,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:09.767023Z","player_id":null,"phase":"DAY_VOTE","state_version":27,"stage":"DECIDING","action":null,"summary":"허용된 행동을 선택하고 있습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":2994,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:09.770022Z","player_id":null,"phase":"DAY_VOTE","state_version":27,"stage":"CONTEXT_READY","action":null,"summary":"허용된 게임 정보를 확인했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":2995,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:09.771012Z","player_id":null,"phase":"DAY_VOTE","state_version":27,"stage":"DECIDING","action":null,"summary":"허용된 행동을 선택하고 있습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":2996,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:10.006897Z","player_id":"51cbd501-fba4-44fb-a9ed-6bfd82ebfa53","phase":"DAY_DISCUSSION","state_version":20,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+2026-09-08 10:55:10,265 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:10,268 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 202 Accepted"
+2026-09-08 10:55:10,442 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:10,586 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:10,727 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:10,905 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+{"sequence":2997,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:10.905949Z","player_id":"51cbd501-fba4-44fb-a9ed-6bfd82ebfa53","phase":"DAY_DISCUSSION","state_version":20,"stage":"CONTEXT_READY","action":null,"summary":"허용된 게임 정보를 확인했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+{"sequence":2998,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:10.905949Z","player_id":"51cbd501-fba4-44fb-a9ed-6bfd82ebfa53","phase":"DAY_DISCUSSION","state_version":20,"stage":"DECIDING","action":null,"summary":"허용된 행동을 선택하고 있습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+2026-09-08 10:55:11,419 INFO httpx HTTP Request: POST https://api.openai.com/v1/responses "HTTP/1.1 200 OK"
+{"sequence":2999,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:11.486749Z","player_id":null,"phase":"DAY_VOTE","state_version":27,"stage":"DECIDED","action":null,"summary":"행동 선택을 마쳤습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+2026-09-08 10:55:11,936 INFO httpx HTTP Request: POST https://api.openai.com/v1/responses "HTTP/1.1 200 OK"
+{"sequence":3000,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:11.979910Z","player_id":null,"phase":"DAY_VOTE","state_version":27,"stage":"DECIDED","action":null,"summary":"행동 선택을 마쳤습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+2026-09-08 10:55:12,015 INFO httpx HTTP Request: POST https://api.openai.com/v1/responses "HTTP/1.1 200 OK"
+{"sequence":3001,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:12.047743Z","player_id":null,"phase":"DAY_VOTE","state_version":27,"stage":"DECIDED","action":null,"summary":"행동 선택을 마쳤습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":3002,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:12.337028Z","player_id":null,"phase":"DAY_VOTE","state_version":27,"stage":"COMMAND_APPLIED","action":null,"summary":"게임 행동을 저장했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":3003,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:12.340573Z","player_id":null,"phase":"DAY_VOTE","state_version":27,"stage":"APPLIED","action":null,"summary":"선택한 행동을 게임에 반영했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+2026-09-08 10:55:12,623 INFO httpx HTTP Request: POST https://api.openai.com/v1/responses "HTTP/1.1 200 OK"
+{"sequence":3004,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:12.657634Z","player_id":null,"phase":"DAY_VOTE","state_version":27,"stage":"DECIDED","action":null,"summary":"행동 선택을 마쳤습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":3005,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:12.972703Z","player_id":null,"phase":"DAY_VOTE","state_version":27,"stage":"COMMAND_APPLIED","action":null,"summary":"게임 행동을 저장했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":3006,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:12.974719Z","player_id":null,"phase":"DAY_VOTE","state_version":27,"stage":"APPLIED","action":null,"summary":"선택한 행동을 게임에 반영했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+2026-09-08 10:55:13,282 INFO httpx HTTP Request: POST https://api.openai.com/v1/responses "HTTP/1.1 200 OK"
+{"sequence":3007,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:13.319081Z","player_id":"51cbd501-fba4-44fb-a9ed-6bfd82ebfa53","phase":"DAY_DISCUSSION","state_version":20,"stage":"DECIDED","action":"SPEAK","summary":"행동 선택을 마쳤습니다. (발언)","decision_source":"MODEL","reason_code":null,"decision_basis":"COMPARE_STATEMENTS","game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+{"sequence":3008,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:13.550269Z","player_id":null,"phase":"DAY_VOTE","state_version":27,"stage":"COMMAND_APPLIED","action":null,"summary":"게임 행동을 저장했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":3009,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:13.552279Z","player_id":null,"phase":"DAY_VOTE","state_version":27,"stage":"APPLIED","action":null,"summary":"선택한 행동을 게임에 반영했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":3010,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:14.153834Z","player_id":null,"phase":"DAY_VOTE","state_version":27,"stage":"COMMAND_APPLIED","action":null,"summary":"게임 행동을 저장했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":3011,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:14.153834Z","player_id":null,"phase":"DAY_VOTE","state_version":27,"stage":"APPLIED","action":null,"summary":"선택한 행동을 게임에 반영했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":3012,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:14.974785Z","player_id":null,"phase":"DAY_DISCUSSION","state_version":21,"stage":"COMMAND_APPLIED","action":null,"summary":"게임 행동을 저장했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+2026-09-08 10:55:14,982 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+{"sequence":3013,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:14.982303Z","player_id":"51cbd501-fba4-44fb-a9ed-6bfd82ebfa53","phase":"DAY_DISCUSSION","state_version":20,"stage":"APPLIED","action":"SPEAK","summary":"선택한 행동을 게임에 반영했습니다. (발언)","decision_source":"MODEL","reason_code":null,"decision_basis":"COMPARE_STATEMENTS","game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+{"sequence":3014,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:16.747479Z","player_id":"1c126ba0-1b20-4de8-97a1-6161f0792b9f","phase":"DAY_DISCUSSION","state_version":35,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"47abb28c-e831-449f-88ed-627908a877f7"}
+{"sequence":3015,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:16.847709Z","player_id":"1c126ba0-1b20-4de8-97a1-6161f0792b9f","phase":"DAY_DISCUSSION","state_version":35,"stage":"SKIPPED","action":null,"summary":"중복되거나 지난 작업을 건너뛰었습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"47abb28c-e831-449f-88ed-627908a877f7"}
+{"sequence":3016,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:17.119482Z","player_id":"d5d36c54-7646-435c-aaad-a5b72b2f1fb6","phase":"DAY_DISCUSSION","state_version":21,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+2026-09-08 10:55:17,358 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:17,361 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 202 Accepted"
+2026-09-08 10:55:17,562 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:17,699 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:17,876 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:18,013 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+{"sequence":3017,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:18.022063Z","player_id":"d5d36c54-7646-435c-aaad-a5b72b2f1fb6","phase":"DAY_DISCUSSION","state_version":21,"stage":"CONTEXT_READY","action":null,"summary":"허용된 게임 정보를 확인했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+{"sequence":3018,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:18.023732Z","player_id":"d5d36c54-7646-435c-aaad-a5b72b2f1fb6","phase":"DAY_DISCUSSION","state_version":21,"stage":"DECIDING","action":null,"summary":"허용된 행동을 선택하고 있습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+2026-09-08 10:55:21,070 INFO httpx HTTP Request: POST https://api.openai.com/v1/responses "HTTP/1.1 200 OK"
+{"sequence":3019,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:21.111520Z","player_id":"d5d36c54-7646-435c-aaad-a5b72b2f1fb6","phase":"DAY_DISCUSSION","state_version":21,"stage":"DECIDED","action":"SPEAK","summary":"행동 선택을 마쳤습니다. (발언)","decision_source":"MODEL","reason_code":null,"decision_basis":"ASK_FOR_CLARIFICATION","game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+{"sequence":3020,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:22.146764Z","player_id":null,"phase":"DAY_DISCUSSION","state_version":22,"stage":"COMMAND_APPLIED","action":null,"summary":"게임 행동을 저장했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+2026-09-08 10:55:22,163 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+{"sequence":3021,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:22.163741Z","player_id":"d5d36c54-7646-435c-aaad-a5b72b2f1fb6","phase":"DAY_DISCUSSION","state_version":21,"stage":"APPLIED","action":"SPEAK","summary":"선택한 행동을 게임에 반영했습니다. (발언)","decision_source":"MODEL","reason_code":null,"decision_basis":"ASK_FOR_CLARIFICATION","game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+{"sequence":3022,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:24.047545Z","player_id":"83e47d0a-a528-4f73-a37c-163b591698ff","phase":"DAY_DISCUSSION","state_version":36,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"47abb28c-e831-449f-88ed-627908a877f7"}
+{"sequence":3023,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:24.255652Z","player_id":"83e47d0a-a528-4f73-a37c-163b591698ff","phase":"DAY_DISCUSSION","state_version":36,"stage":"SKIPPED","action":null,"summary":"중복되거나 지난 작업을 건너뛰었습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"47abb28c-e831-449f-88ed-627908a877f7"}
+{"sequence":3024,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:24.693954Z","player_id":"6284fc9b-6f39-4a15-bea2-27a0ee9def51","phase":"DAY_DISCUSSION","state_version":22,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+{"sequence":3025,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:24.867301Z","player_id":"6284fc9b-6f39-4a15-bea2-27a0ee9def51","phase":"DAY_DISCUSSION","state_version":22,"stage":"SKIPPED","action":null,"summary":"중복되거나 지난 작업을 건너뛰었습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+{"sequence":3026,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:26.566270Z","player_id":"83e47d0a-a528-4f73-a37c-163b591698ff","phase":"DAY_DISCUSSION","state_version":36,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"47abb28c-e831-449f-88ed-627908a877f7"}
+{"sequence":3027,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:26.681562Z","player_id":"83e47d0a-a528-4f73-a37c-163b591698ff","phase":"DAY_DISCUSSION","state_version":36,"stage":"SKIPPED","action":null,"summary":"중복되거나 지난 작업을 건너뛰었습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"47abb28c-e831-449f-88ed-627908a877f7"}
+{"sequence":3028,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:26.949554Z","player_id":"6284fc9b-6f39-4a15-bea2-27a0ee9def51","phase":"DAY_DISCUSSION","state_version":22,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+{"sequence":3029,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:27.053874Z","player_id":"6284fc9b-6f39-4a15-bea2-27a0ee9def51","phase":"DAY_DISCUSSION","state_version":22,"stage":"SKIPPED","action":null,"summary":"중복되거나 지난 작업을 건너뛰었습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+{"sequence":3030,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:27.211191Z","player_id":null,"phase":"NIGHT_ACTION","state_version":28,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+2026-09-08 10:55:27,411 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:27,411 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 202 Accepted"
+2026-09-08 10:55:27,603 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:27,755 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:27,894 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:28,026 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+{"sequence":3031,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:28.026489Z","player_id":null,"phase":"NIGHT_ACTION","state_version":28,"stage":"CONTEXT_READY","action":null,"summary":"허용된 게임 정보를 확인했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":3032,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:28.026489Z","player_id":null,"phase":"NIGHT_ACTION","state_version":28,"stage":"DECIDING","action":null,"summary":"허용된 행동을 선택하고 있습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+2026-09-08 10:55:34,160 INFO httpx HTTP Request: POST https://api.openai.com/v1/responses "HTTP/1.1 200 OK"
+{"sequence":3033,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:34.181017Z","player_id":null,"phase":"NIGHT_ACTION","state_version":28,"stage":"DECIDED","action":null,"summary":"행동 선택을 마쳤습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":3034,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:34.462140Z","player_id":null,"phase":"NIGHT_ACTION","state_version":28,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+2026-09-08 10:55:34,693 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:34,703 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 202 Accepted"
+2026-09-08 10:55:34,875 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:35,005 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:35,111 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:35,240 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+{"sequence":3035,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:35.241401Z","player_id":null,"phase":"NIGHT_ACTION","state_version":28,"stage":"CONTEXT_READY","action":null,"summary":"허용된 게임 정보를 확인했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":3036,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:35.242418Z","player_id":null,"phase":"NIGHT_ACTION","state_version":28,"stage":"DECIDING","action":null,"summary":"허용된 행동을 선택하고 있습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+2026-09-08 10:55:39,285 INFO httpx HTTP Request: POST https://api.openai.com/v1/responses "HTTP/1.1 200 OK"
+{"sequence":3037,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:39.357634Z","player_id":null,"phase":"NIGHT_ACTION","state_version":28,"stage":"DECIDED","action":null,"summary":"행동 선택을 마쳤습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":3038,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:40.323056Z","player_id":null,"phase":"DAY_DISCUSSION","state_version":29,"stage":"COMMAND_APPLIED","action":null,"summary":"게임 행동을 저장했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":3039,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:40.324063Z","player_id":null,"phase":"DAY_DISCUSSION","state_version":29,"stage":"PHASE_CHANGED","action":null,"summary":"게임 단계가 변경되었습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":3040,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:40.326058Z","player_id":null,"phase":"NIGHT_ACTION","state_version":28,"stage":"APPLIED","action":null,"summary":"선택한 행동을 게임에 반영했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":3041,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:40.326058Z","player_id":null,"phase":"NIGHT_ACTION","state_version":28,"stage":"APPLIED","action":null,"summary":"선택한 행동을 게임에 반영했습니다.","decision_source":null,"reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":3042,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:42.223605Z","player_id":"1c126ba0-1b20-4de8-97a1-6161f0792b9f","phase":"DAY_DISCUSSION","state_version":37,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"47abb28c-e831-449f-88ed-627908a877f7"}
+{"sequence":3043,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:42.307787Z","player_id":"1c126ba0-1b20-4de8-97a1-6161f0792b9f","phase":"DAY_DISCUSSION","state_version":37,"stage":"SKIPPED","action":null,"summary":"중복되거나 지난 작업을 건너뛰었습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"47abb28c-e831-449f-88ed-627908a877f7"}
+{"sequence":3044,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:42.628193Z","player_id":"51cbd501-fba4-44fb-a9ed-6bfd82ebfa53","phase":"DAY_DISCUSSION","state_version":23,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+{"sequence":3045,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:42.735133Z","player_id":"51cbd501-fba4-44fb-a9ed-6bfd82ebfa53","phase":"DAY_DISCUSSION","state_version":23,"stage":"SKIPPED","action":null,"summary":"중복되거나 지난 작업을 건너뛰었습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+{"sequence":3046,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:43.111538Z","player_id":"a0299c48-83f6-4b54-9a03-c45d8c133786","phase":"DAY_DISCUSSION","state_version":29,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+2026-09-08 10:55:43,331 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:43,335 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 202 Accepted"
+2026-09-08 10:55:43,531 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:43,673 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:43,811 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:43,943 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+{"sequence":3047,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:43.950179Z","player_id":"a0299c48-83f6-4b54-9a03-c45d8c133786","phase":"DAY_DISCUSSION","state_version":29,"stage":"CONTEXT_READY","action":null,"summary":"허용된 게임 정보를 확인했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":3048,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:43.951178Z","player_id":"a0299c48-83f6-4b54-9a03-c45d8c133786","phase":"DAY_DISCUSSION","state_version":29,"stage":"DECIDING","action":null,"summary":"허용된 행동을 선택하고 있습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+2026-09-08 10:55:52,191 INFO httpx HTTP Request: POST https://api.openai.com/v1/responses "HTTP/1.1 200 OK"
+{"sequence":3049,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:52.255659Z","player_id":"a0299c48-83f6-4b54-9a03-c45d8c133786","phase":"DAY_DISCUSSION","state_version":29,"stage":"DECIDED","action":"SPEAK","summary":"행동 선택을 마쳤습니다. (발언)","decision_source":"MODEL","reason_code":null,"decision_basis":"PUBLIC_EVIDENCE","game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":3050,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:52.362885Z","player_id":"a0299c48-83f6-4b54-9a03-c45d8c133786","phase":"DAY_DISCUSSION","state_version":29,"stage":"SKIPPED","action":null,"summary":"중복되거나 지난 작업을 건너뛰었습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":"PUBLIC_EVIDENCE","game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":3051,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:54.085417Z","player_id":"a0299c48-83f6-4b54-9a03-c45d8c133786","phase":"DAY_DISCUSSION","state_version":30,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":3052,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:54.410930Z","player_id":"a0299c48-83f6-4b54-9a03-c45d8c133786","phase":"DAY_DISCUSSION","state_version":30,"stage":"SKIPPED","action":null,"summary":"중복되거나 지난 작업을 건너뛰었습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"5377f7a0-04ad-4e1b-ac74-39adbc5527b6"}
+{"sequence":3053,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:55.019188Z","player_id":"83e47d0a-a528-4f73-a37c-163b591698ff","phase":"DAY_DISCUSSION","state_version":38,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"47abb28c-e831-449f-88ed-627908a877f7"}
+{"sequence":3054,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:55.444980Z","player_id":"83e47d0a-a528-4f73-a37c-163b591698ff","phase":"DAY_DISCUSSION","state_version":38,"stage":"SKIPPED","action":null,"summary":"중복되거나 지난 작업을 건너뛰었습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"47abb28c-e831-449f-88ed-627908a877f7"}
+{"sequence":3055,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:56.377715Z","player_id":"6284fc9b-6f39-4a15-bea2-27a0ee9def51","phase":"DAY_DISCUSSION","state_version":25,"stage":"STARTED","action":null,"summary":"AI 행동 처리를 시작했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+2026-09-08 10:55:57,253 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:57,253 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 202 Accepted"
+2026-09-08 10:55:57,800 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:58,411 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:59,021 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+2026-09-08 10:55:59,445 INFO httpx HTTP Request: POST http://127.0.0.1:18100/mcp "HTTP/1.1 200 OK"
+{"sequence":3056,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:59.447756Z","player_id":"6284fc9b-6f39-4a15-bea2-27a0ee9def51","phase":"DAY_DISCUSSION","state_version":25,"stage":"CONTEXT_READY","action":null,"summary":"허용된 게임 정보를 확인했습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}
+{"sequence":3057,"run_id":"a18de729-81d8-4f38-b334-387c53d69f81","created_at":"2026-09-08T01:55:59.447756Z","player_id":"6284fc9b-6f39-4a15-bea2-27a0ee9def51","phase":"DAY_DISCUSSION","state_version":25,"stage":"DECIDING","action":null,"summary":"허용된 행동을 선택하고 있습니다.","decision_source":"MODEL","reason_code":null,"decision_basis":null,"game_id":"32dba203-4862-4a85-ad47-0907081746eb"}

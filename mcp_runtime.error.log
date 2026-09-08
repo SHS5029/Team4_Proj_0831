@@ -2595,3 +2595,156 @@ Session 247e2e2e04654fc9b0fcdb6a06594cd6 idle timeout
 Terminating session: 247e2e2e04654fc9b0fcdb6a06594cd6
 Processing request of type CallToolRequest
 HTTP Request: POST http://127.0.0.1:18000/internal/mcp/actions "HTTP/1.1 200 OK"
+Session 97969843a98a4cb3bc29ab02f82c2ee6 idle timeout
+Terminating session: 97969843a98a4cb3bc29ab02f82c2ee6
+Created new transport with session ID: 9a7a0ab6112d4dfe86a649a9971984fa
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=32dba203-4862-4a85-ad47-0907081746eb&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=6284fc9b-6f39-4a15-bea2-27a0ee9def51&scope=public "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=32dba203-4862-4a85-ad47-0907081746eb&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=6284fc9b-6f39-4a15-bea2-27a0ee9def51&scope=me "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=32dba203-4862-4a85-ad47-0907081746eb&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=6284fc9b-6f39-4a15-bea2-27a0ee9def51&scope=turn "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=32dba203-4862-4a85-ad47-0907081746eb&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=6284fc9b-6f39-4a15-bea2-27a0ee9def51&scope=persona "HTTP/1.1 200 OK"
+Processing request of type CallToolRequest
+HTTP Request: POST http://127.0.0.1:18000/internal/mcp/actions "HTTP/1.1 200 OK"
+Created new transport with session ID: 1d7ee5c6a82a483ca8326731b5b8be9f
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=32dba203-4862-4a85-ad47-0907081746eb&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=51200aa3-8658-45c9-9b3c-856bdbfbd619&scope=public "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=32dba203-4862-4a85-ad47-0907081746eb&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=51200aa3-8658-45c9-9b3c-856bdbfbd619&scope=me "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=32dba203-4862-4a85-ad47-0907081746eb&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=51200aa3-8658-45c9-9b3c-856bdbfbd619&scope=turn "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=32dba203-4862-4a85-ad47-0907081746eb&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=51200aa3-8658-45c9-9b3c-856bdbfbd619&scope=persona "HTTP/1.1 200 OK"
+Processing request of type CallToolRequest
+Session fbb547cd49b548208a10f82c9f6e1c6b idle timeout
+Terminating session: fbb547cd49b548208a10f82c9f6e1c6b
+HTTP Request: POST http://127.0.0.1:18000/internal/mcp/actions "HTTP/1.1 200 OK"
+Created new transport with session ID: 315823a465f54d3889288407bd4820d6
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=32dba203-4862-4a85-ad47-0907081746eb&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=460c1a27-e9cd-4220-a963-831a07428560&scope=public "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=32dba203-4862-4a85-ad47-0907081746eb&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=460c1a27-e9cd-4220-a963-831a07428560&scope=me "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=32dba203-4862-4a85-ad47-0907081746eb&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=460c1a27-e9cd-4220-a963-831a07428560&scope=turn "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=32dba203-4862-4a85-ad47-0907081746eb&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=460c1a27-e9cd-4220-a963-831a07428560&scope=persona "HTTP/1.1 200 OK"
+Session b012e7e75e614b4da487924c6e60b736 idle timeout
+Terminating session: b012e7e75e614b4da487924c6e60b736
+Session 28e0b1f1e4a948b9a8ef626ba119f9b9 idle timeout
+Terminating session: 28e0b1f1e4a948b9a8ef626ba119f9b9
+Session 371b4a4eace74160b1c5e419c2790351 idle timeout
+Terminating session: 371b4a4eace74160b1c5e419c2790351
+Processing request of type CallToolRequest
+Session 0c18ee5c41f24ead896b8c0b10c7be68 idle timeout
+Terminating session: 0c18ee5c41f24ead896b8c0b10c7be68
+Session ad3a765e546b4755823e04cf7ed1f4dd idle timeout
+Terminating session: ad3a765e546b4755823e04cf7ed1f4dd
+HTTP Request: POST http://127.0.0.1:18000/internal/mcp/actions "HTTP/1.1 200 OK"
+Created new transport with session ID: 2968969778794610b9f0b5c3a672de04
+Created new transport with session ID: 3f05e41cb498492aad814749021be5d4
+Processing request of type ReadResourceRequest
+Created new transport with session ID: 4dce2b996dc44583b3e548f7aec21047
+Processing request of type ReadResourceRequest
+Processing request of type ReadResourceRequest
+Created new transport with session ID: 0506c7816fe54c1a95c0b0166e628452
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=cb71e07b-2fd2-4a42-a8cc-2026b8cc23c9&scope=public "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=527b417b-4ecf-42e1-94e7-9d30c68414dd&scope=public "HTTP/1.1 200 OK"
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=ce2a5297-af8c-4319-a668-b4097c897234&scope=public "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=a0299c48-83f6-4b54-9a03-c45d8c133786&scope=public "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=cb71e07b-2fd2-4a42-a8cc-2026b8cc23c9&scope=me "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=cb71e07b-2fd2-4a42-a8cc-2026b8cc23c9&scope=turn "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=ce2a5297-af8c-4319-a668-b4097c897234&scope=me "HTTP/1.1 200 OK"
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=a0299c48-83f6-4b54-9a03-c45d8c133786&scope=me "HTTP/1.1 200 OK"
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=527b417b-4ecf-42e1-94e7-9d30c68414dd&scope=me "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+Processing request of type ReadResourceRequest
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=cb71e07b-2fd2-4a42-a8cc-2026b8cc23c9&scope=persona "HTTP/1.1 200 OK"
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=ce2a5297-af8c-4319-a668-b4097c897234&scope=turn "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=527b417b-4ecf-42e1-94e7-9d30c68414dd&scope=turn "HTTP/1.1 200 OK"
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=a0299c48-83f6-4b54-9a03-c45d8c133786&scope=turn "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=ce2a5297-af8c-4319-a668-b4097c897234&scope=persona "HTTP/1.1 200 OK"
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=a0299c48-83f6-4b54-9a03-c45d8c133786&scope=persona "HTTP/1.1 200 OK"
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=527b417b-4ecf-42e1-94e7-9d30c68414dd&scope=persona "HTTP/1.1 200 OK"
+Created new transport with session ID: f4624bcd0c284262ac32962bab853ade
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=32dba203-4862-4a85-ad47-0907081746eb&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=51cbd501-fba4-44fb-a9ed-6bfd82ebfa53&scope=public "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=32dba203-4862-4a85-ad47-0907081746eb&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=51cbd501-fba4-44fb-a9ed-6bfd82ebfa53&scope=me "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=32dba203-4862-4a85-ad47-0907081746eb&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=51cbd501-fba4-44fb-a9ed-6bfd82ebfa53&scope=turn "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=32dba203-4862-4a85-ad47-0907081746eb&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=51cbd501-fba4-44fb-a9ed-6bfd82ebfa53&scope=persona "HTTP/1.1 200 OK"
+Processing request of type CallToolRequest
+HTTP Request: POST http://127.0.0.1:18000/internal/mcp/actions "HTTP/1.1 200 OK"
+Created new transport with session ID: 41222ff070f0424e8b26d035e23895aa
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=32dba203-4862-4a85-ad47-0907081746eb&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=d5d36c54-7646-435c-aaad-a5b72b2f1fb6&scope=public "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=32dba203-4862-4a85-ad47-0907081746eb&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=d5d36c54-7646-435c-aaad-a5b72b2f1fb6&scope=me "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=32dba203-4862-4a85-ad47-0907081746eb&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=d5d36c54-7646-435c-aaad-a5b72b2f1fb6&scope=turn "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=32dba203-4862-4a85-ad47-0907081746eb&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=d5d36c54-7646-435c-aaad-a5b72b2f1fb6&scope=persona "HTTP/1.1 200 OK"
+Processing request of type CallToolRequest
+HTTP Request: POST http://127.0.0.1:18000/internal/mcp/actions "HTTP/1.1 200 OK"
+Created new transport with session ID: 226a0472a246487eb7bd93df2b6bbf88
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=cb71e07b-2fd2-4a42-a8cc-2026b8cc23c9&scope=public "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=cb71e07b-2fd2-4a42-a8cc-2026b8cc23c9&scope=me "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=cb71e07b-2fd2-4a42-a8cc-2026b8cc23c9&scope=turn "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=cb71e07b-2fd2-4a42-a8cc-2026b8cc23c9&scope=persona "HTTP/1.1 200 OK"
+Session bea1d73db0b94b67b712ede6ec0ccf0f idle timeout
+Terminating session: bea1d73db0b94b67b712ede6ec0ccf0f
+Created new transport with session ID: d0a767e3b0ee489c96cb14520cdf2f3a
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=527b417b-4ecf-42e1-94e7-9d30c68414dd&scope=public "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=527b417b-4ecf-42e1-94e7-9d30c68414dd&scope=me "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=527b417b-4ecf-42e1-94e7-9d30c68414dd&scope=turn "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=527b417b-4ecf-42e1-94e7-9d30c68414dd&scope=persona "HTTP/1.1 200 OK"
+Session 6c04440f942449568c4a1004e2349717 idle timeout
+Terminating session: 6c04440f942449568c4a1004e2349717
+Session 0ad32f610fb14c40bac73cf5b5408588 idle timeout
+Terminating session: 0ad32f610fb14c40bac73cf5b5408588
+Session ba9695e5dc594603ad1654a46a470f8d idle timeout
+Terminating session: ba9695e5dc594603ad1654a46a470f8d
+Session 2856dac0a2f54044b4d761ade2abaeba idle timeout
+Terminating session: 2856dac0a2f54044b4d761ade2abaeba
+Created new transport with session ID: 21bad6ba96e84ee5af53cc983ca4c44d
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=a0299c48-83f6-4b54-9a03-c45d8c133786&scope=public "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=a0299c48-83f6-4b54-9a03-c45d8c133786&scope=me "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=a0299c48-83f6-4b54-9a03-c45d8c133786&scope=turn "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=5377f7a0-04ad-4e1b-ac74-39adbc5527b6&user_id=f76c7b91-9954-4ffa-af0c-53f32ac87dc5&player_id=a0299c48-83f6-4b54-9a03-c45d8c133786&scope=persona "HTTP/1.1 200 OK"
+Created new transport with session ID: be1327971fd74d9eab0bf705fa38710a
+Processing request of type ReadResourceRequest
+Session b41ee92bb6bf45d28239955c24676139 idle timeout
+Terminating session: b41ee92bb6bf45d28239955c24676139
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=32dba203-4862-4a85-ad47-0907081746eb&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=6284fc9b-6f39-4a15-bea2-27a0ee9def51&scope=public "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=32dba203-4862-4a85-ad47-0907081746eb&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=6284fc9b-6f39-4a15-bea2-27a0ee9def51&scope=me "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=32dba203-4862-4a85-ad47-0907081746eb&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=6284fc9b-6f39-4a15-bea2-27a0ee9def51&scope=turn "HTTP/1.1 200 OK"
+Processing request of type ReadResourceRequest
+HTTP Request: GET http://127.0.0.1:18000/internal/mcp/context?game_id=32dba203-4862-4a85-ad47-0907081746eb&user_id=26568a84-2d11-43bf-a7f1-4d19bac0ce12&player_id=6284fc9b-6f39-4a15-bea2-27a0ee9def51&scope=persona "HTTP/1.1 200 OK"
