@@ -29,7 +29,7 @@ ADMIN_DASHBOARD_CSS = """
 .admin-hero-badge { flex:0 0 auto; padding:.42rem .7rem; border:1px solid #d8c9ff; border-radius:999px; color:#5f35c9; background:#f2edff; font-size:.72rem; font-weight:800; letter-spacing:.04em; }
 [data-testid="stMetric"] { min-width:0; overflow:hidden; padding:1rem 1.1rem; border:1px solid #e1e4ed; border-radius:.85rem; background:#fff; box-shadow:0 10px 28px rgba(25,35,70,.06); }
 [data-testid="stMetricLabel"] p { color:#68738a; font-weight:650; }
-[data-testid="stMetricValue"] { color:#172033; white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; font-size:clamp(1.3rem, 2.4vw, 2rem); }
+[data-testid="stMetricValue"], [data-testid="stMetricValue"] > div, [data-testid="stMetricValue"] span { color:#172033; min-width:0 !important; max-width:100% !important; white-space:nowrap !important; overflow:visible !important; text-overflow:clip !important; font-size:clamp(1.25rem, 1.8vw, 1.8rem) !important; }
 [data-baseweb="tab-list"] { gap:.4rem; padding:.35rem; border:1px solid #e0e3ec; border-radius:.75rem; background:#eceef5; }
 [data-baseweb="tab"] { min-height:2.55rem; padding:0 1rem; border-radius:.5rem; color:#5e697f; font-weight:750; }
 [data-baseweb="tab"] p { color:inherit !important; }
@@ -122,9 +122,9 @@ def _render_operations_analysis(metrics: dict, *, insights: dict,
         completion_rate = f"{completion_rate * 100:.1f}%"
     average_rounds = metrics.get("average_rounds", 0)
     try:
-        average_rounds_value = f"{float(average_rounds):.2f} ROUND"
+        average_rounds_value = f"{float(average_rounds):.2f}R"
     except (TypeError, ValueError):
-        average_rounds_value = "0.00 ROUND"
+        average_rounds_value = "0.00R"
     with st.container(key="admin-kpi-grid"):
         columns = st.columns(6)
         for column, (key, label) in zip(
