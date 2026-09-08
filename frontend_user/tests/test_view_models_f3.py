@@ -303,7 +303,7 @@ def test_snapshot_sync_rejects_get_with_different_scope_or_reversed_cursor(secti
 
 
 @pytest.mark.parametrize("spectating", [False, True])
-def test_timeline_explains_saved_and_resumed_events(spectating):
+def test_public_chat_excludes_saved_and_resumed_events(spectating):
     snapshot = _snapshot()
     snapshot["me"]["alive"] = not spectating
     snapshot["public_events"] = [{
@@ -313,10 +313,26 @@ def test_timeline_explains_saved_and_resumed_events(spectating):
     } for event_id, event_type in [(GAME, "GAME_SAVED"), (RUN, "GAME_RESUMED")]]
     app = AppTest.from_function(_page_app, args=(_Client(snapshot), snapshot)).run()
     assert not app.exception
-    text = " ".join(item.value for item in app.markdown)
-    assert "게임을 저장했습니다. (저장 시각: 2026-09-07 01:00:00 UTC)" in text
-    assert "게임을 재개했습니다. 저장한 지점부터 이어서 진행합니다." in text
-    assert "공개 사건 기록이 갱신되었습니다" not in text
+    text = " ".join(item.value for item in [*app.markdown, *app.info])
+    assert game_page._player_conversation_events(snapshot) == []
+    assert "게임을 저장했습니다" not in text
+    assert "게임을 재개했습니다" not in text
+
+
+def test_public_chat_keeps_turn_speech_and_pass_in_order():
+    snapshot = _snapshot()
+    snapshot["public_events"] = [
+        {"event_type": "GAME_BEGAN", "data": {"message": "GM 브리핑"}},
+        {"event_type": "TURN_OPENED", "data": {"player_id": AI}},
+        {"event_type": "PLAYER_SPOKE", "data": {"player_id": AI, "message": "공개 발언"}},
+        {"event_type": "PLAYER_PASSED", "data": {"player_id": HUMAN}},
+        {"event_type": "NIGHT_RESOLVED", "data": {"killed_player_id": AI}},
+    ]
+    assert [event["event_type"] for event in game_page._player_conversation_events(snapshot)] == [
+        "TURN_OPENED",
+        "PLAYER_SPOKE",
+        "PLAYER_PASSED",
+    ]
 
 
 @pytest.mark.parametrize("event_type", ["GAME_SAVED", "GAME_RESUMED"])
@@ -397,7 +413,23 @@ def test_every_active_phase_keeps_public_timeline_visible(phase):
     }]
     app = AppTest.from_function(_page_app, args=(_Client(snapshot), snapshot)).run()
     assert not app.exception
-    assert "공개 타임라인 유지 확인" in " ".join(item.value for item in app.markdown)
+    assert "공개 타임라인 유지 확인" in " ".join(
+        item.value for item in [*app.markdown, *app.info, *app.success]
+    )
+
+
+def test_selected_player_summary_uses_only_selected_public_speeches():
+    snapshot = _snapshot()
+    snapshot["public_events"] = [
+        {"event_type": "PLAYER_SPOKE", "data": {"player_id": AI, "message": "AI 공개 발언"}},
+        {"event_type": "PLAYER_SPOKE", "data": {"player_id": HUMAN, "message": "내 공개 발언"}},
+        {"event_type": "NIGHT_RESOLVED", "data": {"killed_player_id": AI}},
+    ]
+    assert game_page._selected_player_speeches(
+        snapshot=snapshot,
+        selected_player_id=AI,
+        player_names={AI: "AI", HUMAN: "사람"},
+    ) == ["AI 공개 발언"]
 
 
 def test_begin_unknown_retry_remains_visible_after_server_phase_change():

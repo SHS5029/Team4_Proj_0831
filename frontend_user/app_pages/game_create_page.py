@@ -87,8 +87,8 @@ def render(client: ApiClient) -> None:
         st.session_state.pop("game.latest_snapshot", None)
 
     # POST body·idempotency key·pending 상태는 기존 계약을 유지하고, 이 함수에서는
-    # 화면 표현만 설정 화면 형태로 조율한다. 사용자가 시나리오·역할·persona를
-    # 직접 선택하는 입력은 추가하지 않는다.
+    # 화면 표현만 설정 화면 형태로 조율한다. 커스텀 직업 토글은 백엔드 연결 전
+    # 비활성 안내용이며, 현재 생성 요청에는 시나리오·역할·persona를 추가하지 않는다.
     st.markdown(SETUP_CSS, unsafe_allow_html=True)
     render_application_header(
         title="AI 마피아",
@@ -106,6 +106,15 @@ def render(client: ApiClient) -> None:
         "PENDING_TO_RENDER", "IN_FLIGHT", "RETRYABLE_UNKNOWN",
     }
     selected = _render_player_choices(in_flight=in_flight)
+    with st.container(border=True):
+        st.subheader("직업 설정")
+        st.toggle(
+            "커스텀 직업 사용",
+            value=False,
+            disabled=True,
+            key="game.custom_role",
+        )
+        st.caption("커스텀 직업은 백엔드 연결 후 활성화됩니다.")
     st.markdown(
         '<section class="setup-rules"><div class="setup-rule-book">📘</div><div>'
         '<div class="setup-rules-title">게임 방식</div><ul class="setup-rules-list">'
@@ -116,7 +125,7 @@ def render(client: ApiClient) -> None:
 
     button_left, button_right = st.columns([1.1, .6])
     with button_left:
-        create_clicked = st.button("◉  게임 만들기", type="primary", key="game.create_submit", disabled=in_flight, width="stretch")
+        create_clicked = st.button("게임 만들기", type="primary", key="game.create_submit", disabled=in_flight, width="stretch")
     with button_right:
         cancel_clicked = st.button("취소", key="game.create_cancel", disabled=in_flight, width="stretch")
     if create_clicked:

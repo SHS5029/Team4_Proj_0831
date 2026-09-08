@@ -89,17 +89,30 @@ html { color-scheme: light; }
   background: #0b1730; border-bottom: 1px solid #24324c;
 }
 [class*="st-key-app-header"] [data-testid="stHorizontalBlock"] { align-items: center; }
+[class*="st-key-app-header"] [data-testid="stColumn"]:last-child {
+  display: flex; justify-content: flex-end; align-items: center;
+}
 .app-header-brand { color: #fff; font-size: 1.55rem; font-weight: 800; letter-spacing: -.06em; }
 .app-header-status { display: inline-flex; align-items: center; gap: .4rem; margin-left: 1rem; padding: .42rem .7rem;
   border: 1px solid #2b3b57; border-radius: .55rem; color: #d8e2f3; font-size: .78rem; }
 .app-header-status::before { content: ""; width: .45rem; height: .45rem; border-radius: 50%; background: #31c477; }
 .app-header-phase { color: #fff; font-size: 1.35rem; font-weight: 800; text-align: center; }
-[class*="st-key-app-header"] [data-testid="stButton"] button {
-  min-height: 2.65rem; color: #d8e2f3 !important; background: transparent !important;
-  border-color: #2b3b57 !important;
+/* 페이지별 버튼 스타일보다 헤더 규칙이 우선하도록 body부터 포함한 선택자를 사용한다. */
+body [class*="st-key-app-header"] [data-testid="stButton"] button,
+body [class*="st-key-app-header"] [data-testid="stButton"] button:not(:disabled) {
+  min-height: 2.65rem; color: #eef4ff !important; background: #0b1730 !important;
+  border: 1px solid #405374 !important; box-shadow: inset 0 0 0 1px rgba(255,255,255,.03);
 }
-[class*="st-key-app-header"] [data-testid="stButton"] button:hover:not(:disabled) {
-  color: #fff !important; background: #152846 !important; border-color: #6b85ad !important;
+body [class*="st-key-app-header"] [data-testid="stButton"] button:hover:not(:disabled) {
+  color: #fff !important; background: #152846 !important; border-color: #8ba8d4 !important;
+}
+body [class*="st-key-app-header"] [data-testid="stButton"] button:active:not(:disabled),
+body [class*="st-key-app-header"] [data-testid="stButton"] button:focus-visible {
+  color: #fff !important; background: #1b3157 !important; border-color: #a9c5ef !important;
+}
+body [class*="st-key-app-header"] [data-testid="stButton"] button *,
+body [class*="st-key-app-header"] [data-testid="stButton"] button [data-testid="stMarkdownContainer"] * {
+  color: inherit !important; -webkit-text-fill-color: currentColor !important;
 }
 button:focus-visible, input:focus-visible, textarea:focus-visible {
   outline: 3px solid #245fd6 !important; outline-offset: 3px;
@@ -174,15 +187,18 @@ def render_application_header(
 
 
 def render_header_back_button(*, current_page: str) -> None:
-    """이미 배치된 헤더 열 안에서 중복 없이 뒤로가기 button을 렌더링한다."""
+    """공통 헤더에 홈으로 button을 표시하고 항상 홈 화면으로 이동시킨다.
+
+    게임 진행 화면에서 브라우저성 방문 이력으로 이동하면 이전 화면이 역할 공개나
+    생성 완료 화면으로 되돌아가 현재 게임 흐름과 혼동될 수 있다. 따라서 사용자가
+    명시적으로 누르는 상단 뒤로가기는 모든 진행 화면에서 홈으로만 연결한다.
+    ``current_page``는 기존 호출부 호환성을 위해 유지하며, 홈에서는 button을 숨긴다.
+    """
 
     if current_page == "home":
         return
-    history = _navigation_history(current_page=current_page)
-    back_target = history[-1] if history else "home"
-    remaining_history = history[:-1] if history else []
-    if st.button("← 뒤로가기", key="header.back", width="stretch"):
-        _navigate(page=back_target, history=remaining_history)
+    if st.button("홈으로", key="header.back", width="stretch"):
+        _navigate(page="home", history=[])
 
 
 def _navigation_history(*, current_page: str) -> list[str]:
