@@ -135,6 +135,13 @@ context에 연결한다. PostgreSQL은 영구 원본이며 비공개 context는 
 - Backend 터미널과 순환 파일 로그는 같은 순서 번호, 실행 식별자, UTC 시각,
   game_id, phase, state_version과 허용된 처리 상태를 사용한다. 성공 적용 로그는
   transaction 성공 반환 뒤 기록하며 실패·대체·중복을 구분한다.
+- 2026-09-08 후속 WU-B6의 터미널 출력 정리는 기존 `core/logging.py`와
+  `tests/test_agent_activity.py`, 이 문서·README만 변경한다. 터미널에는 생성·시작·
+  저장·재개·단계 변경·종료, 공개 SPEAK 적용과 FALLBACK·FAILED·WORKER_FAILED를
+  표시한다. 준비·판단·SKIPPED·일반 저장 중복·PASS 적용은 순환 파일에만 남기며
+  UI용 진행 기록과 파일의 전체 JSON·순서는 보존한다. Backend 프로세스의 정상
+  HTTP access 및 httpx/httpcore/mcp INFO 로그를 억제하되 HTTP 4xx·5xx와
+  WARNING 이상은 보존한다. 이 한 기능은 관련 최소 로깅 테스트로 검증한다.
 - 비공개 밤 actor와 대상, prompt, 자유 형식 rationale, 응답 원문, 예외 원문은 로그에
   넣지 않는다. 임의 외부 문자열 대신 검증된 enum과 고정 한국어 설명을 사용한다.
 - UI용 상태는 게임별 크기가 제한된 프로세스 메모리다. 재시작 후 이전 실행의
@@ -342,6 +349,10 @@ ROLE_REVEAL
 
 ### 3.9 저장·재개·관전
 
+- `SAVE_AND_EXIT`은 화면의 `expected_state_version`과 일치할 필요 없이 게임 행 잠금
+  획득 뒤 서버 원장의 마지막 확정 상태를 저장한다. 확정된 사건·제출·결과는 보존하고
+  아직 확정되지 않은 입력·Agent 응답은 포함하지 않을 수 있다. 저장 이후 도착한 이전
+  상태의 Agent 결과는 기존 상태·window 검증으로 거부한다. 이 예외는 저장에만 적용한다.
 - `SAVE_AND_EXIT`은 window 해소 transaction이 실행 중이지 않은 안정 상태에서만
   성공한다. timed action window는 남은 시간을 snapshot에 저장하고, 발언처럼
   deadline이 없는 상태는 남은 시간 없이 저장한다. 열린 `deadline_at`을 비운 뒤
@@ -547,6 +558,11 @@ Browser
 
 ## 8. 작업 단위
 
+2026-09-08 저장 버전 제약 완화는 단일 WU-B5의 저장 API 동작과 Front 안내 보완이다.
+기존 lifecycle service·관련 테스트·정본·README만 변경하며 새 파일이나 migration은
+없다. 사용자 요청에 따라 저장은 오래된 화면에서도 서버의 마지막 확정 상태를 사용하고,
+소유권·멱등성·transaction 원자성과 다른 command·삭제의 버전 검증은 유지한다.
+
 2026-09-08 뒤로가기 저장·삭제 팝업 요청은 단일 WU-B5의 게임 이탈 API와
 Front 연결 보완으로 수행한다. Backend는 소유권·상태 버전을 검증하는 수동 삭제
 API와 기존 transaction·repository를, Front는 역할 공개·진행·관전 화면의
@@ -682,6 +698,25 @@ LLM token·비용과 LLM timeout 지표는 MVP 수집 대상이 아니다.
 - PostgreSQL·Redis·Provider·MCP 장애의 정의된 fallback 또는 fail-closed 경로가
   테스트된다.
 - README, 환경 예시와 package README가 실제 구현 상태와 정본 문서를 가리킨다.
+
+### WU-B6 최근 대화 입력 보완 (2026-09-08)
+
+실시간 대화 개선 요청의 이번 단일 WU는 Backend의 모델 입력 구성과 관련 합성
+테스트다. 기존 `backend/app/agent/orchestrator.py`와
+`backend/tests/test_b6_agent_manager.py`, 관련 정본·README 안에서 수행한다.
+토론 SPEECH 요청에만 전체 공개 이력에서 발췌한 `dialogue_focus`를 user 데이터로
+추가한다. 현재 토론의 최근 발언 6개, 본인을 이름·좌석으로 언급한 타인 발언 후보
+6개, 본인의 마지막 발언과 그 뒤 타인의 발언 수를 제공한다. round 0은 GAME_BEGAN,
+이후는 현재 round와 일치하는 NIGHT_RESOLVED 이후를 현재 토론으로 구분한다.
+경계가 없거나 다르면 발췌만 생략하며 전체 공개·본인 비공개 이력은 보존한다.
+동명이인의 이름 단독 언급은 후보에서 제외하고 좌석 호칭으로 구분한다.
+이름 언급은 질문·회피·응답 완료 판정이 아니며 의미와 답변 여부는 모델이 원문으로
+판단한다. PASS만 늘어난 상황을 새 답변으로 계산하지 않는다. Backend에는 이 파생
+입력의 해석 안내만 추가하고 MCP의 역할별 전략·말투 지침 소유권은 유지한다.
+모델 출력의 강제 PASS 변환, 새 모델 호출, 공개·MCP Resource schema 변경,
+DB·worker·window 변경은 없다. 질문 대상의 발언 우선권과 생성 중 새 발언에 대한
+재판단은 별도 후속 WU로 남긴다. 이번 단위는 Orca 검토·테스트 worker와 같은
+작업 디렉터리에서 파일 소유 범위를 나누어 수행하며 커밋하지 않는다.
 
 ### WU-B6 대화 의미·증거 평가 보완 (2026-09-07)
 
@@ -1025,6 +1060,17 @@ B12 런타임의 합성 분석 버전은 최대 128자로 검증하며 DB의 256
 
 #### WU-B14 검증 결과와 미측정 항목
 
+아래 환경 설정 검증은 실시간 코드 확장 이전 기록이다. 이후 실행 계약은 문서 끝의
+`2026-09-08 실시간 공개 대화 분석 확장`을 따른다.
+
+2026-09-08 선행 환경 설정 검증은 WU-B14의 운영 조정만 수행했다. Git 제외 `.env`의
+`SPEECH_ANALYSIS_POLL_SECONDS=0.5`, `SPEECH_ANALYSIS_BATCH_SIZE=32`,
+`SPEECH_ANALYSIS_CONCURRENCY=4`로 투표 직전
+대기 작업 처리 여유를 늘린다. 모델·1536차원·분석 버전·timeout 30초·단계별 최대 3회는
+유지한다. 코드 기본값과 모델 선점의 투표 직전 경계는 바꾸지 않는다. 이 설정은 실시간
+대화 요약을 추가하지 않으며, 전체 대화 요약·인간 발언 포함·토론 중 모델 실행은 별도
+구현 범위다. 실제 모델 지연·계정 rate limit과 여러 Backend의 합산 동시성은 미측정이다.
+
 2026-09-08 실게임 점검에서는 분석이 미완료인 상태에서 투표가 열린 현상을 관측했다.
 현재 준비 SQL은 대기를 반환했고 해당 전환은 로컬 프로세스 로그에 없었다. Backend
 scheduler가 instance·소유자 구분 없이 공유 DB의 모든 게임을 처리하고 분산 lease나
@@ -1068,3 +1114,63 @@ HTTP 조회를 연결한 검사와 worker 초기화·종료 오류 격리 검사
 근거 일치로 보수적으로 표시한다. 유료 한국어 평가셋과 프로세스 강제 종료를 포함한
 실게임 부하 검증은 별도 측정 항목으로 남긴다. 실제 서비스는 migration과 권한 준비 후
 기능 설정을 켜고 재시작해야 하며 이번 구현에서 실제 env와 서비스 DB는 변경하지 않았다.
+
+
+## 2026-09-08 실시간 공개 대화 분석 확장 (사용자 승인 WU-B14)
+
+사용자의 코드 변경·Orca orchestration 요청에 따라 coordinator 세션은 WU-B14 통합을
+맡고 저장소 B11, worker B12, 화면 F9를 각각 별도 작업자 세션에 배정한다. 이번 절이
+앞선 투표 직전 전용 실행·AI만 분석하는 제한보다 우선한다. 기존 사용자 변경은 보존한다.
+
+- Backend B11: 확정된 PUBLIC PLAYER_SPOKE 중 HUMAN·AI 발언을 분석한다. 모델 신규
+  선점은 IN_PROGRESS 게임이면 현재 phase·날짜·deadline과 무관하게 허용한다. SAVED·
+  COMPLETED·FAILED는 신규 선점하지 않는다. 이미 선점한 유효 결과는 기존 token·만료
+  검증으로 저장하며 삭제 후에는 기존 FK와 CAS로 무효화한다.
+- Backend B12: 탐색과 실행을 분리해 느린 모델 요청 하나가 다음 발언 발견을 막지 않게
+  한다. 동시 호출 상한·단계별 timeout·재시도·종료 정리를 유지하며 유료 회귀는 하지 않는다.
+  주장 추출의 검증된 proposition을 요약에 재사용하므로 모델·프롬프트 버전은 유지한다.
+- B14 조회 통합: 기존 vote-insights를 일반·최종 토론에서도 읽을 수 있게 확장하고
+  conversation_summary를 추가한다. 토론 cutoff는 읽기 snapshot의 공개 원장 최대 sequence+1,
+  투표 cutoff는 기존 창 최초 개설 sequence다. 같은 snapshot에서 source·분석을 조회한다.
+  토론 중에는 투표 후보·순위를 생성하지 않는다. 요약은 준비된 발언별 핵심 주장 최대 3개를
+  묶고 최신 20발언을 원문·시점과 연결한다. 총 요약 발언 수와 생략 수를 함께 반환한다.
+  이는 누적 핵심 주장 보기이며 별도의 모델이 전체 대화를 재해석하는 종합문은 아니다.
+- Front F9: 기존 접이식 컴포넌트에서 공개 대화 요약을 토론 중에도 제공한다. 토론 READY도
+  전체 화면 rerun마다 갱신하고 투표의 고정 cutoff 캐시는 유지한다. 저장 중에는 조회하지
+  않으며 조회 오류가 발언·투표·게임 저장을 막지 않는다.
+- 투표 직전에는 이전 승인된 분석 완료/재시도 소진 대기를 유지한다. 실시간 처리가 이미
+  완료한 결과는 재사용한다. 게임 저장은 분석 대기 없이 직전 확정 게임 상태를 저장한다.
+
+Backend B11의 최소 신규 파일은
+`backend/migrations/008_allow_public_human_speech_analysis.sql`이다. 기존 006의 source
+검증 함수를 교체해 PUBLIC HUMAN도 허용하되 나머지 원문·hash·모델·lease·claim 계약은
+보존한다. 기존 디렉터리와 전용 테스트를 재사용하고 root README·정본은 coordinator만
+편집한다. migration 적용·재실행 검증은 격리 QA DB에서 수행하며 실제 서비스 DB 변경과
+재기동은 이번 코드 작업의 범위에 포함하지 않는다.
+
+
+검증 결과: 관련 focused test 412개와 M9 격리 DB 검증 57개가 통과했다. Backend 전체는
+925 통과·기존 14 실패·B6 opt-in 8 건너뜀, Front 전체는 452 통과·기존 7 실패다.
+001~008 적용과 합성 데이터가 있는 상태에서 008 재실행·기존 행/권한/활성 시각 보존,
+HUMAN source·private 거부·8개 동시 선점·stale lease·저장/재개/삭제를 확인했다.
+기존 006과 실제 서비스 DB·실행 프로세스·모델/분석 버전은 변경하지 않았다.
+실제 모델 품질·서비스 부하·강제 종료 평가는 수행하지 않았다. 상세 결과는 root README를 따른다.
+
+
+### 2026-09-08 후속 WU-M9 Team DB 적용
+
+사용자가 Team DB 마이그레이션 적용을 명시 승인했다. 이번 WU-M9는
+TEAM_DATABASE_URL의 기존 4team_db에 검증된 008 함수 교체만 적용하고 데이터·권한·
+트리거 및 commit 후 health를 확인한다. 006 재실행·다른 migration·서비스 재시작은
+포함하지 않는다. 전용 DDL URL이 없는 기존 환경에서는 앞선 원격 migration과 같이
+Team 계정의 실제 함수 소유권·DDL 권한을 먼저 확인한 별도 관리 연결을 명시 사용하며
+실제 env 값을 추가·변경·출력하지 않는다. Orca 검토 작업자는 SQL·실행기만 읽고
+coordinator가 실제 DB 적용과 README 기록을 담당한다.
+
+
+M9 적용 결과: Team 4team_db의 기존 006 함수를 확인한 뒤 008 본문을 외곽
+REPEATABLE READ transaction에서 적용·검증·commit했다. 원본/분석 6개 테이블의
+행 수·내용 hash, 함수 OID·owner·ACL·실행 설정과 트리거·relation 메타데이터를
+보존했고 독립 읽기 연결에서 정확한 008 본문·활성 트리거·DB health를 확인했다.
+실제 env·계정·권한·게임/분석 행은 수정하지 않았으며 서비스 재시작은 수행하지 않았다.
+SQL 변경이 없으므로 직전 격리 QA·전체 회귀 결과를 재사용했다. 상세 집계는 README를 따른다.

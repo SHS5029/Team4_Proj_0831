@@ -67,12 +67,12 @@ class SpeechAnalysisWorker:
             task.exception()
 
     async def _run(self) -> None:
-        """탐색 실패를 다음 주기로 격리하며 원문·SDK 예외를 로그에 넣지 않는다."""
+        """모델 완료와 무관하게 주기마다 탐색하며 종료 때만 활성 작업을 기다린다."""
 
         try:
             while not self._stopping.is_set():
                 try:
-                    await self.run_once()
+                    await self.run_once(drain=False)
                 except Exception:
                     logger.warning("SPEECH_ANALYSIS_CYCLE_FAILED")
                 try:
@@ -81,36 +81,46 @@ class SpeechAnalysisWorker:
                     )
                 except TimeoutError:
                     pass
+            # 정상 중지는 이미 과금된 호출의 결과를 저장할 기회를 준다. stop의
+            # 유예 시간이 지나 취소되면 finally에서 모델 작업을 취소하고 수거한다.
+            await asyncio.gather(*self._active, return_exceptions=True)
         finally:
             for task in self._active:
                 task.cancel()
             await asyncio.gather(*self._active, return_exceptions=True)
             self._active.clear()
 
-    async def run_once(self) -> int:
-        """원문 등록 후 저장소가 허용한 투표 준비 경계의 단계만 실행한다.
+    async def run_once(self, *, drain: bool = True) -> int:
+        """원문 등록 후 진행 중 게임에서 저장소가 허용한 단계만 실행한다.
 
-        discover 자체는 모델을 호출하지 않는다. 첫날·토론 중·저장·종료 상태와
-        오래된 PENDING의 차단은 모든 worker가 공유하는 claim_next SQL에 맡긴다.
-        선점 전 빈 슬롯을 확보하여 대기열에서 lease가 만료되지 않게 한다.
+        기본 호출은 기존 수동 실행·통합 검증처럼 batch 완료까지 기다린다.
+        배경 polling은 drain=False로 활성 작업을 다음 주기까지 유지하고 빈 슬롯만
+        선점하므로 느린 호출 중에도 새 발언을 찾는다. 저장·종료 상태 차단은
+        claim_next가 판정하며, 슬롯 확보 전에는 lease를 예약하지 않는다.
         """
 
         if self._stopping.is_set():
             return 0
-        await self._db(
-            self.repository.discover,
-            analysis_version=self.settings.effective_speech_analysis_version,
-            embedding_model=self.settings.speech_analysis_embedding_model,
-            dimensions=self.settings.speech_analysis_dimensions,
-            claims_model=self.settings.speech_analysis_claims_model,
-            limit=self.settings.speech_analysis_batch_size,
-        )
         claimed = 0
         try:
+            # 완료 작업만 수거하므로 이전 poll의 느린 요청은 탐색을 지연시키지 않는다.
+            done = {task for task in self._active if task.done()}
+            await asyncio.gather(*done, return_exceptions=True)
+            self._active.difference_update(done)
+            await self._db(
+                self.repository.discover,
+                analysis_version=self.settings.effective_speech_analysis_version,
+                embedding_model=self.settings.speech_analysis_embedding_model,
+                dimensions=self.settings.speech_analysis_dimensions,
+                claims_model=self.settings.speech_analysis_claims_model,
+                limit=self.settings.speech_analysis_batch_size,
+            )
             while (
                 claimed < self.settings.speech_analysis_batch_size and not self._stopping.is_set()
             ):
                 if len(self._active) >= self.settings.speech_analysis_concurrency:
+                    if not drain:
+                        break
                     done, _ = await asyncio.wait(self._active, return_when=asyncio.FIRST_COMPLETED)
                     await asyncio.gather(*done, return_exceptions=True)
                     self._active.difference_update(done)
@@ -126,13 +136,16 @@ class SpeechAnalysisWorker:
                     break
                 self._active.add(asyncio.create_task(self._process(job)))
                 claimed += 1
-            await asyncio.gather(*self._active)
+            if drain:
+                await asyncio.gather(*self._active)
         finally:
-            for task in self._active:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*self._active, return_exceptions=True)
-            self._active.clear()
+            # 배경 주기 오류는 기존 선점을 유지하며 최종 수거는 _run이 맡는다.
+            if drain:
+                for task in self._active:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._active, return_exceptions=True)
+                self._active.clear()
         return claimed
 
     async def _process(self, job: dict) -> None:

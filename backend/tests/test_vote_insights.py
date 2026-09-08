@@ -81,7 +81,7 @@ def test_paraphrase_and_public_exact_projection(context):
     assert data["suspicion_ranking"][0]["accuser_count"] == 2
     assert set(data) == {"game_id", "window_id", "scope", "cutoff_sequence", "analysis_version",
                         "revision", "generated_at", "status", "coverage", "similar_claims",
-                        "suspicion_ranking", "candidate_evidence"}
+                        "suspicion_ranking", "candidate_evidence", "conversation_summary"}
     assert set(data["similar_claims"][0]) == {"player_ids", "target_player_id", "claim", "evidence"}
     assert set(data["similar_claims"][0]["evidence"][0]) == {"event_id", "player_id", "message", "created_at", "sequence"}
 
@@ -479,3 +479,84 @@ def test_name_and_seat_paraphrase_group_with_same_target(context):
 def test_multi_target_conjunction_cannot_hide_first_target(context):
     speech(context, target=2, message="2번과 3번의 알리바이가 수상해.")
     assert read(context)["suspicion_ranking"] == []
+
+
+@pytest.mark.parametrize("phase", ["DAY_DISCUSSION", "FINAL_DISCUSSION"])
+@pytest.mark.parametrize("deadline", [None, NOW, NOW + timedelta(minutes=1)])
+def test_live_discussion_summary_includes_human_without_vote_cards(context, phase, deadline):
+    """열린 토론과 마감 뒤 분석 준비에서 공개 요약만 제공하고 투표권은 만들지 않는다."""
+    c = context
+    c.source["game"]["phase"] = phase
+    c.source["window"].update(phase=phase, window_kind="SPEECH", deadline_at=deadline)
+    c.source["players"][0]["alive"] = False
+    c.source["discussion_segment"] = f"{phase}:2"
+    row = speech(c, speaker=0, proposition="민수의 알리바이에 대한 의심")
+    row.update(discussion_segment=f"{phase}:2", source_round=2,
+               analysis_segment=f"{phase}:2", analysis_round=2, embedding_status="PENDING", embedding=None)
+    data = read(c)
+    assert data["status"] == "PARTIAL"
+    assert data["coverage"] == dict(total=1, embedding_ready=0, claims_ready=1, failed=0)
+    summary = data["conversation_summary"]
+    assert summary["total"] == 1 and summary["omitted"] == 0
+    assert summary["items"][0]["summary"] == "민수의 알리바이에 대한 의심"
+    assert summary["items"][0]["evidence"][0]["message"] == row["message"]
+    assert summary["items"][0]["evidence"][0]["player_id"] == row["player_id"]
+    assert all(data[key] == [] for key in ("similar_claims", "candidate_evidence", "suspicion_ranking"))
+
+
+def test_summary_keeps_latest_twenty_and_reports_all_counts(context):
+    """누적 요약의 표시 한도 때문에 원문 집계 수나 시간순이 바뀌지 않게 한다."""
+    c = context
+    for sequence in range(1, 26):
+        row = speech(c, sequence=sequence)
+        row["claims"] *= 2
+    result = read(c)
+    summary = result["conversation_summary"]
+    assert summary["total"] == 25 and summary["omitted"] == 5
+    assert len(summary["items"]) == 20
+    assert [item["evidence"][0]["sequence"] for item in summary["items"]] == list(range(6, 26))
+    assert all(item["summary"] == c.source["speeches"][0]["message"] for item in summary["items"])
+    assert result["coverage"]["total"] == 25
+
+
+def test_summary_excludes_unvalidated_empty_and_nonpublic_claims(context):
+    """모델 결과를 요약에 노출하기 전에 기존 source·claim 검증을 그대로 적용한다."""
+    c = context
+    speech(c)["claims"][0]["quote"] = "존재하지 않는 인용"
+    speech(c, sequence=11)["claims"] = []
+    speech(c, sequence=12)["claims_status"] = "PENDING"
+    speech(c, sequence=13)["audience"] = "PLAYER"
+    speech(c, sequence=14)["content_hash"] = "wrong"
+    speech(c, sequence=15)["claims"][0]["proposition"] = "   "
+    assert read(c)["conversation_summary"] == {"items": [], "total": 0, "omitted": 0}
+    c.settings.speech_analysis_enabled = False
+    assert read(c)["conversation_summary"] == {"items": [], "total": 0, "omitted": 0}
+
+
+def test_summary_revision_changes_with_completed_claim_and_human_counts(context):
+    """인간의 확정 발언과 새 요약은 공개 revision에 반영하고 READY 결과는 재사용한다."""
+    c = context
+    row = speech(c, speaker=0)
+    before = read(c)
+    assert before["coverage"]["total"] == 1
+    assert before["suspicion_ranking"][0]["accuser_count"] == 1
+    row["claims"][0]["proposition"] = "민수의 설명을 의심함"
+    assert read(c)["revision"] != before["revision"]
+
+
+def test_repository_live_cutoff_tracks_public_snapshot_and_stays_read_only(context):
+    """공개 sequence 상한만 읽어 private 이벤트 추가가 실시간 응답을 바꾸지 않게 한다."""
+    c = context
+    c.source["game"]["phase"] = "DAY_DISCUSSION"
+    c.source["window"].update(phase="DAY_DISCUSSION", window_kind="SPEECH", deadline_at=NOW)
+    cursor = Cursor([c.source["game"], c.source["window"], c.source["players"],
+                     {"cutoff_sequence": 51}, []])
+    transactions = Transactions(cursor)
+    data = PostgresVoteInsightRepository(transactions).load(owner_user_id=c.owner, game_id=c.game,
+        window_id=c.window, scope="current_discussion", settings=c.settings)
+    assert data["cutoff_sequence"] == 51
+    assert data["discussion_segment"] == "DAY_DISCUSSION:2"
+    cutoff_query = cursor.statements[3][0]
+    assert "max(sequence)" in cutoff_query and "audience='PUBLIC'" in cutoff_query
+    assert transactions.connection.read_only is True
+    assert transactions.connection.isolation_level == IsolationLevel.REPEATABLE_READ

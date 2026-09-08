@@ -53,7 +53,7 @@ def test_discover_uses_public_ai_original_window_and_idempotent_insert():
     repo = PostgresSpeechAnalysisRepository(tx)
     assert repo.discover(analysis_version='v1', embedding_model='model', dimensions=2, claims_model='claims') == 1
     sql, params = tx.statements[-1]
-    assert "e.audience = 'PUBLIC'" in sql and "p.kind = 'AI'" in sql
+    assert "e.audience = 'PUBLIC'" in sql and "p.kind IN ('HUMAN', 'AI')" in sql
     assert "e.event_type = 'PLAYER_SPOKE'" in sql
     assert "e.operation_type = 'APPEND_PUBLIC_EVENT'" in sql
     assert "e.schema_version = 1" in sql and "e.audience_player_id IS NULL" in sql
@@ -216,6 +216,8 @@ class LeaseTransactions(ScriptedTransactions):
         self.attempts = {'EMBEDDING': 0, 'CLAIMS': 0}
         self.retry = {'EMBEDDING': 0, 'CLAIMS': 0}
         self.embedding = None
+        self.claims = None
+        self.exists = True
         self.version = 'v1'
         self.game_status, self.phase, self.day = 'IN_PROGRESS', 'DAY_DISCUSSION', 2
         self.window_status, self.window_kind, self.deadline = 'OPEN', 'SPEECH', 0
@@ -226,6 +228,8 @@ class LeaseTransactions(ScriptedTransactions):
         sql = ' '.join(sql.split())
         self.statements.append((sql, params))
         self.result = None
+        if not self.exists:
+            return
         if 'WITH expired AS' in sql:
             if params[0] != self.version or self.token is None or self.expiry > self.now:
                 return
@@ -235,20 +239,13 @@ class LeaseTransactions(ScriptedTransactions):
             self.token, self.stage = None, None
         elif 'WITH candidate AS' in sql:
             assert "g.status = 'IN_PROGRESS'" in sql
-            assert "current_window.status = 'OPEN'" in sql
-            assert "current_window.window_kind = 'SPEECH'" in sql
-            assert 'current_window.deadline_at <= clock_timestamp()' in sql
-            assert 'current_window.phase = g.phase AND current_window.round = g.round' in sql
-            assert "g.phase = 'FINAL_DISCUSSION'" in sql
-            assert "g.phase = 'DAY_DISCUSSION' AND g.day_number >= 2" in sql
+            assert 'current_window' not in sql
+            assert 'g.phase' not in sql and 'g.day_number' not in sql
+            assert 'FOR UPDATE SKIP LOCKED LIMIT 1' in sql
             assert '(%s::uuid IS NULL OR game_id = %s)' in sql
             if params[1] != self.version or (params[2] is not None and params[2] != self.game_id):
                 return
-            if not (self.game_status == 'IN_PROGRESS' and self.window_status == 'OPEN'
-                    and self.window_kind == 'SPEECH' and self.deadline is not None
-                    and self.deadline <= self.now
-                    and (self.phase == 'FINAL_DISCUSSION'
-                         or (self.phase == 'DAY_DISCUSSION' and self.day >= 2))):
+            if self.game_status != 'IN_PROGRESS':
                 return
             if self.token is not None and self.expiry > self.now:
                 return
@@ -291,6 +288,8 @@ class LeaseTransactions(ScriptedTransactions):
                 self.status[stage] = 'READY'
                 if stage == 'EMBEDDING':
                     self.embedding = params[0]
+                else:
+                    self.claims = params[0].obj
             self.token, self.stage = None, None
             self.result = {'id': self.job_id}
         else:
@@ -385,7 +384,7 @@ class DiscoveryTransactions(ScriptedTransactions):
             return
         elif sql.startswith('SELECT NOT EXISTS'):
             assert 'LIMIT' not in sql.split(') s ON true')[-1]
-            assert "e.audience = 'PUBLIC'" in sql and "p.kind = 'AI'" in sql
+            assert "e.audience = 'PUBLIC'" in sql and "p.kind IN ('HUMAN', 'AI')" in sql
             assert "w.phase IN ('DAY_DISCUSSION', 'FINAL_DISCUSSION')" in sql
             game, version = params[:2]
             self.result = {'ready': all((event, game, version) in self.saved
@@ -522,25 +521,27 @@ def test_migration_guards_forged_source_window_and_keeps_version_activation_on_r
     assert 'length(source_message) NOT BETWEEN 1 AND 200' in trigger
 
 
-@pytest.mark.parametrize('changes', [
-    {'deadline': 1}, {'deadline': None}, {'day': 1}, {'phase': 'NIGHT'},
-    {'phase': 'DAY_VOTE', 'window_kind': 'VOTE'}, {'game_status': 'SAVED'},
-    {'game_status': 'COMPLETED'}, {'game_status': 'FAILED'}, {'window_status': 'PAUSED'},
-    {'window_status': 'RESOLVING'},
-])
-def test_old_pending_cannot_bypass_vote_boundary_with_explicit_game(changes):
+@pytest.mark.parametrize('status', ['SAVED', 'COMPLETED', 'FAILED'])
+@pytest.mark.parametrize('explicit_game', [False, True])
+def test_non_running_game_cannot_claim_even_with_explicit_game(status, explicit_game):
     tx = LeaseTransactions()
-    for name, value in changes.items():
-        setattr(tx, name, value)
+    tx.game_status = status
     repo = PostgresSpeechAnalysisRepository(tx)
-    assert repo.claim_next(analysis_version='v1', game_id=tx.game_id) is None
+    assert repo.claim_next(analysis_version='v1', game_id=tx.game_id if explicit_game else None) is None
     assert tx.attempts == {'EMBEDDING': 0, 'CLAIMS': 0}
 
 
-@pytest.mark.parametrize('phase,day', [('DAY_DISCUSSION', 2), ('DAY_DISCUSSION', 3), ('FINAL_DISCUSSION', 1)])
-def test_expired_vote_boundary_claims_accumulated_pending(phase, day):
+@pytest.mark.parametrize('changes', [
+    {'day': 1, 'deadline': 100}, {'deadline': None}, {'deadline': 0},
+    {'day': 3, 'deadline': 100}, {'phase': 'FINAL_DISCUSSION', 'deadline': 100},
+    {'phase': 'NIGHT', 'window_kind': 'NIGHT'},
+    {'phase': 'DAY_VOTE', 'window_kind': 'VOTE'},
+    {'window_status': 'RESOLVING'}, {'window_status': 'CLOSED'},
+])
+def test_running_game_claims_confirmed_backlog_without_current_window_boundary(changes):
     tx = LeaseTransactions()
-    tx.phase, tx.day = phase, day
+    for name, value in changes.items():
+        setattr(tx, name, value)
     assert PostgresSpeechAnalysisRepository(tx).claim_next(analysis_version='v1', game_id=tx.game_id)
 
 
@@ -611,3 +612,143 @@ def test_prepare_discovery_failure_propagates_without_claim_or_model(monkeypatch
     with pytest.raises(RuntimeError, match='합성 저장소 장애'):
         prepare(repo, uuid4())
     assert tx.statements == []
+
+
+def test_discovery_and_vote_preparation_share_exact_public_source_boundary():
+    """등록과 완료 판정이 같은 원문 조건을 써야 사람 발언 누락이나 비공개 혼입이 없다."""
+    tx = ScriptedTransactions(None, None, None, [], None, {'ready': True})
+    assert prepare(PostgresSpeechAnalysisRepository(tx), uuid4())
+    discovery_sql = next(sql for sql, _ in tx.statements
+                         if sql.startswith('INSERT INTO public.speech_analysis ('))
+    prepare_sql = tx.statements[-1][0]
+    source_start = discovery_sql.index('FROM public.game_events e')
+    source_end = discovery_sql.index(' AND ((%s::uuid IS NULL')
+    source = discovery_sql[source_start:source_end]
+    assert source in prepare_sql
+    for boundary in (
+        "p.kind IN ('HUMAN', 'AI')", "p.game_id = e.game_id",
+        "p.id::text = e.payload->>'player_id'", "e.audience = 'PUBLIC'",
+        "e.event_type = 'PLAYER_SPOKE'", "e.audience_player_id IS NULL",
+        "e.operation_type = 'APPEND_PUBLIC_EVENT'", "e.schema_version = 1",
+        "jsonb_typeof(e.payload->'message') = 'string'",
+        "btrim(e.payload->>'message') <> ''",
+        "length(e.payload->>'message') BETWEEN 1 AND 200",
+        "w.phase IN ('DAY_DISCUSSION', 'FINAL_DISCUSSION')",
+        "se.sequence < e.sequence", "se.operation_type = 'SET_ACTION_WINDOW'",
+        "w.game_id = e.game_id", "w.window_kind = 'SPEECH'",
+    ):
+        assert boundary in source
+
+
+def test_claim_missing_public_source_rolls_back_without_provider_input():
+    job, token, game, event = [uuid4() for _ in range(4)]
+    tx = ScriptedTransactions(None, {'job_id': job, 'lease_token': token, 'stage': 'EMBEDDING',
+                                    'game_id': game, 'event_id': event}, None)
+    with pytest.raises(ValueError, match='공개 발언 원본이 없습니다'):
+        PostgresSpeechAnalysisRepository(tx).claim_next(analysis_version='v1')
+    sql, params = tx.statements[-1]
+    for boundary in ("game_id = %s", "id = %s", "audience = 'PUBLIC'",
+                     "event_type = 'PLAYER_SPOKE'", "audience_player_id IS NULL",
+                     "schema_version = 1", "operation_type = 'APPEND_PUBLIC_EVENT'"):
+        assert boundary in sql
+    assert params == (game, event)
+    assert tx.rolled_back == 1 and tx.committed == 0 and not tx.active
+
+
+@pytest.mark.parametrize('status', ['SAVED', 'COMPLETED', 'FAILED'])
+@pytest.mark.parametrize('stage', ['EMBEDDING', 'CLAIMS'])
+@pytest.mark.parametrize('succeed', [False, True])
+def test_inflight_result_can_settle_after_game_stops_without_new_claim(status, stage, succeed):
+    """중단 직전 지불한 호출의 유효 결과는 보존하되 다음 단계 호출을 새로 만들지 않는다."""
+    tx = LeaseTransactions()
+    repo = PostgresSpeechAnalysisRepository(tx)
+    if stage == 'CLAIMS':
+        tx.status['EMBEDDING'], tx.embedding = 'READY', [1.0, 0.0]
+    job = repo.claim_next(analysis_version='v1')
+    tx.game_status = status
+    if succeed:
+        if stage == 'EMBEDDING':
+            assert repo.complete_embedding(job_id=job['job_id'], lease_token=job['lease_token'], embedding=[1, 0])
+        else:
+            assert repo.complete_claims(job_id=job['job_id'], lease_token=job['lease_token'], claims=[claim()])
+    else:
+        assert repo.fail(job_id=job['job_id'], lease_token=job['lease_token'],
+                         stage=stage, failure_code='TIMEOUT', retry_seconds=0)
+    assert tx.status[stage] == ('READY' if succeed else 'FAILED')
+    assert repo.claim_next(analysis_version='v1', game_id=tx.game_id) is None
+    assert tx.attempts[stage] == 1
+    assert not any('UPDATE public.games' in sql or 'INSERT INTO public.game_events' in sql
+                   for sql, _ in tx.statements)
+
+
+def test_saved_game_resumes_pending_stage_without_repeating_ready_embedding():
+    tx = LeaseTransactions()
+    repo = PostgresSpeechAnalysisRepository(tx)
+    embedding = repo.claim_next(analysis_version='v1')
+    assert repo.complete_embedding(job_id=embedding['job_id'], lease_token=embedding['lease_token'], embedding=[1, 0])
+    old = repo.claim_next(analysis_version='v1', lease_seconds=10)
+    tx.game_status, tx.window_status = 'SAVED', 'PAUSED'
+    tx.now = 10
+    assert repo.claim_next(analysis_version='v1') is None
+    assert tx.status == {'EMBEDDING': 'READY', 'CLAIMS': 'PENDING'}
+    assert tx.attempts == {'EMBEDDING': 1, 'CLAIMS': 1}
+    tx.game_status, tx.window_status, tx.deadline = 'IN_PROGRESS', 'OPEN', 100
+    restarted = PostgresSpeechAnalysisRepository(tx)
+    new = restarted.claim_next(analysis_version='v1')
+    assert new['stage'] == 'CLAIMS' and new['lease_token'] != old['lease_token']
+    assert not restarted.complete_claims(job_id=old['job_id'], lease_token=old['lease_token'], claims=[])
+    assert restarted.complete_claims(job_id=new['job_id'], lease_token=new['lease_token'], claims=[claim()])
+    assert restarted.claim_next(analysis_version='v1') is None
+    assert tx.embedding == [1.0, 0.0] and tx.claims == [claim()]
+    assert tx.attempts == {'EMBEDDING': 1, 'CLAIMS': 2}
+
+
+def test_two_workers_share_one_lease_and_ready_results_are_not_reclaimed():
+    """DB 동시 잠금 자체는 통합 담당자가 검증하고 여기서는 교차 worker 재호출을 재현한다."""
+    tx = LeaseTransactions()
+    first, second = PostgresSpeechAnalysisRepository(tx), PostgresSpeechAnalysisRepository(tx)
+    embedding = first.claim_next(analysis_version='v1')
+    assert second.claim_next(analysis_version='v1') is None
+    assert first.complete_embedding(job_id=embedding['job_id'], lease_token=embedding['lease_token'], embedding=[1, 0])
+    claims = second.claim_next(analysis_version='v1')
+    assert claims['stage'] == 'CLAIMS' and first.claim_next(analysis_version='v1') is None
+    assert second.complete_claims(job_id=claims['job_id'], lease_token=claims['lease_token'], claims=[])
+    assert first.claim_next(analysis_version='v1') is None
+    assert second.claim_next(analysis_version='v1') is None
+    assert tx.attempts == {'EMBEDDING': 1, 'CLAIMS': 1}
+
+
+@pytest.mark.parametrize('stage', ['EMBEDDING', 'CLAIMS'])
+def test_deleted_source_rejects_late_success_failure_and_new_claim(stage):
+    """FK cascade 뒤에는 유효했던 token으로도 결과 행을 다시 만들 수 없다."""
+    tx = LeaseTransactions()
+    repo = PostgresSpeechAnalysisRepository(tx)
+    if stage == 'CLAIMS':
+        tx.status['EMBEDDING'], tx.embedding = 'READY', [1.0, 0.0]
+    job = repo.claim_next(analysis_version='v1')
+    tx.exists = False
+    if stage == 'EMBEDDING':
+        assert not repo.complete_embedding(job_id=job['job_id'], lease_token=job['lease_token'], embedding=[1, 0])
+    else:
+        assert not repo.complete_claims(job_id=job['job_id'], lease_token=job['lease_token'], claims=[])
+    assert not repo.fail(job_id=job['job_id'], lease_token=job['lease_token'], stage=stage, failure_code='TIMEOUT')
+    assert repo.claim_next(analysis_version='v1') is None
+    assert not any(sql.startswith('INSERT') for sql, _ in tx.statements)
+
+
+def test_human_source_migration_only_broadens_player_kind_and_keeps_all_guards():
+    """순방향 함수 교체가 원문·불변 참조·hash·벡터·claim 검증을 한 글자도 완화하지 않게 한다."""
+    migrations = Path(__file__).parents[1] / 'migrations'
+    original = (migrations / '006_create_speech_analysis.sql').read_text()
+    upgrade = (migrations / '008_allow_public_human_speech_analysis.sql').read_text()
+    start = original.index('CREATE OR REPLACE FUNCTION public.validate_speech_analysis()')
+    original_function = original[start:original.index('\n$$;', start) + len('\n$$;')]
+    start = upgrade.index('CREATE OR REPLACE FUNCTION public.validate_speech_analysis()')
+    upgraded_function = upgrade[start:upgrade.index('\n$$;', start) + len('\n$$;')]
+    expected = original_function.replace("p.kind = 'AI'", "p.kind IN ('HUMAN', 'AI')")
+    assert upgraded_function == expected
+    assert upgrade.count('BEGIN;') == 1 and upgrade.rstrip().endswith('COMMIT;')
+    assert 'CREATE TABLE' not in upgrade and 'ALTER TABLE' not in upgrade
+    assert 'UPDATE public.' not in upgrade and 'DELETE FROM' not in upgrade
+    assert 'REFERENCES public.game_events (game_id, id, sequence) ON DELETE CASCADE' in original
+    assert 'REFERENCES public.game_players (game_id, id) ON DELETE CASCADE' in original

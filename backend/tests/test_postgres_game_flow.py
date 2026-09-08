@@ -367,7 +367,7 @@ def test_postgres_user_activity_changes_only_on_successful_user_commands() -> No
             assert activity_time(game_id) == begun_at
             rejected = client.post(
                 path + "/commands", headers={**headers, "Idempotency-Key": str(uuid4())},
-                json={"type": "SAVE_AND_EXIT", "expected_state_version": 1},
+                json={"type": "BEGIN_GAME", "expected_state_version": 1},
             )
             assert rejected.status_code == 409
             assert activity_time(game_id) == begun_at
@@ -378,7 +378,7 @@ def test_postgres_user_activity_changes_only_on_successful_user_commands() -> No
                 response = client.post(
                     path + "/commands", headers={**headers, "Idempotency-Key": str(uuid4())},
                     json={"type": command,
-                          "expected_state_version": snapshot["game"]["state_version"]},
+                          "expected_state_version": 1 if command == "SAVE_AND_EXIT" else snapshot["game"]["state_version"]},
                 )
                 assert response.status_code == 200
                 current = activity_time(game_id)

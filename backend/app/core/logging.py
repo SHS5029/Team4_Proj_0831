@@ -1,5 +1,6 @@
 """비밀정보를 기록하지 않는 Backend 기본 로깅 설정."""
 
+import json
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -7,6 +8,43 @@ from threading import RLock
 
 
 _progress_lock = RLock()
+
+
+class _ImportantProgressFilter(logging.Filter):
+    """터미널에만 주요 결과를 남기고 파일·UI의 상세 진행 기록은 건드리지 않는다."""
+
+    _stages = frozenset({
+        "CREATED", "BEGIN_GAME", "SAVE_AND_EXIT", "RESUME", "PHASE_CHANGED",
+        "COMPLETED", "FALLBACK", "FAILED", "WORKER_FAILED",
+    })
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """이미 정제된 진행 JSON을 선별하며 경고·오류는 형식에 관계없이 보존한다."""
+
+        if record.levelno >= logging.WARNING:
+            return True
+        try:
+            entry = json.loads(record.getMessage())
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(entry, dict) or not isinstance(entry.get("stage"), str):
+            return False
+        return entry["stage"] in self._stages or (
+            entry["stage"] == "APPLIED" and entry.get("action") == "SPEAK"
+        )
+
+
+class _FailedAccessFilter(logging.Filter):
+    """주기적인 정상 HTTP 접근 기록을 줄이면서 실패 응답과 서버 경고를 보존한다."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Uvicorn의 구조화 인자에서 상태 코드만 확인하고 URL 문자열은 해석하지 않는다."""
+
+        if record.levelno >= logging.WARNING:
+            return True
+        args = record.args
+        return (isinstance(args, tuple) and len(args) == 5
+                and type(args[4]) is int and 400 <= args[4] <= 599)
 
 
 class _QuietRotatingFileHandler(RotatingFileHandler):
@@ -27,6 +65,7 @@ def progress_logger() -> logging.Logger:
         logger.propagate = False
         terminal = logging.StreamHandler()
         terminal.setFormatter(logging.Formatter("%(message)s"))
+        terminal.addFilter(_ImportantProgressFilter())
         logger.addHandler(terminal)
         try:
             directory = Path(__file__).resolve().parents[2] / "logs"
@@ -42,10 +81,15 @@ def progress_logger() -> logging.Logger:
 
 
 def configure_logging() -> None:
-    """애플리케이션이 별도 설정을 주입하지 않은 경우에만 기본 포맷을 적용한다."""
+    """기본 포맷과 Backend의 소음 억제를 적용하되 서버 기동·경고·오류는 보존한다."""
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    for name in ("httpx", "httpcore", "mcp"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(item, _FailedAccessFilter) for item in access.filters):
+        access.addFilter(_FailedAccessFilter())
     progress_logger()

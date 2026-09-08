@@ -171,7 +171,9 @@ Backend까지 전달하고, Front에는 proxy origin만 Backend URL로 제공한
 - 같은 key와 다른 request hash는 `409 IDEMPOTENCY_KEY_REUSED`다.
 - game command body는 `expected_state_version`을 필수로 가진다.
 - version 불일치 command를 자동 재적용하지 않는다. Front가 sync한 뒤 사용자의
-  의도를 다시 확인한다.
+  의도를 다시 확인한다. 단, `SAVE_AND_EXIT`은 화면 버전과의 일치 검사를 하지 않고
+  게임 행 잠금 뒤 서버의 마지막 확정 상태를 저장한다. 해당 요청의 양의 정수
+  `expected_state_version`은 요청 hash에 남겨 동일 요청 재전송을 구분하는 데만 사용한다.
 - 다른 AI의 미해소 private submission과 Agent reservation은 Front projection을
   바꾸지 않으므로 공개 `state_version`을 올리지 않는다. phase 해소·공개 event 또는
   인간 본인 private 상태가 바뀔 때 version을 올린다.
@@ -722,8 +724,14 @@ role이나 action subtype을 보내지 않는다. 시민, 사망자와 이미 �
 ```
 
 게임이 `IN_PROGRESS`이고 window가 `RESOLVING`이 아닌 안정 상태에서 허용한다. 열린
-timed window가 있으면 남은 서버 시간을 snapshot에 저장한다. 진행 중 Agent 결과는
-state/version 재검증 뒤 stale 처리하고 저장 결과를 바꾸지 않는다.
+timed window가 있으면 게임 행·window 잠금 획득 뒤 계산한 남은 서버 시간을 저장한다.
+화면의 `expected_state_version`이 서버 버전과 달라도 저장을 거부하지 않으며,
+`accepted_state_version`은 실제 저장 직전의 서버 버전이다. 예를 들어 화면이 27이고
+서버가 29이면 확정 상태 29를 저장해 결과 버전 30을 반환한다. 과거 버전으로 원장을
+되돌리거나 확정된 event·submission을 버리지 않는다. 아직 확정되지 않은 Agent 응답은
+기다리지 않고 저장 후 state/window 재검증으로 거부한다. 같은 body·Idempotency-Key의
+재전송은 최초 저장 결과를 replay하며 다시 저장하거나 저장 시간을 갱신하지 않는다.
+소유권·안정 상태 검증과 `RESUME` 등 다른 command의 버전 일치 요구는 유지한다.
 
 #### `RESUME`
 
@@ -1902,6 +1910,23 @@ window와 `state_version`을 다시 확인한 뒤에만 `PUBLIC` event로 저장
 
 현재 운영 `mafia://context/current/...`, `mafia://context/scoped/...` 등록부는 Backend 응답 후 모델 입력을 축약한다. Backend 내부 API와 인증 Resource의 8.2 schema는 그대로 유지한다. 운영 FastMCP 응답의 public.data.scenario는 scenario_id·title만 보존하고 public.data.rules는 고정 한국어 규칙 문자열 배열을 추가한다. me.data는 alibi·observation을 제외하며 그 밖의 필드는 보존한다. 공개 사건·발언·본인 private_events·turn·persona·gm-guide는 보존한다. rules는 마스터플랜 3절 규칙 설명이며 상태 판정이나 추가 비공개 정보가 아니다.
 
+### 2026-09-08 Backend 모델 입력의 최근 대화 발췌 (WU-B6)
+
+Backend는 토론 SPEECH의 모델 user 데이터에만 `dialogue_focus`를 추가한다.
+이는 MCP 응답이나 공개 API 필드가 아니며 8.2절 Resource 스키마는 유지한다.
+`recent_speeches`와 `addressed_speeches`는 현재 토론의 최근 공개 발언과 본인을
+이름·좌석으로 언급한 타인 발언 후보를 각각 최대 6개 담는다. 항목은 기존 공개
+event의 `event_id`, `event_type`, `created_at`, 허용된 `data`만 복사한다.
+`own_last_speech`는 현재 토론의 마지막 본인 발언 또는 null이고,
+`other_speech_count_since_own_last`는 그 뒤 타인 발언 수 또는 본인 발언이 없으면 null이다.
+round 0의 GAME_BEGAN 또는 현재 round와 일치하는 NIGHT_RESOLVED를 토론 경계로
+사용하며 경계가 없거나 다르면 발췌만 생략한다. 이전 이력은 원본 context에 남긴다.
+동명이인은 이름 단독 언급을 제외하고 좌석 호칭으로 구분한다.
+언급 후보는 질문·미답·회피 여부를 확정하지 않는다. 자유 문자열은 user
+데이터로만 전달하며 파생 입력을 읽는 고정 안내만 Backend 출력 계약에 더한다.
+역할별 전략·말투는 기존 MCP 지침을 그대로 사용하고 투표·밤·GM 요청에는 이
+발췌를 추가하지 않는다. 공개 이력·본인 조사 기록을 자르거나 추가 조회하지 않는다.
+
 ## 2026-09-08 운영 MCP 역할별 프롬프트 계약 (WU-M6)
 
 기존 운영 `mafia://context/scoped/...`의 `me.data`와 `persona.data`에 MCP가 생성한
@@ -2007,3 +2032,31 @@ GET은 외부 모델·색인·DB 쓰기·게임 version/event cursor 갱신을 �
 revision은 generated_at을 제외한 공개 응답에서 계산하므로 private 변경이나 같은
 결과의 반복 조회로 변하지 않는다. 앱별 `app.state.vote_insight_service`를 주입할 수
 있으며 기본 router는 `app.state.settings`로 service/repository를 지연 생성한다.
+
+
+### 2026-09-08 실시간 공개 대화 요약 확장
+
+기존 vote-insights endpoint·인수·오류 envelope를 유지한다. 이번 절은 앞선 AI 전용
+및 투표 phase 전용 조회 제한보다 우선한다. HUMAN·AI의 PUBLIC PLAYER_SPOKE를 집계하며
+공개 전 원문·다른 게임·private는 계속 제외한다.
+
+DAY_DISCUSSION·FINAL_DISCUSSION의 현재 OPEN SPEECH window도 조회할 수 있다.
+토론 deadline이 지났어도 투표 준비 중인 같은 OPEN SPEECH는 허용한다. 저장·종료·
+다른 window와 불일치 phase/round는 기존 stale 오류다. 토론에서는 생존 투표권 검사를
+요구하지 않고 소유권과 공개 roster 소속을 검사하며 후보·순위·유사주장 배열은 비운다.
+투표·재투표·최종 지목의 생존·마감·후보 검증은 유지한다.
+
+토론 cutoff_sequence는 동일 repeatable-read snapshot의 최대 공개 원장 sequence+1이다.
+private 이벤트만 추가되어서는 공개 cutoff나 revision이 달라지지 않는다.
+current_discussion 구간은 현재 SPEECH 창의 phase:round이며, game은 cutoff 이전의
+게임 전체 공개 발언이다. 투표 cutoff와 구간 산출은 종전 최초 개설 원장을 유지한다.
+
+응답에 conversation_summary object를 항상 추가한다:
+`{items: [{summary: string, evidence: [PublicSpeechEvidence]}], total: integer, omitted: integer}`.
+원문·분석 바인딩과 claims 검증을 통과한 발언에서 공백만 아닌 서로 다른 proposition
+최대 3개를 ` · `로 연결한다. 주장이 없는 완료 발언은 요약 항목을 만들지 않는다.
+items는 최신 최대 20발언을 sequence 오름차순으로 반환하고 evidence는 해당 공개
+발언 하나의 기존 5필드(event_id/player_id/message/created_at/sequence)다.
+total은 요약 가능한 전체 발언 수, omitted는 total-items 길이다. 임베딩이 아직 없어도
+완료된 주장 요약은 PARTIAL로 노출할 수 있다. coverage는 범위 내 HUMAN·AI 전체 기준이고
+revision에 요약을 포함한다. GET은 모델 호출·DB 쓰기·게임 변경을 하지 않는다.

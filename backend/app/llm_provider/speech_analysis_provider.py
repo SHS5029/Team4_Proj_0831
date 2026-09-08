@@ -109,6 +109,7 @@ def validate_claims(payload: Any, message: str, player_ids: set[str]) -> list[di
             if (
                 not isinstance(claim["proposition"], str)
                 or not 1 <= len(claim["proposition"]) <= 200
+                or not claim["proposition"].strip()
             ):
                 raise ValueError
             start, end = claim["evidence_start"], claim["evidence_end"]

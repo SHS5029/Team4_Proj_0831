@@ -1036,7 +1036,7 @@ def _render_save_control(
     elif status == "REFRESH_FAILED":
         st.warning("요청 응답은 확인했지만 최신 게임 상태를 불러오지 못했습니다.")
     elif status == "REJECTED" and allowed:
-        st.warning("게임 상태가 바뀌어 저장이 거부되었습니다. 최신 상태를 확인해 주세요.")
+        st.warning("현재는 게임을 저장할 수 없습니다. 게임 상태를 확인해 주세요.")
     if status in {"RETRYABLE_UNKNOWN", "REFRESH_FAILED"}:
         if st.button(
             "같은 요청 다시 확인" if status == "RETRYABLE_UNKNOWN" else "최신 상태 다시 확인",
@@ -1355,6 +1355,7 @@ def _render_save_confirmation_dialog(*, game_id: str, snapshot: dict[str, Any], 
             phase_col.caption(cycle)
             time_col.metric("남은 시간", remaining_text)
         st.info("게임을 저장하고 나가면 나중에 이어서 플레이할 수 있습니다.")
+        st.caption("마지막으로 확정된 진행 상황을 저장합니다. 작성 중인 입력이나 처리 중인 응답은 포함되지 않을 수 있습니다.")
         locked = bool(st.session_state.get("game.sync_hidden")) or any(
             isinstance(pending := st.session_state.get(key), dict)
             and pending.get("game_id") == game_id and pending.get("status") in SHELL_LOCKED

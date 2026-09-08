@@ -1,4 +1,4 @@
-"""공개 발언 분석을 보수적으로 검증하여 투표 보조 카드만 새로 투영한다."""
+"""검증된 공개 발언에서 실시간 핵심 요약과 투표 보조 카드를 읽기 전용으로 만든다."""
 
 from __future__ import annotations
 
@@ -60,19 +60,20 @@ class VoteInsightService:
                         message="투표 보조 정보를 일시적으로 조회할 수 없습니다.", retryable=True)
 
     def _project(self, source, game_id, window_id, scope, candidates, now):
-        """현재 후보만 출력하되 사망 AI를 포함한 기간 내 원문은 집계에 보존한다."""
+        """현재 후보만 출력하되 사망자를 포함한 공개 발언은 기간 집계에 보존한다."""
         cutoff = source["cutoff_sequence"]
         if type(cutoff) is not int or cutoff < 1:
-            raise ValueError("투표 창 cutoff가 올바르지 않습니다.")
+            raise ValueError("공개 발언 cutoff가 올바르지 않습니다.")
         data = {"game_id": str(game_id), "window_id": str(window_id), "scope": scope,
                 "cutoff_sequence": cutoff,
                 "analysis_version": self.settings.effective_speech_analysis_version,
                 "status": "UNAVAILABLE", "coverage": {"total": 0, "embedding_ready": 0,
                                                        "claims_ready": 0, "failed": 0},
-                "similar_claims": [], "suspicion_ranking": [], "candidate_evidence": []}
+                "similar_claims": [], "suspicion_ranking": [], "candidate_evidence": [],
+                "conversation_summary": {"items": [], "total": 0, "omitted": 0}}
         if self.settings.speech_analysis_enabled:
             self._cards(data, source, candidates[:8])
-        # 시간·private 필드·분석 내부 텍스트는 revision 입력에서 제외한다.
+        # 조회 시각과 private 필드는 제외하고 실제 표시하는 요약 변경은 revision에 반영한다.
         data["revision"] = sha256(json.dumps(data, ensure_ascii=False, sort_keys=True,
                                             separators=(",", ":")).encode()).hexdigest()
         data["generated_at"] = now.astimezone(UTC).isoformat().replace("+00:00", "Z")
@@ -103,6 +104,15 @@ class VoteInsightService:
             evidence = {"event_id": event_id, "player_id": str(row["player_id"]),
                         "message": row["message"], "sequence": row["sequence"],
                         "created_at": row["created_at"].astimezone(UTC).isoformat().replace("+00:00", "Z")}
+            # 동일 발언의 반복 주장은 한 번만 표시하고 모델의 핵심 요약과 공개 원문을 분리한다.
+            points = list(dict.fromkeys(claim["proposition"].strip() for claim in claims or []))[:3]
+            if points:
+                summary = data["conversation_summary"]
+                summary["total"] += 1
+                summary["items"].append({"summary": " · ".join(points), "evidence": [evidence]})
+                if len(summary["items"]) > 20:
+                    summary["items"].pop(0)
+                    summary["omitted"] += 1
             for claim in claims or []:
                 target, stance = claim["target_player_id"], claim["stance"]
                 if target not in buckets or not self._explicit_claim(claim, row["message"], players):
@@ -149,7 +159,7 @@ class VoteInsightService:
         player = players.get(str(row.get("player_id")))
         segment = row.get("discussion_segment")
         return (str(row.get("game_id")) == data["game_id"] and player is not None
-                and player["kind"] == "AI" and row.get("audience") == "PUBLIC"
+                and player["kind"] in {"HUMAN", "AI"} and row.get("audience") == "PUBLIC"
                 and row.get("audience_player_id") is None
                 and row.get("event_type") == "PLAYER_SPOKE"
                 and row.get("operation_type") == "APPEND_PUBLIC_EVENT"

@@ -171,14 +171,79 @@ def test_worker_vote_expiry_and_fast_forward_advance_after_saved_result():
     assert worker._fast_forward_progressed is True
 
 
-def test_logging_configuration_is_idempotent_and_file_has_rotation():
-    from backend.app.core.logging import progress_logger
+@pytest.fixture
+def isolated_logging(tmp_path, monkeypatch):
+    """실제 설정 함수를 사용하되 운영 logger와 로그 파일에는 영향을 주지 않는다."""
+
+    from backend.app.core import logging as configuration
+
+    names = ("backend.game_progress", "uvicorn.access", "httpx", "httpcore", "mcp")
+    loggers = {name: logging.Logger(name) for name in names}
+    original_get_logger = logging.getLogger
+
+    def get_logger(name=None):
+        return loggers[name] if name in loggers else original_get_logger(name)
+
+    monkeypatch.setattr(logging, "getLogger", get_logger)
+    monkeypatch.setattr(configuration, "__file__", str(tmp_path / "app" / "core" / "logging.py"))
+    try:
+        yield configuration, loggers
+    finally:
+        for logger in loggers.values():
+            for handler in logger.handlers:
+                handler.close()
+
+
+def test_logging_configuration_is_idempotent_and_file_has_rotation(isolated_logging):
+    """반복 설정이 필터·출력을 중복시키거나 상세 파일 기록을 선별하지 않는다."""
+
+    configuration, loggers = isolated_logging
     from logging.handlers import RotatingFileHandler
-    logger = progress_logger()
+
+    configuration.configure_logging()
+    logger = configuration.progress_logger()
     handlers = list(logger.handlers)
-    assert progress_logger().handlers == handlers
+    configuration.configure_logging()
+    assert configuration.progress_logger().handlers == handlers
     files = [handler for handler in handlers if isinstance(handler, RotatingFileHandler)]
+    terminals = [handler for handler in handlers if not isinstance(handler, RotatingFileHandler)]
     assert len(files) == 1 and files[0].maxBytes == 5 * 1024 * 1024 and files[0].backupCount == 3
+    assert len(terminals) == 1
+    assert sum(isinstance(item, configuration._ImportantProgressFilter) for item in terminals[0].filters) == 1
+    assert not any(isinstance(item, configuration._ImportantProgressFilter)
+                   for item in logger.filters + files[0].filters)
+    assert sum(isinstance(item, configuration._FailedAccessFilter)
+               for item in loggers["uvicorn.access"].filters) == 1
+    for name in ("httpx", "httpcore", "mcp"):
+        assert loggers[name].getEffectiveLevel() == logging.WARNING
+
+
+def test_access_status_filter_and_dependency_warnings_are_preserved(isolated_logging):
+    """접근 INFO는 실패 상태만 표시하며 상태와 무관한 WARNING 이상은 보존한다."""
+
+    configuration, loggers = isolated_logging
+    configuration.configure_logging()
+    stream = io.StringIO()
+    access = loggers["uvicorn.access"]
+    access.setLevel(logging.INFO)
+    access.addHandler(logging.StreamHandler(stream))
+    statuses = (200, 204, 301, 304, 399, 400, 404, 499, 500, 599, 600, "500", None)
+    for status in statuses:
+        access.info('%s - "%s %s HTTP/%s" %s', "synthetic-client", "GET", "/synthetic", "1.1", status)
+    for level in (logging.WARNING, logging.ERROR, logging.CRITICAL):
+        access.log(level, "synthetic access %s", logging.getLevelName(level))
+    assert stream.getvalue().splitlines() == [
+        f'synthetic-client - "GET /synthetic HTTP/1.1" {status}'
+        for status in (400, 404, 499, 500, 599)
+    ] + ["synthetic access WARNING", "synthetic access ERROR", "synthetic access CRITICAL"]
+
+    for name in ("httpx", "httpcore", "mcp"):
+        stream = io.StringIO()
+        loggers[name].addHandler(logging.StreamHandler(stream))
+        loggers[name].info("synthetic dependency INFO")
+        loggers[name].warning("synthetic dependency WARNING")
+        loggers[name].error("synthetic dependency ERROR")
+        assert stream.getvalue().splitlines() == ["synthetic dependency WARNING", "synthetic dependency ERROR"]
 
 
 @pytest.mark.asyncio
@@ -285,23 +350,80 @@ async def test_tool_response_loss_fallback_cannot_apply_to_new_window(monkeypatc
     assert stages == ["FALLBACK", "FAILED"]
 
 
-def test_terminal_and_file_order_are_identical_and_file_failure_is_quiet(tmp_path):
-    from backend.app.core.logging import _QuietRotatingFileHandler
+def test_terminal_selection_preserves_file_order_history_and_quiet_file_failure(
+    isolated_logging, tmp_path, capsys, monkeypatch,
+):
+    """터미널의 중요 기록 선별이 상세 파일·UI 이력·파일 실패 격리를 바꾸지 않는다."""
+
+    from logging.handlers import RotatingFileHandler
+
+    configuration, _ = isolated_logging
+    logger = configuration.progress_logger()
     terminal = io.StringIO()
-    logger = logging.Logger("synthetic-dual-output")
-    logger.addHandler(logging.StreamHandler(terminal))
-    path = tmp_path / "progress.log"
-    handler = _QuietRotatingFileHandler(path, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")
-    logger.addHandler(handler)
+    handler = next(item for item in logger.handlers if isinstance(item, RotatingFileHandler))
+    next(item for item in logger.handlers if not isinstance(item, RotatingFileHandler)).setStream(terminal)
     activity = AgentActivity(logger=logger)
-    for _ in range(3):
-        record(activity, uuid4(), uuid4(), uuid4())
-    handler.close()
-    assert path.read_text() == terminal.getvalue()
-    broken = _QuietRotatingFileHandler(tmp_path / "missing" / "log", delay=True)
-    logger.handlers = [broken]
-    activity.record(stage="WORKER_FAILED")
-    broken.close()
+    owner, game, actor = uuid4(), uuid4(), uuid4()
+    events = [
+        ("CREATED", None, "ROLE_REVEAL", True, False),
+        ("BEGIN_GAME", None, "DAY_DISCUSSION", True, False),
+        ("STARTED", None, "DAY_DISCUSSION", False, True),
+        ("CONTEXT_READY", None, "DAY_DISCUSSION", False, True),
+        ("DECIDING", None, "DAY_DISCUSSION", False, True),
+        ("DECIDED", "SPEAK", "DAY_DISCUSSION", False, True),
+        ("APPLIED", "SPEAK", "DAY_DISCUSSION", True, True),
+        ("COMMAND_APPLIED", None, "DAY_DISCUSSION", False, False),
+        ("APPLIED", "PASS", "DAY_DISCUSSION", False, True),
+        ("SKIPPED", None, "DAY_DISCUSSION", False, True),
+        ("SAVE_AND_EXIT", None, "DAY_DISCUSSION", True, False),
+        ("RESUME", None, "DAY_DISCUSSION", True, False),
+        ("PHASE_CHANGED", None, "NIGHT_ACTION", True, False),
+        ("APPLIED", "NIGHT_ACTION", "NIGHT_ACTION", False, False),
+        ("APPLIED", "SPEAK", "DAY_VOTE", False, False),
+        ("FALLBACK", "PASS", "FINAL_DISCUSSION", True, True),
+        ("FAILED", "SPEAK", "FINAL_DISCUSSION", True, True),
+        ("WORKER_FAILED", None, "FINAL_DISCUSSION", True, False),
+        ("APPLIED", "SPEAK", "FINAL_DISCUSSION", True, True),
+        ("COMPLETED", None, "ENDED", True, False),
+    ]
+    emitted, selected, history = [], [], []
+    for stage, action, phase, visible, remembered in events:
+        row = activity.record(owner_user_id=owner, game_id=game, player_id=actor,
+                              phase=phase, state_version=2, stage=stage, action=action)
+        entry = {**row, "game_id": str(game)}
+        emitted.append(entry)
+        if visible:
+            selected.append(entry)
+        if remembered:
+            history.append(row)
+    handler.flush()
+    file_path = tmp_path / "logs" / "game-progress.log"
+    file_rows = [json.loads(line) for line in file_path.read_text(encoding="utf-8").splitlines()]
+    assert file_rows == emitted
+    assert [row["sequence"] for row in file_rows] == list(range(1, len(events) + 1))
+    assert [json.loads(line) for line in terminal.getvalue().splitlines()] == selected
+    assert activity.recent(owner, game) == history
+
+    for level, message in (
+        (logging.WARNING, json.dumps({"stage": "DECIDING"})),
+        (logging.ERROR, "synthetic progress ERROR"),
+        (logging.CRITICAL, "synthetic progress CRITICAL"),
+    ):
+        logger.log(level, message)
+    handler.flush()
+    assert terminal.getvalue().splitlines()[-3:] == file_path.read_text(encoding="utf-8").splitlines()[-3:]
+    assert terminal.getvalue().splitlines()[-3:] == [
+        json.dumps({"stage": "DECIDING"}), "synthetic progress ERROR", "synthetic progress CRITICAL"]
+
+    monkeypatch.setattr(logging, "raiseExceptions", True)
+    broken = configuration._QuietRotatingFileHandler(tmp_path / "missing" / "log", delay=True)
+    logger.addHandler(broken)
+    try:
+        activity.record(stage="WORKER_FAILED")
+    finally:
+        logger.removeHandler(broken)
+        broken.close()
+    assert capsys.readouterr().err == ""
 
 
 def test_fallback_target_uses_ai_actor_scope_and_rejects_changed_window(monkeypatch):

@@ -13,11 +13,13 @@ from backend.app.core.errors import ApiError
 from backend.app.game_engine.rules.vote_rules import valid_targets
 from backend.app.models.enums import GamePhase
 
+DISCUSSION_PHASES = {"DAY_DISCUSSION", "FINAL_DISCUSSION"}
+
 
 def stale_window() -> ApiError:
-    """게임의 현재 선택 가능 상태를 잃은 요청에 동일한 고정 오류를 사용한다."""
+    """현재 토론·투표 창을 잃은 요청에 비밀값 없는 고정 오류를 사용한다."""
     return ApiError(status_code=409, code="VOTE_INSIGHTS_STALE_WINDOW",
-                    message="현재 진행 중인 투표 창에서만 보조 정보를 조회할 수 있습니다.")
+                    message="현재 진행 중인 토론·투표 창에서만 보조 정보를 조회할 수 있습니다.")
 
 
 def validate_game_source(source, owner_user_id, game_id, window_id, now):
@@ -30,22 +32,30 @@ def validate_game_source(source, owner_user_id, game_id, window_id, now):
     if (not game or str(game["id"]) != str(game_id)
             or str(game["owner_user_id"]) != str(owner_user_id)):
         raise ApiError(status_code=404, code="GAME_NOT_FOUND", message="게임을 찾을 수 없습니다.")
-    kinds = {"DAY_VOTE": "VOTE", "REVOTE": "REVOTE", "FINAL_ACCUSATION": "FINAL_VOTE"}
+    discussion = game["phase"] in DISCUSSION_PHASES
+    kinds = {"DAY_VOTE": "VOTE", "REVOTE": "REVOTE", "FINAL_ACCUSATION": "FINAL_VOTE",
+             "DAY_DISCUSSION": "SPEECH", "FINAL_DISCUSSION": "SPEECH"}
     if (game["status"] != "IN_PROGRESS" or game["phase"] not in kinds or not window
             or str(window["id"]) != str(window_id) or str(window["game_id"]) != str(game_id)
             or window["status"] != "OPEN" or window["phase"] != game["phase"]
-            or window["round"] != game["round"] or window["window_kind"] != kinds[game["phase"]]
-            or not isinstance(window["deadline_at"], datetime)
-            or window["deadline_at"].utcoffset() is None or window["deadline_at"] <= now):
+            or window["round"] != game["round"] or window["window_kind"] != kinds[game["phase"]]):
+        raise stale_window()
+    deadline = window["deadline_at"]
+    # 구형 순차 토론에는 deadline이 없고 마감된 자유 토론은 분석 준비 상태일 수 있다.
+    # 투표의 유효 시간 검사는 그대로 유지하며 읽기 허용이 제출 권한을 늘리지 않는다.
+    if (deadline is not None and (not isinstance(deadline, datetime) or deadline.utcoffset() is None)
+            or not discussion and (deadline is None or deadline <= now)):
         raise stale_window()
     players = source["players"]
     if (not 2 <= len(players) <= 9 or len({str(p["id"]) for p in players}) != len(players)
             or any(str(p["game_id"]) != str(game_id) for p in players)):
         raise ValueError("공개 참가자 소속이 올바르지 않습니다.")
     humans = [p for p in players if p["kind"] == "HUMAN"]
-    if (len(humans) != 1 or humans[0]["alive"] is not True
-            or str(humans[0]["user_id"]) != str(owner_user_id)):
+    if (len(humans) != 1 or str(humans[0]["user_id"]) != str(owner_user_id)
+            or not discussion and humans[0]["alive"] is not True):
         raise stale_window()
+    if discussion:
+        return []
     views = [SimpleNamespace(player_id=UUID(str(p["id"])), seat=p["seat"])
              for p in players if p["alive"] is True]
     tied = set()
@@ -116,26 +126,36 @@ class PostgresVoteInsightRepository:
                     """, (game_id, game["round"]))
                     source["revote"] = cursor.fetchone()
                 validate_game_source(source, owner_user_id, game_id, window_id, datetime.now(UTC))
-                cursor.execute("""
-                    SELECT min(sequence) AS cutoff_sequence FROM public.game_events
-                    WHERE game_id=%s AND audience='PUBLIC' AND audience_player_id IS NULL
-                      AND schema_version=1 AND operation_type='SET_ACTION_WINDOW' AND payload->>'window_id'=%s
-                """, (game_id, str(window_id)))
-                source["cutoff_sequence"] = cursor.fetchone()["cutoff_sequence"]
-                if type(source["cutoff_sequence"]) is not int:
-                    raise ValueError("투표 창 최초 개설 원장이 없습니다.")
-                cursor.execute("""
-                    SELECT w.phase || ':' || w.round::text AS discussion_segment
-                    FROM public.game_events e JOIN public.action_windows w
-                      ON w.game_id=e.game_id AND w.id::text=e.payload->>'window_id'
-                    WHERE e.game_id=%s AND e.sequence<%s AND e.audience='PUBLIC'
-                      AND e.audience_player_id IS NULL AND e.schema_version=1
-                      AND e.operation_type='SET_ACTION_WINDOW' AND w.window_kind='SPEECH'
-                      AND w.phase IN ('DAY_DISCUSSION','FINAL_DISCUSSION')
-                    ORDER BY e.sequence DESC LIMIT 1
-                """, (game_id, source["cutoff_sequence"]))
-                segment = cursor.fetchone()
-                source["discussion_segment"] = segment["discussion_segment"] if segment else None
+                if game["phase"] in DISCUSSION_PHASES:
+                    # private 이벤트만 추가된 경우 공개 cutoff나 revision은 변하지 않는다.
+                    cursor.execute("""
+                        SELECT coalesce(max(sequence), 0) + 1 AS cutoff_sequence
+                        FROM public.game_events WHERE game_id=%s
+                          AND audience='PUBLIC' AND audience_player_id IS NULL AND schema_version=1
+                    """, (game_id,))
+                    source["cutoff_sequence"] = cursor.fetchone()["cutoff_sequence"]
+                    source["discussion_segment"] = f"{window['phase']}:{window['round']}"
+                else:
+                    cursor.execute("""
+                        SELECT min(sequence) AS cutoff_sequence FROM public.game_events
+                        WHERE game_id=%s AND audience='PUBLIC' AND audience_player_id IS NULL
+                          AND schema_version=1 AND operation_type='SET_ACTION_WINDOW' AND payload->>'window_id'=%s
+                    """, (game_id, str(window_id)))
+                    source["cutoff_sequence"] = cursor.fetchone()["cutoff_sequence"]
+                    if type(source["cutoff_sequence"]) is not int:
+                        raise ValueError("투표 창 최초 개설 원장이 없습니다.")
+                    cursor.execute("""
+                        SELECT w.phase || ':' || w.round::text AS discussion_segment
+                        FROM public.game_events e JOIN public.action_windows w
+                          ON w.game_id=e.game_id AND w.id::text=e.payload->>'window_id'
+                        WHERE e.game_id=%s AND e.sequence<%s AND e.audience='PUBLIC'
+                          AND e.audience_player_id IS NULL AND e.schema_version=1
+                          AND e.operation_type='SET_ACTION_WINDOW' AND w.window_kind='SPEECH'
+                          AND w.phase IN ('DAY_DISCUSSION','FINAL_DISCUSSION')
+                        ORDER BY e.sequence DESC LIMIT 1
+                    """, (game_id, source["cutoff_sequence"]))
+                    segment = cursor.fetchone()
+                    source["discussion_segment"] = segment["discussion_segment"] if segment else None
                 if not settings.speech_analysis_enabled:
                     return source
                 cursor.execute("""
@@ -152,7 +172,7 @@ class PostgresVoteInsightRepository:
                            a.claims_model, a.embedding_status, a.claims_status, a.embedding, a.claims
                     FROM public.game_events e
                     JOIN public.game_players p ON p.game_id=e.game_id
-                      AND p.id::text=e.payload->>'player_id' AND p.kind='AI'
+                      AND p.id::text=e.payload->>'player_id' AND p.kind IN ('HUMAN','AI')
                     JOIN LATERAL (
                         SELECT se.payload FROM public.game_events se WHERE se.game_id=e.game_id
                           AND se.sequence<e.sequence AND se.audience='PUBLIC'

@@ -351,8 +351,17 @@ def test_real_pipeline_deduplicates_accusers_and_preserves_public_boundary(scena
     _append(scenario, "PLAYER_SPOKE", {"player_id": str(ai[0]["id"]), "message": "공개 operation이 아닌 합성 근거"}, operation="SET_PRIVATE_STATE")
     _append(scenario, "PLAYER_PASSED", {"player_id": str(ai[1]["id"])})
     provider = FakeAnalysisProvider(target["id"])
+    pending = _get(scenario)
+    assert pending.status_code == 200 and pending.json()["data"]["status"] == "PENDING"
     repository = _process(scenario, provider)
-    assert provider.calls == 0
+    assert provider.calls == 5
+    live = _get(scenario).json()["data"]
+    assert live["status"] == "READY" and live["conversation_summary"]["total"] == 5
+    assert live["suspicion_ranking"] == []
+    assert any(item["evidence"][0]["player_id"] == str(human["id"])
+               for item in live["conversation_summary"]["items"])
+    # 이전 batch 이후 확정된 발언은 조회만으로 분석하지 않고 투표 준비 대기에 포함한다.
+    _append(scenario, "PLAYER_SPOKE", {"player_id": str(ai[1]["id"]), "message": message})
     runtime = scenario["app"].state.game_runtime
     runtime.configure_speech_analysis(repository)
     with scenario["connection"].cursor() as cursor:
@@ -361,7 +370,7 @@ def test_real_pipeline_deduplicates_accusers_and_preserves_public_boundary(scena
     with scenario["connection"].cursor() as cursor:
         cursor.execute("SELECT phase,state_version FROM public.games WHERE id=%s", (scenario["game_id"],))
         assert cursor.fetchone() == {"phase": "DAY_DISCUSSION", "state_version": 2}
-    assert _get(scenario).status_code == 409
+    assert _get(scenario).json()["data"]["status"] == "PARTIAL"
     _process(scenario, provider)
     prepared_at = datetime.now(UTC)
     runtime.expire_discussions()
@@ -375,9 +384,10 @@ def test_real_pipeline_deduplicates_accusers_and_preserves_public_boundary(scena
     assert result.status_code == 200
     data = result.json()["data"]
     assert data["status"] == "READY"
-    assert data["coverage"] == {"total": 4, "embedding_ready": 4, "claims_ready": 4, "failed": 0}
+    assert data["coverage"] == {"total": 6, "embedding_ready": 6, "claims_ready": 6, "failed": 0}
+    assert data["conversation_summary"]["total"] == 6
     ranked = next(row for row in data["suspicion_ranking"] if row["target_player_id"] == str(target["id"]))
-    assert ranked["accuser_count"] == 2 and ranked["speech_count"] == 3
+    assert ranked["accuser_count"] == 3 and ranked["speech_count"] == 5
     candidate = next(row for row in data["candidate_evidence"] if row["target_player_id"] == str(target["id"]))
     assert len(candidate["defense"]) == 1
     assert data["similar_claims"]
@@ -386,20 +396,23 @@ def test_real_pipeline_deduplicates_accusers_and_preserves_public_boundary(scena
     assert _get(scenario, window=uuid4()).status_code == 409
     first_revision = data["revision"]
     _process(scenario, provider)
-    assert provider.calls == 4
+    assert provider.calls == 6
     assert _get(scenario).json()["data"]["revision"] == first_revision
 
 
-def test_first_day_waits_for_a_future_vote_without_analysis_calls(scenario):
-    """첫날 토론 종료는 밤으로 진행하고 누적 공개 발언은 다음 투표 직전까지 보류한다."""
+def test_first_day_analyzes_during_discussion_and_keeps_night_transition(scenario):
+    """첫날에도 확정 발언을 분석하며 완료 여부와 무관한 기존 밤 전환은 유지한다."""
 
     ai = next(player for player in scenario["players"] if player["kind"] == "AI")
     _append(scenario, "PLAYER_SPOKE", {"player_id": str(ai["id"]), "message": "합성 첫날 발언"})
     with scenario["connection"].cursor() as cursor:
         cursor.execute("UPDATE public.games SET day_number=1 WHERE id=%s", (scenario["game_id"],))
-        cursor.execute("UPDATE public.action_windows SET deadline_at=clock_timestamp()-interval '1 second' WHERE id=%s", (scenario["window_id"],))
     provider = FakeAnalysisProvider(ai["id"])
     repository = _process(scenario, provider)
+    assert provider.calls == 1
+    assert _get(scenario).json()["data"]["conversation_summary"]["total"] == 1
+    with scenario["connection"].cursor() as cursor:
+        cursor.execute("UPDATE public.action_windows SET deadline_at=clock_timestamp()-interval '1 second' WHERE id=%s", (scenario["window_id"],))
     runtime = scenario["app"].state.game_runtime
     runtime.configure_speech_analysis(repository)
     runtime.expire_discussions()
@@ -407,7 +420,79 @@ def test_first_day_waits_for_a_future_vote_without_analysis_calls(scenario):
         cursor.execute("SELECT phase FROM public.games WHERE id=%s", (scenario["game_id"],))
         assert cursor.fetchone()["phase"] == "NIGHT_ACTION"
     _process(scenario, provider)
+    assert provider.calls == 1
+
+
+def test_saved_game_preserves_analysis_and_resumes_only_pending_stage(scenario):
+    """저장은 새 선점을 막지만 이미 선점한 공개 파생 결과는 보존하고 재개 시 이어간다."""
+    human = next(player for player in scenario["players"] if player["kind"] == "HUMAN")
+    _append(scenario, "PLAYER_SPOKE", {"player_id": str(human["id"]), "message": "합성 저장 전 발언"})
+    settings = scenario["settings"]
+    repository = PostgresSpeechAnalysisRepository(TransactionManager(settings.effective_database_url))
+    repository.discover(analysis_version=settings.effective_speech_analysis_version,
+        embedding_model=settings.speech_analysis_embedding_model, dimensions=settings.speech_analysis_dimensions,
+        claims_model=settings.speech_analysis_claims_model, game_id=scenario["game_id"])
+    job = repository.claim_next(analysis_version=settings.effective_speech_analysis_version,
+                                game_id=scenario["game_id"])
+    assert job["stage"] == "EMBEDDING"
+    with scenario["connection"].cursor() as cursor:
+        cursor.execute("UPDATE public.games SET status='SAVED', saved_at=clock_timestamp() WHERE id=%s", (scenario["game_id"],))
+        cursor.execute("SELECT state_version,next_event_sequence FROM public.games WHERE id=%s", (scenario["game_id"],))
+        before = cursor.fetchone()
+    assert repository.complete_embedding(job_id=job["job_id"], lease_token=job["lease_token"],
+                                          embedding=[1.0] + [0.0] * 1535)
+    assert repository.claim_next(analysis_version=settings.effective_speech_analysis_version,
+                                  game_id=scenario["game_id"]) is None
+    assert _get(scenario).status_code == 409
+    with scenario["connection"].cursor() as cursor:
+        cursor.execute("UPDATE public.games SET status='IN_PROGRESS' WHERE id=%s", (scenario["game_id"],))
+    provider = FakeAnalysisProvider(human["id"])
+    _process(scenario, provider)
     assert provider.calls == 0
+    assert _get(scenario).json()["data"]["status"] == "READY"
+    with scenario["connection"].cursor() as cursor:
+        cursor.execute("SELECT state_version,next_event_sequence FROM public.games WHERE id=%s", (scenario["game_id"],))
+        assert cursor.fetchone() == before
+
+
+def test_deletion_rejects_late_claim_result_and_removes_analysis(scenario):
+    """원본 게임이 삭제된 뒤 도착한 lease 결과가 파생 행이나 게임을 되살리지 못한다."""
+    human = next(player for player in scenario["players"] if player["kind"] == "HUMAN")
+    _append(scenario, "PLAYER_SPOKE", {"player_id": str(human["id"]), "message": "합성 삭제 전 발언"})
+    settings = scenario["settings"]
+    repository = PostgresSpeechAnalysisRepository(TransactionManager(settings.effective_database_url))
+    repository.discover(analysis_version=settings.effective_speech_analysis_version,
+        embedding_model=settings.speech_analysis_embedding_model, dimensions=settings.speech_analysis_dimensions,
+        claims_model=settings.speech_analysis_claims_model, game_id=scenario["game_id"])
+    job = repository.claim_next(analysis_version=settings.effective_speech_analysis_version,
+                                game_id=scenario["game_id"])
+    with scenario["connection"].cursor() as cursor:
+        cursor.execute("DELETE FROM public.games WHERE id=%s", (scenario["game_id"],))
+    assert repository.complete_embedding(job_id=job["job_id"], lease_token=job["lease_token"],
+                                          embedding=[1.0] + [0.0] * 1535) is False
+    with scenario["connection"].cursor() as cursor:
+        cursor.execute("SELECT count(*) AS count FROM public.speech_analysis WHERE game_id=%s", (scenario["game_id"],))
+        assert cursor.fetchone()["count"] == 0
+
+
+def test_live_summary_tracks_new_public_speech_but_not_private_events(scenario):
+    """같은 열린 창에서도 다음 확정 발언은 발견하고 private만 늘어난 조회는 동일하다."""
+    human = next(player for player in scenario["players"] if player["kind"] == "HUMAN")
+    _append(scenario, "PLAYER_SPOKE", {"player_id": str(human["id"]), "message": "합성 공개 발언"})
+    provider = FakeAnalysisProvider(human["id"])
+    _process(scenario, provider)
+    first = _get(scenario).json()["data"]
+    _append(scenario, "PLAYER_SPOKE", {"player_id": str(human["id"]), "message": "합성 비공개 발언"}, private=True)
+    hidden = _get(scenario).json()["data"]
+    assert hidden["cutoff_sequence"] == first["cutoff_sequence"]
+    assert hidden["revision"] == first["revision"]
+    _append(scenario, "PLAYER_SPOKE", {"player_id": str(human["id"]), "message": "다음 합성 공개 발언"})
+    pending = _get(scenario).json()["data"]
+    assert pending["cutoff_sequence"] > first["cutoff_sequence"]
+    assert pending["status"] == "PARTIAL" and pending["coverage"]["total"] == 2
+    _process(scenario, provider)
+    assert _get(scenario).json()["data"]["conversation_summary"]["total"] == 2
+    assert provider.calls == 2
 
 
 def test_opening_cutoff_excludes_later_events_and_queries_do_not_write(scenario):

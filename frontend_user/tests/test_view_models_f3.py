@@ -981,3 +981,20 @@ def test_exit_save_response_loss_keeps_retry_available(phase):
     assert not app.exception
     assert app.session_state["navigation.page"] == "home"
     assert client.calls[0] == client.calls[1]
+
+
+def test_exit_save_uses_server_confirmation_when_screen_version_is_older():
+    """화면 갱신을 기다리지 않고 저장 의도를 제출하며 서버가 확정한 저장 성공으로 이동한다."""
+
+    snapshot = _snapshot(version=12)
+    client = _Client(_snapshot(version=15))
+    app = AppTest.from_function(_page_app, args=(client, snapshot)).run()
+    app.button(key="header.back").click().run()
+    assert any("마지막으로 확정된 진행 상황" in caption.value for caption in app.caption)
+    reads = client.reads
+    app.button(key="game.save_confirm").click().run()
+    assert not app.exception
+    assert client.calls[0]["command"] == {"type": "SAVE_AND_EXIT", "expected_state_version": 12}
+    assert client.snapshot["game"]["state_version"] == 16
+    assert client.reads == reads + 1
+    assert app.session_state["navigation.page"] == "home"

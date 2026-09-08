@@ -677,6 +677,13 @@ deadline을 넣지 않고 성공 뒤 sync로 현재 상태를 읽는다.
 request hash의 concrete path에는 command 대상 `game_id`가 들어간다. 따라서 같은 key와
 같은 body를 다른 game에 보내도 receipt replay가 아니라 `IDEMPOTENCY_KEY_REUSED`다.
 
+`SAVE_AND_EXIT`만 요청의 화면 버전 일치 검증을 생략한다. 소유권과 receipt를 검증하고
+게임 행 잠금 뒤 읽은 마지막 확정 상태를 복원해 저장한다. UPDATE의 기대 버전은 요청
+값이 아니라 잠긴 게임의 실제 버전을 사용하며 event·window·receipt를 한 번에 commit한다.
+잠금 대기 중 흐른 시간을 저장 잔여 시간에 더하지 않도록 시각은 게임·window 잠금 뒤
+계산한다. 확정된 제출·결과는 보존하고 아직 진행 중인 외부 응답을 기다리지 않는다.
+저장 후 도착한 이전 Agent 결과는 기존 상태·버전·window 검증으로 거부한다.
+
 ### 5.3 action window 해소
 
 한 worker만 `OPEN -> RESOLVING` 조건부 UPDATE에 성공해야 한다. 이어서 같은
@@ -1028,3 +1035,29 @@ FINAL_DISCUSSION인 투표 준비 경계에서만 허용한다. 첫날·토론 �
 범위를 정한다. round·cycle을 재사용한 과거 날짜의 제출과 미래 버전은 제외하고 같은
 토론의 여러 창·현재 cycle 제출은 유지한다. 진입 이벤트가 없는 불완전 원장은 과거
 기록을 임의로 섞지 않고 빈 발언 이력으로 복원한다.
+
+
+### 2026-09-08 WU-B11 실시간 공개 발언 계약
+
+이번 절은 위의 투표 준비 전용 선점 및 AI 전용 source 제한을 대체한다.
+`008_allow_public_human_speech_analysis.sql`은 기존 006을 수정하지 않고 검증 함수를
+교체하여 같은 게임의 PUBLIC HUMAN·AI PLAYER_SPOKE를 허용한다. private·PASS·GM·
+미확정 입력은 제외하며 원문·구간·hash·claim·벡터·불변 참조 검증은 유지한다.
+새 테이블·열·권한은 필요 없다. 006 적용 뒤 008을 적용한다.
+
+`discover`와 `prepare_for_vote`는 동일한 공개 HUMAN·AI source를 사용한다.
+`claim_next`는 IN_PROGRESS 게임의 미완료 단계를 현재 phase·day·window deadline과
+무관하게 선점한다. 첫날과 열린 토론에서도 확정 발언부터 처리한다. 저장·종료·실패
+게임은 신규 선점하지 않고 재개하면 보존한 PENDING·시도 수를 이어간다. 저장·종료
+직전 이미 선점한 요청은 유효 lease일 때 결과만 저장할 수 있다. 삭제된 행은 늦은
+완료 CAS가 false이며 게임 원장이나 state_version을 갱신하지 않는다.
+
+요약은 검증된 claims.proposition을 읽기 projection으로 누적하며 별도 결과 열이나
+모델 호출·쓰기 transaction을 추가하지 않는다. 기존 READY와 분석 버전을 재사용한다.
+
+
+2026-09-08 사용자 승인 WU-M9 적용 기록: Team 4team_db에 008 함수 교체를
+적용·commit했다. 원본/분석 6개 테이블의 동일 snapshot 행 수·내용 hash와 기존
+함수 OID·소유권·ACL·실행 설정·트리거·relation 메타데이터가 보존됐다.
+독립 연결에서 008 본문과 활성 트리거·health를 재확인했다. 실제 데이터 보정·권한
+변경·서비스 재시작·유료 모델 호출은 없으며 집계와 검증 재사용 근거는 README를 따른다.
