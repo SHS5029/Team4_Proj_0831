@@ -579,8 +579,9 @@ Browser
 | `WU-B5` | 공개 game·sync·feedback API | API 정본 success·reject·idempotency 테스트 |
 | `WU-B6` | Agent Manager와 기존 LLM adapter 연결 | player proposal·GM 직접 반환 검증과 fallback, 유료 호출 없는 테스트 |
 | `WU-B7` | 내부 Engine API, game event outbox와 SSE | capability/HMAC, revoke·현재 상태·projection provenance·cross-scope 의미 불변식, audience 격리·event ordering 테스트 |
-| `WU-B8` | read-only 관리자 API와 audit | allowlist fail-closed, 비공개 응답 redaction 테스트 |
+| `WU-B8` | read-only 관리자 API와 audit, 관리자 센터 확장 및 기존 Front API 연결 | allowlist fail-closed, 비공개 응답 redaction, 직업별 AI 집계·피드백/감사 커서 조회·화면 연결 테스트 |
 | `WU-B9` | 시뮬레이션·회귀·운영 보강 | 6~9명 heuristic bot 회귀와 장애 복구 검증 |
+| `WU-B10` | 승인 운영 자료 검색과 근거 중심 관리자 도우미 | pgvector 혼합 검색, 답변·근거·신뢰도 응답, 질문 감사 기록, 자동 변경 차단 |
 
 ### 8.3 MCP Server·Data Infrastructure
 
@@ -614,7 +615,7 @@ Tool 경로는 WU-M4 계약 정리 뒤 연결한다. 운영 sink와 보존 정�
 | `CP-3` 게임 엔진 | B4 | 규칙·결정성·불변식 회귀 |
 | `CP-4` Agent·MCP | B6, B7, M2~M6 | audience 비간섭성과 fallback E2E |
 | `CP-5` 사용자 흐름 | F2~F7, B5 | 생성부터 저장·재개·종료·피드백 E2E |
-| `CP-6` 운영 | F8, B8, B9, M7~M8 | 관리자 거부 경로, 장애 복구, runbook |
+| `CP-6` 운영 | F8, B8, B9, B10, M7~M8 | 관리자 거부 경로, 장애 복구, 근거 검색 경계, runbook |
 
 `WU-M1A -> WU-B2 migration 산출물 -> WU-M1B -> CP-2` 순서를 지킨다. MCP 담당자는
 Backend 소유 migration SQL을 수정하지 않는다.

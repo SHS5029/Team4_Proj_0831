@@ -11,7 +11,10 @@ from pydantic import ValidationError
 from backend.app.core.errors import ApiError
 from backend.app.core.responses import api_success_response, request_trace_id
 from backend.app.routers.game_router import user_id_header
-from backend.app.schemas.admin_schema import AdminGameListQuery, AdminMetricsQuery
+from backend.app.schemas.admin_schema import (
+    AdminAuditQuery, AdminFeedbackQuery, AdminGameListQuery, AdminInsightQuery,
+    AdminMetricsQuery,
+)
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
@@ -54,6 +57,118 @@ async def list_admin_games(
         phase=query.phase,
         cursor=query.cursor,
         limit=query.limit,
+        request_id=UUID(request_trace_id(request)),
+    )
+    return api_success_response(request, data)
+
+
+@router.get("/role-win-rates", response_model=None)
+async def get_role_win_rates(
+    request: Request,
+    x_user_id: str | None = Header(default=None),
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = Query(default=None),
+) -> JSONResponse:
+    """화면용 직업별 집계만 반환하고 개별 AI의 역할은 노출하지 않는다."""
+
+    admin_id = user_id_header(x_user_id)
+    _admin_service(request).require_admin(admin_id)
+    try:
+        query = AdminMetricsQuery.model_validate({"from": from_, "to": to})
+    except ValidationError as error:
+        raise _validation_error(error) from error
+    data = _admin_service(request).role_win_rates(
+        admin_id, from_time=query.from_, to_time=query.to,
+        request_id=UUID(request_trace_id(request)),
+    )
+    return api_success_response(request, data)
+
+
+@router.get("/persona-win-rates", response_model=None)
+async def get_persona_win_rates(
+    request: Request,
+    x_user_id: str | None = Header(default=None),
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = Query(default=None),
+) -> JSONResponse:
+    """에이전트 페르소나별 승률만 반환하고 원본 성격 파라미터는 노출하지 않는다."""
+
+    admin_id = user_id_header(x_user_id)
+    _admin_service(request).require_admin(admin_id)
+    try:
+        query = AdminMetricsQuery.model_validate({"from": from_, "to": to})
+    except ValidationError as error:
+        raise _validation_error(error) from error
+    data = _admin_service(request).persona_win_rates(
+        admin_id, from_time=query.from_, to_time=query.to,
+        request_id=UUID(request_trace_id(request)),
+    )
+    return api_success_response(request, data)
+
+
+@router.get("/feedback", response_model=None)
+async def list_admin_feedback(
+    request: Request,
+    x_user_id: str | None = Header(default=None),
+    feedback_type: str | None = Query(default=None),
+    rating: str | None = Query(default=None),
+    cursor: str | None = Query(default=None),
+    limit: str = Query(default="20"),
+) -> JSONResponse:
+    """필터와 커서를 검증한 뒤 피드백의 공개 목록 필드만 조회한다."""
+
+    admin_id = user_id_header(x_user_id)
+    _admin_service(request).require_admin(admin_id)
+    try:
+        query = AdminFeedbackQuery(feedback_type=feedback_type, rating=rating,
+                                   cursor=cursor, limit=limit)
+    except ValidationError as error:
+        raise _validation_error(error) from error
+    data = _admin_service(request).list_feedback(
+        admin_id, **query.model_dump(), request_id=UUID(request_trace_id(request)),
+    )
+    return api_success_response(request, data)
+
+
+@router.get("/audit-logs", response_model=None)
+async def list_admin_audit_logs(
+    request: Request,
+    x_user_id: str | None = Header(default=None),
+    event_type: str | None = Query(default=None),
+    cursor: str | None = Query(default=None),
+    limit: str = Query(default="20"),
+) -> JSONResponse:
+    """관리자 감사 분류와 bigint 커서만 허용한다."""
+
+    admin_id = user_id_header(x_user_id)
+    _admin_service(request).require_admin(admin_id)
+    try:
+        query = AdminAuditQuery(event_type=event_type, cursor=cursor, limit=limit)
+    except ValidationError as error:
+        raise _validation_error(error) from error
+    data = _admin_service(request).list_audit_logs(
+        admin_id, **query.model_dump(), request_id=UUID(request_trace_id(request)),
+    )
+    return api_success_response(request, data)
+
+
+@router.post("/insights/query", response_model=None)
+async def query_admin_insights(
+    request: Request,
+    query: AdminInsightQuery,
+    x_user_id: str | None = Header(default=None),
+) -> JSONResponse:
+    """승인된 운영 자료를 검색해 근거·신뢰도만 반환하는 관리자 질문 API다."""
+
+    admin_id = user_id_header(x_user_id)
+    data = _admin_service(request).query_insights(
+        admin_id,
+        question=query.question,
+        source_types=query.filters.source_types,
+        rating_lte=query.filters.rating_lte,
+        from_time=query.filters.from_,
+        to_time=query.filters.to,
+        top_k=query.top_k,
         request_id=UUID(request_trace_id(request)),
     )
     return api_success_response(request, data)

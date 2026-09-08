@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -46,6 +46,29 @@ class AdminRepository(Protocol):
         target_game_id: UUID | None,
         request_id: UUID,
     ) -> None: ...
+
+    def role_win_rates(self, *, from_time: datetime | None,
+                       to_time: datetime | None) -> list[dict[str, Any]]: ...
+
+    def persona_win_rates(self, *, from_time: datetime | None,
+                          to_time: datetime | None) -> list[dict[str, Any]]: ...
+
+    def list_feedback(self, *, feedback_type: str | None, rating: int | None,
+                      cursor: UUID | None, limit: int) -> tuple[list[dict], str | None]: ...
+
+    def list_audit_logs(self, *, event_type: str | None, cursor: int | None,
+                        limit: int) -> tuple[list[dict], str | None]: ...
+
+    def search_knowledge(
+        self,
+        *,
+        question: str,
+        source_types: list[str],
+        rating_lte: int | None,
+        from_time: datetime | None,
+        to_time: datetime | None,
+        top_k: int,
+    ) -> list[dict[str, Any]]: ...
 
 
 def _iso(value: Any) -> str | None:
@@ -268,8 +291,8 @@ class PostgresAdminRepository:
                            ) AS mafia_wins,
                            COUNT(*) FILTER (WHERE g.status = 'COMPLETED') AS completed_for_rate
                     FROM public.games g
-                    WHERE (%s IS NULL OR g.created_at >= %s)
-                      AND (%s IS NULL OR g.created_at <= %s)
+                    WHERE (%s::timestamptz IS NULL OR g.created_at >= %s)
+                      AND (%s::timestamptz IS NULL OR g.created_at <= %s)
                     """,
                     [from_time, from_time, to_time, to_time],
                 )
@@ -278,12 +301,44 @@ class PostgresAdminRepository:
                     """
                     SELECT AVG(f.rating) AS feedback_average
                     FROM public.feedback f
-                    WHERE (%s IS NULL OR f.created_at >= %s)
-                      AND (%s IS NULL OR f.created_at <= %s)
+                    WHERE (%s::timestamptz IS NULL OR f.created_at >= %s)
+                      AND (%s::timestamptz IS NULL OR f.created_at <= %s)
                     """,
                     [from_time, from_time, to_time, to_time],
                 )
                 feedback_row = cursor_obj.fetchone()
+                cursor_obj.execute("SELECT COUNT(*) AS users_total FROM public.users")
+                users_total = int(cursor_obj.fetchone()["users_total"])
+                cursor_obj.execute(
+                    """
+                    SELECT COUNT(*) AS total FROM public.action_submissions s
+                    JOIN public.games g ON g.id = s.game_id
+                    WHERE s.source = 'AUTO'
+                      AND (%s::timestamptz IS NULL OR g.created_at >= %s)
+                      AND (%s::timestamptz IS NULL OR g.created_at <= %s)
+                    """, [from_time, from_time, to_time, to_time],
+                )
+                auto_actions = int(cursor_obj.fetchone()["total"])
+                # 전체 기간 KPI라도 일별 그래프의 응답 크기는 UTC 최근 30일로 제한한다.
+                daily_end = to_time or datetime.now(UTC)
+                daily_start = from_time or (
+                    daily_end.replace(hour=0, minute=0, second=0, microsecond=0)
+                    - timedelta(days=29)
+                )
+                if from_time is not None and to_time is None:
+                    daily_end = min(daily_end, from_time + timedelta(days=31))
+                cursor_obj.execute(
+                    """
+                    SELECT (created_at AT TIME ZONE 'UTC')::date AS day, COUNT(*) AS total
+                    FROM public.games WHERE created_at >= %s AND created_at <= %s
+                    GROUP BY day ORDER BY day
+                    """, [daily_start, daily_end],
+                )
+                counts = {r["day"].isoformat(): int(r["total"]) for r in cursor_obj.fetchall()}
+                start_day, end_day = daily_start.astimezone(UTC).date(), daily_end.astimezone(UTC).date()
+                daily = [{"date": (start_day + timedelta(days=i)).isoformat(),
+                          "games_created": counts.get((start_day + timedelta(days=i)).isoformat(), 0)}
+                         for i in range(max(0, (end_day - start_day).days + 1))]
         created = int(row["games_created"])
         return {
             "games_created": created,
@@ -297,13 +352,208 @@ class PostgresAdminRepository:
                 "CITIZEN": int(row["citizen_wins"]),
                 "MAFIA": int(row["mafia_wins"]),
             },
-            "auto_action_count": 0,
+            "users_total": users_total,
+            "daily_games": daily,
+            "auto_action_count": auto_actions,
             "feedback_average": (
                 round(float(feedback_row["feedback_average"]), 2)
                 if feedback_row["feedback_average"] is not None
                 else None
             ),
         }
+
+    def role_win_rates(self, *, from_time: datetime | None,
+                       to_time: datetime | None) -> list[dict[str, Any]]:
+        """종료 게임의 AI 역할을 DB에서 집계하고 개별 좌석 정보는 반환하지 않는다."""
+
+        with self._connection() as connection:
+            with connection.cursor() as cursor_obj:
+                cursor_obj.execute(
+                    """
+                    SELECT p.role AS job, COUNT(*) AS participations,
+                           COUNT(*) FILTER (WHERE p.faction = g.winner) AS wins
+                    FROM public.game_players p JOIN public.games g ON g.id = p.game_id
+                    WHERE g.status = 'COMPLETED' AND p.kind = 'AI'
+                      AND (%s::timestamptz IS NULL OR g.created_at >= %s)
+                      AND (%s::timestamptz IS NULL OR g.created_at <= %s)
+                    GROUP BY p.role
+                    """, [from_time, from_time, to_time, to_time],
+                )
+                counts = {row["job"]: row for row in cursor_obj.fetchall()}
+        items = []
+        for job in ["MAFIA", "DETECTIVE", "DOCTOR", "CITIZEN"]:
+            row = counts.get(job, {})
+            total, wins = int(row.get("participations", 0)), int(row.get("wins", 0))
+            items.append({"job": job, "participations": total, "wins": wins,
+                          "win_rate": round(wins / total, 6) if total else 0.0})
+        return items
+
+    def persona_win_rates(self, *, from_time: datetime | None,
+                          to_time: datetime | None) -> list[dict[str, Any]]:
+        """에이전트 페르소나별 AI 참여·승리를 집계하고 내부 파라미터는 반환하지 않는다."""
+
+        with self._connection() as connection:
+            with connection.cursor() as cursor_obj:
+                cursor_obj.execute(
+                    """
+                    SELECT ap.id AS persona_id, ap.display_name AS persona_name,
+                           ap.speech_style AS personality_summary,
+                           COUNT(gp.id) FILTER (WHERE g.id IS NOT NULL) AS participations,
+                           COUNT(gp.id) FILTER (
+                               WHERE g.id IS NOT NULL AND gp.faction = g.winner
+                           ) AS wins
+                    FROM public.agent_personas ap
+                    LEFT JOIN public.game_players gp
+                      ON gp.persona_id = ap.id AND gp.kind = 'AI'
+                    LEFT JOIN public.games g
+                      ON g.id = gp.game_id
+                     AND g.status = 'COMPLETED'
+                     AND (%s::timestamptz IS NULL OR g.created_at >= %s)
+                     AND (%s::timestamptz IS NULL OR g.created_at <= %s)
+                    WHERE ap.active = TRUE
+                    GROUP BY ap.id, ap.display_name, ap.speech_style
+                    ORDER BY ap.display_name, ap.id
+                    """,
+                    [from_time, from_time, to_time, to_time],
+                )
+                rows = list(cursor_obj.fetchall())
+        return [
+            {
+                "persona_id": str(row["persona_id"]),
+                "persona_name": row["persona_name"],
+                "personality_summary": row["personality_summary"],
+                "participations": int(row["participations"]),
+                "wins": int(row["wins"]),
+                "win_rate": (
+                    round(int(row["wins"]) / int(row["participations"]), 6)
+                    if int(row["participations"])
+                    else 0.0
+                ),
+            }
+            for row in rows
+        ]
+
+    def list_feedback(self, *, feedback_type: str | None, rating: int | None,
+                      cursor: UUID | None, limit: int) -> tuple[list[dict], str | None]:
+        """사용자가 작성한 의견만 읽고 UUID 커서로 동일 시각의 기록까지 순서대로 조회한다."""
+
+        with self._connection() as connection:
+            with connection.cursor() as cursor_obj:
+                cursor_obj.execute(
+                    """
+                    SELECT f.id, f.user_id, f.feedback_type, f.game_id,
+                           f.rating, f.comment, f.tags, f.created_at
+                    FROM public.feedback f
+                    WHERE (%s::text IS NULL OR f.feedback_type = %s)
+                      AND (%s::integer IS NULL OR f.rating = %s)
+                      AND (%s::uuid IS NULL OR (f.created_at, f.id) < (
+                          SELECT c.created_at, c.id FROM public.feedback c WHERE c.id = %s))
+                    ORDER BY f.created_at DESC, f.id DESC LIMIT %s
+                    """, [feedback_type, feedback_type, rating, rating, cursor, cursor, limit + 1],
+                )
+                rows = list(cursor_obj.fetchall())
+        items = [{"feedback_id": str(row["id"]), "user_id": str(row["user_id"]),
+                  "feedback_type": row["feedback_type"],
+                  "game_id": str(row["game_id"]) if row["game_id"] else None,
+                  "rating": int(row["rating"]), "comment": row["comment"],
+                  "tags": list(row["tags"]), "created_at": _iso(row["created_at"])}
+                 for row in rows[:limit]]
+        return items, items[-1]["feedback_id"] if len(rows) > limit else None
+
+    def list_audit_logs(self, *, event_type: str | None, cursor: int | None,
+                        limit: int) -> tuple[list[dict], str | None]:
+        """감사 이벤트의 허용 메타데이터를 PK 커서로 읽고 원문 서버 로그는 읽지 않는다."""
+
+        with self._connection() as connection:
+            with connection.cursor() as cursor_obj:
+                cursor_obj.execute(
+                    """
+                    SELECT id, admin_user_id, action, target_game_id, request_id, created_at
+                    FROM public.admin_audit_events
+                    WHERE (%s::text IS NULL OR action = %s)
+                      AND (%s::bigint IS NULL OR id < %s)
+                    ORDER BY id DESC LIMIT %s
+                    """, [event_type, event_type, cursor, cursor, limit + 1],
+                )
+                rows = list(cursor_obj.fetchall())
+        items = [{"audit_id": str(row["id"]), "admin_user_id": str(row["admin_user_id"]),
+                  "event_type": row["action"],
+                  "target_game_id": str(row["target_game_id"]) if row["target_game_id"] else None,
+                  "request_id": str(row["request_id"]), "created_at": _iso(row["created_at"])}
+                 for row in rows[:limit]]
+        return items, items[-1]["audit_id"] if len(rows) > limit else None
+
+    def search_knowledge(
+        self,
+        *,
+        question: str,
+        source_types: list[str],
+        rating_lte: int | None,
+        from_time: datetime | None,
+        to_time: datetime | None,
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        """승인된 지식 청크만 키워드·벡터 혼합 점수로 검색한다.
+
+        질문 API는 이 메서드에서 INSERT·UPDATE를 수행하지 않는다. 색인된
+        문서의 공개 메타데이터와 정제된 청크만 반환하고, 역할·private context와
+        같은 게임 내부 자료 테이블은 조인하지 않는다.
+        """
+
+        from backend.app.services.admin_knowledge import local_embedding
+
+        query_embedding = local_embedding(question)
+        with self._connection() as connection:
+            with connection.cursor() as cursor_obj:
+                cursor_obj.execute(
+                    """
+                    WITH ranked AS (
+                        SELECT d.source_type, d.source_id, d.title,
+                               c.content AS snippet,
+                               ts_rank_cd(c.content_tsv, plainto_tsquery('simple', %s))
+                                   AS keyword_score,
+                               GREATEST(0.0, 1.0 - (c.embedding <=> %s::vector))
+                                   AS vector_score
+                        FROM public.admin_knowledge_documents d
+                        JOIN public.admin_knowledge_chunks c ON c.document_id = d.id
+                        WHERE d.visibility = 'ADMIN_APPROVED'
+                          AND (%s::text[] IS NULL OR d.source_type = ANY(%s::text[]))
+                          AND (%s::smallint IS NULL OR d.feedback_rating <= %s)
+                          AND (%s::timestamptz IS NULL OR d.approved_at >= %s)
+                          AND (%s::timestamptz IS NULL OR d.approved_at <= %s)
+                    )
+                    SELECT source_type, source_id, title, snippet,
+                           (keyword_score * 0.55 + vector_score * 0.45) AS score
+                    FROM ranked
+                    WHERE keyword_score > 0 OR vector_score > 0
+                    ORDER BY score DESC, source_type, source_id
+                    LIMIT %s
+                    """,
+                    [
+                        question,
+                        query_embedding,
+                        source_types or None,
+                        source_types or None,
+                        rating_lte,
+                        rating_lte,
+                        from_time,
+                        from_time,
+                        to_time,
+                        to_time,
+                        top_k,
+                    ],
+                )
+                rows = list(cursor_obj.fetchall())
+        return [
+            {
+                "source_type": row["source_type"],
+                "source_id": row["source_id"],
+                "title": row["title"],
+                "snippet": str(row["snippet"])[:240],
+                "score": float(row["score"]),
+            }
+            for row in rows
+        ]
 
     def append_audit(
         self,

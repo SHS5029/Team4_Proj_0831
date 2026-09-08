@@ -1032,6 +1032,155 @@ Query `from`, `to`는 최대 31일 범위다.
 
 LLM token·비용·timeout·예산 metric은 제공하지 않는다.
 
+### 7.4 관리자 센터 확장 계약 (2026-09-07)
+
+현재 관리자 센터의 통합 운영 분석·사용자 피드백·관리자 로그 화면에 맞춘 WU-B8 확장이다.
+`운영 에이전트 계획` 탭과 질문 API는 WU-B10에서 추가한 read-only 검색 기능이며,
+자료 경계와 도입 원칙은 [AI_MAFIA_ADMIN_AGENT_PLAN.md](AI_MAFIA_ADMIN_AGENT_PLAN.md)에서 함께 관리한다.
+7.1~7.3의 기존 필드와 UUID allowlist 인증을 유지한다. 공개 데모 키는 HTTP 인증에
+사용하지 않는다. 성공 응답은 기존 `data`, `meta.request_id`, `meta.server_time` 형식이다.
+각 조회는 성공한 뒤 감사 기록을 저장하며, 조회 또는 감사 저장 실패는
+`503 DEPENDENCY_UNAVAILABLE`로 반환한다. 비허용 UUID는 데이터 조회 없이 403이다.
+
+`GET /api/v1/admin/metrics`의 data에 다음 필드를 추가한다.
+
+```json
+{
+  "users_total": 300,
+  "daily_games": [{"date": "2026-09-07", "games_created": 40}]
+}
+```
+
+- `users_total`: DB users 전체 UUID 수. 기간과 무관하며 실제 사람 수와 동일하지 않을 수 있다.
+- 기존 게임 KPI는 games.created_at 기간으로 집계한다. 기간 생략 시 전체 기록이다.
+- `daily_games`: UTC 날짜별 생성 수. 기간 생략 시 오늘 포함 최근 30일, 지정 시 해당
+  범위(최대 31일 간격). 생성 없는 날짜도 0으로 채운다.
+- `auto_action_count`: 해당 게임 집계 범위의 action_submissions 중 source=AUTO인 행 수.
+  진영 단위 자동 해소는 별도 submission이 없으면 포함하지 않는다.
+
+### 7.5 `GET /api/v1/admin/role-win-rates`
+
+Query: 선택적 `from`, `to` (7.3과 동일). 종료된 게임(status=COMPLETED)에 참여한
+AI(kind=AI)만 포함한다. games.created_at으로 기간을 제한하며 생존 여부와 무관하다.
+승률은 해당 직업 AI의 소속 faction이 게임 winner와 일치한 횟수 / 참여 횟수이다.
+사람 좌석·진행/저장/실패 게임은 제외한다. 직업 4종은 항상 반환하며 참여 0이면 승률 0이다.
+개별 게임·플레이어의 역할은 반환하지 않는다.
+
+```json
+{"data":{"items":[
+  {"job":"MAFIA","participations":100,"wins":40,"win_rate":0.4},
+  {"job":"DETECTIVE","participations":100,"wins":60,"win_rate":0.6},
+  {"job":"DOCTOR","participations":100,"wins":60,"win_rate":0.6},
+  {"job":"CITIZEN","participations":300,"wins":180,"win_rate":0.6}
+]}}
+```
+
+### 7.6 `GET /api/v1/admin/persona-win-rates`
+
+Query: 선택적 `from`, `to` (7.3과 동일). 종료된 게임에 참여한 AI만 페르소나별로
+집계한다. `agent_personas`의 `display_name`과 짧은 `speech_style`만 화면 설명으로
+투영하며, `parameters`, prompt, backstory 원문과 개별 게임·플레이어 정보는 반환하지
+않는다. 승률은 해당 페르소나 AI의 소속 faction이 게임 winner와 일치한 횟수 / 참여
+횟수이다. 활성 페르소나는 참여 0이어도 반환하며 승률은 0이다.
+
+```json
+{"data":{"items":[
+  {"persona_id":"CAUTIOUS_ANALYST","persona_name":"신중한 분석가",
+   "personality_summary":"근거를 차분히 쌓고 성급한 결론을 피하는 성격",
+   "participations":120,"wins":72,"win_rate":0.6}
+]}}
+```
+
+### 7.7 `GET /api/v1/admin/feedback`
+
+Query: `feedback_type` (GENERAL/GAME), `rating` (1~5), `cursor` (마지막 feedback UUID),
+`limit` (기본 20, 최대 100). created_at DESC, id DESC 순서의 커서 페이지 조회다.
+필터를 변경하면 cursor를 초기화한다. 존재하지 않는 커서는 빈 페이지를 반환한다.
+
+```json
+{"data":{"items":[{
+  "feedback_id":"00000000-0000-4000-8000-000000000301",
+  "user_id":"00000000-0000-4000-8000-000000000302",
+  "feedback_type":"GENERAL","game_id":null,"rating":4,
+  "comment":"투표 시간을 더 크게 보고 싶어요.","tags":[],
+  "created_at":"2026-09-07T01:00:00Z"
+}],"next_cursor":null}}
+```
+
+의견은 사용자 입력이므로 HTML로 실행하지 않고 텍스트 표로 표시한다.
+이메일·개인 프로필·게임 private context는 조인하거나 반환하지 않는다.
+
+### 7.8 `GET /api/v1/admin/audit-logs`
+
+Query: `event_type` (아래 감사 분류), `cursor` (양의 bigint ID를 표현한 문자열),
+`limit` (기본 20, 최대 100). ID DESC 순서이며 ID는 JSON 정밀도 손실을 막기 위해 문자열이다.
+
+```json
+{"data":{"items":[{
+  "audit_id":"180","admin_user_id":"00000000-0000-4000-8000-000000000201",
+  "event_type":"ADMIN_GET_METRICS","target_game_id":null,
+  "request_id":"00000000-0000-4000-8000-000000000401",
+  "created_at":"2026-09-07T01:00:00Z"
+}],"next_cursor":"180"}}
+```
+
+DB action을 응답에서는 `event_type`으로 투영한다. 분류는 ADMIN_LIST_GAMES,
+ADMIN_GET_GAME, ADMIN_GET_METRICS, ADMIN_GET_ROLE_WIN_RATES, ADMIN_GET_PERSONA_WIN_RATES,
+ADMIN_LIST_FEEDBACK, ADMIN_LIST_AUDIT_LOGS, ADMIN_QUERY_INSIGHTS이다. 조회 자체의 감사 기록은 조회 후 추가되어 다음 새로고침에서
+확인할 수 있다. 이 API는 관리자 조회 감사 기록이며 서버 원문 로그·INFO/WARN 등급은
+제공하지 않는다. 신규 목록의 잘못된 cursor/enum/limit/rating은 422 INVALID_REQUEST다.
+
+### 7.9 `POST /api/v1/admin/insights/query`
+
+승인된 `FEEDBACK`, `GAME_SUMMARY`, `OPERATIONS_DOC` 청크를 키워드 검색과 pgvector
+cosine 검색으로 함께 조회한다. 이 endpoint는 질문을 위한 POST이지만 게임·문서·사용자
+데이터를 변경하지 않는다. `X-User-Id`가 관리자 allowlist를 통과해야 하며, 성공한 질문은
+`ADMIN_QUERY_INSIGHTS` action으로 감사 기록된다.
+
+요청 body:
+
+```json
+{
+  "question": "최근 낮은 평점에서 반복되는 문제는 무엇인가요?",
+  "filters": {
+    "source_types": ["FEEDBACK", "OPERATIONS_DOC"],
+    "rating_lte": 2,
+    "from": "2026-09-01T00:00:00Z",
+    "to": "2026-09-07T23:59:59Z"
+  },
+  "top_k": 5
+}
+```
+
+`question`은 3~500자, `top_k`은 1~10이며 기간은 최대 31일이다. `filters`를 생략하면
+세 승인 자료 유형을 모두 검색한다. 비밀값 조회 의도로 보이는 질문과 허용되지 않은 자료
+유형은 `422 INVALID_REQUEST`다.
+
+성공 응답:
+
+```json
+{
+  "data": {
+    "answer": "승인된 자료에서 확인된 내용입니다: 사건 설명이 더 명확하면 좋겠습니다.",
+    "confidence": "MEDIUM",
+    "has_sufficient_evidence": true,
+    "sources": [{
+      "source_type": "FEEDBACK",
+      "source_id": "feedback:00000000-0000-4000-8000-000000000001",
+      "title": "사용자 피드백",
+      "snippet": "사건 설명이 더 명확하면 좋겠습니다.",
+      "score": 0.81
+    }]
+  },
+  "meta": {"request_id": "<uuid>", "server_time": "<timestamp>"}
+}
+```
+
+근거 점수가 낮으면 `confidence=LOW`, `has_sufficient_evidence=false`와 추가 확인 안내를
+반환한다. 응답에는 원문 사용자 식별자, 역할·개별 행동·투표·seed, prompt·token·비용을
+포함하지 않는다. 질문 원문은 audit payload에 저장하지 않고 action·request ID·결과 상태만
+기록한다.
+
 ## 8. Backend 내부 Engine API
 
 > **현재 MVP FastMCP 연결 기준:** 아래 8.1~9절의 Engine HMAC·bootstrap token·MCP
