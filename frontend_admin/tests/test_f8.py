@@ -88,7 +88,7 @@ def test_demo_ui_connection_failure_and_recovery(monkeypatch) -> None:
     monkeypatch.setenv("ADMIN_DEMO_MODE", "true")
     at = AppTest.from_file(str(Path(__file__).parents[1] / "app.py"), default_timeout=15).run()
     assert not at.exception
-    assert len(at.tabs) == 4
+    assert len(at.tabs) == 3
     assert len(at.dataframe) == 3
     assert any(metric.label == "누적 게임" and metric.value == "1200" for metric in at.metric)
     assert any("마피아 360승 (40.0%)" in item.value for item in at.caption)
@@ -99,20 +99,6 @@ def test_demo_ui_connection_failure_and_recovery(monkeypatch) -> None:
     at.button[0].click().run()
     assert not at.error and not at.exception
     assert at.metric
-
-
-def test_demo_agent_query_shows_evidence_on_one_click(monkeypatch) -> None:
-    """운영 에이전트 질문이 한 번의 검색 버튼으로 답변과 근거를 표시하는지 확인한다."""
-
-    from pathlib import Path
-    from streamlit.testing.v1 import AppTest
-
-    monkeypatch.setenv("ADMIN_DEMO_MODE", "true")
-    at = AppTest.from_file(str(Path(__file__).parents[1] / "app.py"), default_timeout=15).run()
-    at.button(key="admin.agent.search").click().run()
-    assert not at.error and not at.exception
-    assert any("승인된 자료에서 확인된 내용입니다" in item.value for item in at.markdown)
-    assert len(at.dataframe) == 4
 
 
 def test_demo_mode_is_opt_in(monkeypatch) -> None:
@@ -160,7 +146,10 @@ def test_feedback_and_audit_pages_change_on_one_click(monkeypatch):
     at.selectbox(key="admin.logs.type").select("운영 지표 조회").run()
     assert set(at.dataframe[2].value["조회 유형"]) == {"운영 지표 조회"}
     at.button(key="admin.logs.next").click().run()
-    assert not at.exception and len(at.dataframe[2].value) == 6
+    assert not at.exception and len(at.dataframe[2].value) == 20
+    assert not at.button(key="admin.logs.next").disabled
+    at.button(key="admin.logs.next").click().run()
+    assert not at.exception and len(at.dataframe[2].value) == 5
     assert at.button(key="admin.logs.next").disabled
 
 
@@ -200,7 +189,7 @@ def test_browser_admin_uuid_requires_explicit_value_and_preserves_storage_on_fai
     node = shutil.which("node")
     if node is None:
         pytest.skip("브라우저 bridge JS 검증에는 Node.js가 필요합니다.")
-    source = (Path(__file__).parents[1] / "components/browser_components/identity/index.js").read_text()
+    source = (Path(__file__).parents[1] / "components/browser_components/identity/index.js").read_text(encoding="utf-8")
     script = r"""
 import assert from 'node:assert/strict';
 const {default: render} = await import('data:text/javascript;base64,' + Buffer.from(SOURCE).toString('base64'));

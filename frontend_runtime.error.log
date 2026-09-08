@@ -1,0 +1,37 @@
+2026-09-08 10:18:32.048 Uvicorn server started on 127.0.0.1:18501
+2026-09-08 10:34:41.588 The widget with key "spectator.fast_forward.47cacb5b-4025-4bbd-aacc-801bd0b6bb4b" was created with a default value but also had its value set via the Session State API.
+Stack (most recent call last):
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\threading.py", line 1032, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\threading.py", line 1012, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 399, in _run_script_thread
+    self._run_script(request.rerun_data)
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 852, in _run_script
+    ) = exec_func_with_error_handling(code_to_exec, ctx)
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\streamlit\runtime\scriptrunner\exec_code.py", line 136, in exec_func_with_error_handling
+    result = func()
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\streamlit\runtime\scriptrunner\script_runner.py", line 827, in code_to_exec
+    exec(code, module.__dict__)  # noqa: S102
+  File "C:\project\Team4_Proj_0831\frontend_user\app.py", line 143, in <module>
+    main()
+  File "C:\project\Team4_Proj_0831\frontend_user\app.py", line 124, in main
+    render_game(snapshot)
+  File "C:\project\Team4_Proj_0831\frontend_user\app_pages\game_page.py", line 349, in render
+    _render_spectator_layout(
+  File "C:\project\Team4_Proj_0831\frontend_user\app_pages\game_page.py", line 463, in _render_spectator_layout
+    _render_spectator_controls(client=client, game_id=game_id, snapshot=snapshot)
+  File "C:\project\Team4_Proj_0831\frontend_user\app_pages\game_page.py", line 907, in _render_spectator_controls
+    requested = st.toggle(
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\streamlit\runtime\metrics_util.py", line 725, in wrapped_func
+    result = non_optional_func(*args, **kwargs)
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\streamlit\elements\widgets\checkbox.py", line 427, in toggle
+    return self._checkbox(
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\streamlit\elements\widgets\checkbox.py", line 466, in _checkbox
+    check_widget_policies(
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\streamlit\elements\lib\policies.py", line 146, in check_widget_policies
+    check_session_state_rules(
+  File "C:\Users\Playdata\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\streamlit\elements\lib\policies.py", line 90, in check_session_state_rules
+    _LOGGER.warning(

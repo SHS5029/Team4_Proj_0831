@@ -17,12 +17,15 @@ HttpTransport = Callable[[Request, float], tuple[int, bytes]]
 
 # 공개 합성 키는 로컬 데모 연결 시험에만 사용하며 실제 API에 전송하지 않는다.
 DEMO_API_KEY = "demo_ai_mafia_admin_v1"
+# 현재 관리자 화면에서 실제로 조회하는 감사 유형만 필터에 노출한다.
+# 게임 목록·상세·직업별 승률·운영 에이전트 질문은 이 화면에서 조회하지 않으므로
+# 선택지에서 제외하고, Backend의 전체 감사 이벤트 계약은 별도로 유지한다.
 AUDIT_EVENT_LABELS = {
-    "전체": None, "게임 목록 조회": "ADMIN_LIST_GAMES", "게임 상세 조회": "ADMIN_GET_GAME",
-    "운영 지표 조회": "ADMIN_GET_METRICS", "페르소나 승률 조회": "ADMIN_GET_PERSONA_WIN_RATES",
-    "직업별 승률 조회": "ADMIN_GET_ROLE_WIN_RATES",
-    "피드백 목록 조회": "ADMIN_LIST_FEEDBACK", "감사 로그 조회": "ADMIN_LIST_AUDIT_LOGS",
-    "운영 에이전트 질문": "ADMIN_QUERY_INSIGHTS",
+    "전체": None,
+    "운영 지표 조회": "ADMIN_GET_METRICS",
+    "페르소나 승률 조회": "ADMIN_GET_PERSONA_WIN_RATES",
+    "피드백 목록 조회": "ADMIN_LIST_FEEDBACK",
+    "감사 로그 조회": "ADMIN_LIST_AUDIT_LOGS",
 }
 JOB_LABELS = {"MAFIA": "마피아", "DETECTIVE": "탐정", "DOCTOR": "의사", "CITIZEN": "시민"}
 
@@ -251,16 +254,13 @@ class DemoAdminApiClient:
                    cursor: str | None = None, limit: int = 20) -> dict:
         """가상 감사 이력은 운영 계약의 이벤트 분류와 ID를 사용한다."""
 
-        # 기존 데모 필터의 페이지 예시가 바뀌지 않도록 새 질문 action은
-        # 순환 분포에 섞지 않고 마지막에 한 건만 추가한다.
-        events = list(AUDIT_EVENT_LABELS.values())[1:-1]
+        events = [event for event in AUDIT_EVENT_LABELS.values() if event is not None]
         rows = [{"audit_id": str(i + 1),
                  "admin_user_id": "00000000-0000-4000-8000-000000000201",
                  "event_type": events[i % len(events)], "target_game_id": None,
                  "request_id": f"30000000-0000-4000-8000-{i + 1:012d}",
                  "created_at": row["시각"].replace(" ", "T") + ":00Z"}
                 for i, row in enumerate(DEMO_PREVIEW["logs"])]
-        rows[-1]["event_type"] = "ADMIN_QUERY_INSIGHTS"
         rows = [row for row in reversed(rows)
                 if (event_type is None or row["event_type"] == event_type)
                 and (cursor is None or int(row["audit_id"]) < int(cursor))]

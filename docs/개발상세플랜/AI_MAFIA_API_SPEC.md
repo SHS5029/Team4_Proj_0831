@@ -1073,8 +1073,8 @@ LLM token·비용·timeout·예산 metric은 제공하지 않는다.
 ### 7.4 관리자 센터 확장 계약 (2026-09-07)
 
 현재 관리자 센터의 통합 운영 분석·사용자 피드백·관리자 로그 화면에 맞춘 WU-B8 확장이다.
-`운영 에이전트 계획` 탭과 질문 API는 WU-B10에서 추가한 read-only 검색 기능이며,
-자료 경계와 도입 원칙은 [AI_MAFIA_ADMIN_AGENT_PLAN.md](AI_MAFIA_ADMIN_AGENT_PLAN.md)에서 함께 관리한다.
+질문 API는 WU-B10에서 추가한 read-only 검색 기능이며, 관리자 화면과 분리된
+Backend 계약으로 유지한다.
 7.1~7.3의 기존 필드와 UUID allowlist 인증을 유지한다. 공개 데모 키는 HTTP 인증에
 사용하지 않는다. 성공 응답은 기존 `data`, `meta.request_id`, `meta.server_time` 형식이다.
 각 조회는 성공한 뒤 감사 기록을 저장하며, 조회 또는 감사 저장 실패는

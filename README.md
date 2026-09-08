@@ -102,7 +102,9 @@ Backend는 actor별 허용된 정보만 scope별로 투영하고, 밤 행동과 
 ├── AGENTS.MD                         # 개발·기여 작업 규칙
 ├── README.md                         # 전체 설정·실행·검증 안내
 ├── .env.example                      # Backend 환경 변수 예시
-├── run_openai.sh                     # OpenAI Backend·MCP·Front 동시 실행
+├── run_openai.sh                     # macOS/Linux용 OpenAI Backend·MCP·Front 동시 실행
+├── run_openai.bat                    # Windows용 PowerShell 실행 진입점
+├── run_openai.ps1                    # Windows용 OpenAI Backend·MCP·Front 실행 로직
 ├── pyproject.toml                    # ai-mafia 통합 런타임·개발 의존성 및 도구 설정
 ├── backend/
 │   ├── app/main.py                   # FastAPI 생성과 router·오류 처리 등록
@@ -128,7 +130,7 @@ Backend는 actor별 허용된 정보만 scope별로 투영하고, 밤 행동과 
 │   ├── core/                         # identity·session·api_client·sync
 │   ├── .streamlit/secrets.toml.example
 │   └── tests/
-├── frontend_admin/                   # read-only 관리자 운영 분석·피드백·로그·에이전트 계획
+├── frontend_admin/                   # read-only 관리자 운영 분석·피드백·로그
 ├── mcp_server/
 │   ├── pyproject.toml, uv.lock       # Python 3.12·MCP SDK 1.29.1 독립 실행 환경
 │   ├── mafia_game/                   # 최소 FastMCP 등록부·Backend HTTP adapter
@@ -276,6 +278,13 @@ uv run python -m backend.app.infrastructure.migrations
 ```bash
 ./run_openai.sh --check  # 유료 API 호출 없이 세 런타임 설정·import 검증
 ./run_openai.sh          # Backend·MCP·Front 동시 실행
+```
+
+Windows PowerShell 또는 명령 프롬프트에서는 다음처럼 실행합니다.
+
+```bat
+run_openai.bat --check
+run_openai.bat
 ```
 
 동시 실행 주소: Backend `http://127.0.0.1:18000`, MCP
