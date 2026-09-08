@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from uuid import uuid4
 
 import streamlit as st
@@ -16,6 +17,8 @@ ROLE_COUNTS = {
     9: {"마피아": 2, "탐정": 1, "의사": 1, "시민": 5},
 }
 
+SETUP_AI_IMAGE_PATH = Path(__file__).resolve().parents[1] / "assets" / "ai_image.jpg"
+
 SETUP_CSS = """
 <style>
 :root { --setup-ink:#172033; --setup-muted:#65728b; --setup-blue:#2468ed; --setup-dark:#0b1730; --setup-border:#dfe5ef; --setup-bg:#f4f7fb; }
@@ -28,12 +31,14 @@ SETUP_CSS = """
 .setup-status::before { content:""; width:.45rem; height:.45rem; border-radius:50%; background:#31c477; }
 .setup-nav { display:flex; gap:.7rem; color:#d8e2f3; font-size:.82rem; }
 .setup-nav span { padding:.55rem .75rem; border:1px solid #2b3b57; border-radius:.5rem; }
-.setup-intro { display:grid; grid-template-columns:.8fr 1.2fr; gap:1.5rem; align-items:center; margin-bottom:1.25rem; }
+.setup-intro-copy { margin-bottom:1.25rem; }
 .setup-breadcrumb { margin-bottom:1.5rem; color:var(--setup-muted); font-size:.9rem; }
 .setup-breadcrumb strong { color:var(--setup-blue); }
-.setup-intro h1 { margin:0; color:var(--setup-ink); font-size:clamp(2.3rem,5vw,3.5rem); line-height:1.15; letter-spacing:-.06em; }
-.setup-intro p { margin:.85rem 0 0; color:var(--setup-muted); font-size:1.1rem; }
+.setup-intro-copy h1 { margin:0; color:var(--setup-ink); font-size:clamp(2.3rem,5vw,3.5rem); line-height:1.15; letter-spacing:-.06em; }
+.setup-intro-copy p { margin:.85rem 0 0; color:var(--setup-muted); font-size:1.1rem; }
 .setup-art { min-height:14rem; position:relative; overflow:hidden; border-radius:.7rem; background:linear-gradient(160deg,#eaf2fd 0%,#f9fbff 55%,#d9e5f5 100%); }
+[class*="st-key-setup-ai-image"] { min-height:14rem; display:flex; align-items:center; overflow:hidden; padding:0 !important; border-radius:.7rem; background:#102e5c; box-shadow:0 1rem 2rem rgba(20,42,81,.14); }
+[class*="st-key-setup-ai-image"] img { display:block; width:100%; height:auto; }
 .setup-art::before { content:"☾"; position:absolute; top:.5rem; right:24%; color:#1f4c87; font-size:3.2rem; }
 .setup-art::after { content:"🏠   🤖   🕵️   🤖   🤖   👓"; position:absolute; right:1rem; bottom:1.1rem; color:#18365f; font-size:2rem; white-space:nowrap; filter:saturate(.75); }
 .setup-skyline { position:absolute; right:1rem; bottom:5rem; color:#557aab; font-size:2rem; letter-spacing:.5rem; }
@@ -70,7 +75,7 @@ SETUP_CSS = """
 .setup-rules-list { display:flex; flex-wrap:wrap; gap:1rem 1.7rem; margin:0; padding:0; color:var(--setup-muted); list-style:none; }
 .setup-rules-list li::before { content:"•"; margin-right:.5rem; color:var(--setup-blue); font-size:1.2rem; }
 .setup-note { margin-top:1rem; color:var(--setup-muted); text-align:center; }
-@media (max-width:760px) { .setup-intro { grid-template-columns:1fr; } .setup-art { min-height:10rem; } .setup-nav { display:none; } .setup-rules { align-items:flex-start; } .setup-rules-list { display:block; } .setup-rules-list li { margin:.35rem 0; } }
+@media (max-width:760px) { .setup-art, .setup-ai-image { min-height:10rem; } .setup-nav { display:none; } .setup-rules { align-items:flex-start; } .setup-rules-list { display:block; } .setup-rules-list li { margin:.35rem 0; } }
 </style>
 """
 
@@ -94,12 +99,22 @@ def render(client: ApiClient) -> None:
         title="AI 마피아",
         action_renderer=lambda: render_header_back_button(current_page="create"),
     )
-    st.markdown(
-        '<section class="setup-intro"><div><h1>새 게임 설정</h1>'
-        '<p>함께 플레이할 인원을 선택해 주세요</p></div>'
-        '<div class="setup-art"><span class="setup-skyline">▰ ▰ ▰ ▰ ▰</span></div></section>',
-        unsafe_allow_html=True,
-    )
+    intro_copy, intro_art = st.columns([.8, 1.2], gap="large")
+    with intro_copy:
+        st.markdown(
+            '<div class="setup-intro-copy"><h1>새 게임 설정</h1>'
+            '<p>함께 플레이할 인원을 선택해 주세요</p></div>',
+            unsafe_allow_html=True,
+        )
+    with intro_art:
+        if SETUP_AI_IMAGE_PATH.is_file():
+            with st.container(key="setup-ai-image"):
+                st.image(str(SETUP_AI_IMAGE_PATH), width="stretch")
+        else:
+            st.markdown(
+                '<div class="setup-art"><span class="setup-skyline">▰ ▰ ▰ ▰ ▰</span></div>',
+                unsafe_allow_html=True,
+            )
 
     pending = st.session_state.get("game.create_pending")
     in_flight = isinstance(pending, dict) and pending.get("status") in {

@@ -89,6 +89,19 @@ ACTION_PANEL_CSS = """
   background: linear-gradient(145deg, #101f37, #061328 72%) !important;
   box-shadow: 0 1rem 2.5rem rgba(4, 17, 38, .2);
 }
+/* 투표·밤 행동 안내문은 기본 st.info/st.success 색상 대신 동일한 네이비 패널의
+   대비를 사용해, 안내 문구가 배경에 묻히거나 페이지마다 다른 색으로 보이지 않게 한다. */
+[class*="st-key-night-action-panel"] [data-testid="stAlert"],
+[class*="st-key-vote-action-panel"] [data-testid="stAlert"] {
+  border-color: rgba(255, 255, 255, .28) !important;
+  background: rgba(255, 255, 255, .08) !important;
+}
+[class*="st-key-night-action-panel"] [data-testid="stAlert"] *,
+[class*="st-key-vote-action-panel"] [data-testid="stAlert"] * {
+  color: #f3f7ff !important;
+  -webkit-text-fill-color: #f3f7ff !important;
+  opacity: 1 !important;
+}
 /* 투표 패널의 읽기 영역도 밤 행동 패널과 같은 밝은 글자 대비를 유지한다.
    제출 버튼의 스타일은 별도로 유지해야 하므로 패널의 모든 하위 요소를 덮어쓰지 않는다. */
 .st-key-vote-action-panel :is(h2, h3, h4, [data-testid="stCaptionContainer"],
@@ -411,14 +424,12 @@ def _render_night_action(
 
     with st.container(key="night-action-panel", border=True):
         st.markdown(f"### 🌙 {day_number}일차 밤이 되었습니다")
-        st.divider()
         with st.container(key="night-time-card", border=True):
             st.markdown("**남은 시간**")
             st.markdown(f"## {_countdown_text(snapshot)}")
         with st.container(key="night-role-card", border=True):
             st.markdown(f"**내 역할** · {role_icon} {role_label}")
             st.caption(instruction)
-        st.divider()
         _render_pending_feedback(client=client, game_id=game_id, pending=pending)
 
         legal = set(snapshot.get("legal_actions", []))
@@ -487,15 +498,12 @@ def _render_vote_action(
 
     with st.container(key="vote-action-panel", border=True):
         st.markdown(f"### 🗳️ {phase_label}")
-        st.divider()
         with st.container(key="vote-time-card", border=True):
             st.markdown("**남은 시간**")
             st.markdown(f"## {_countdown_text(snapshot)}")
             st.caption("⚠ 제한 시간 내에 투표를 완료하세요.")
-        st.divider()
         with st.container(key="vote-role-card", border=True):
             st.markdown(f"**내 역할** · {role_icon} {role_label}")
-        st.divider()
         with st.container(key="vote-target-selection", border=True):
             if phase == "FINAL_ACCUSATION":
                 st.markdown("#### 최종 판정할 플레이어를 지목해 주세요")

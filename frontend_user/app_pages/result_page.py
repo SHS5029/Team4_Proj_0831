@@ -8,7 +8,7 @@ from typing import Any
 import streamlit as st
 
 from frontend_user.components.theme import render_application_header, render_header_back_button
-from frontend_user.core.scenario_images import scenario_image_path
+from frontend_user.core.scenario_images import result_image_path, scenario_image_path
 from frontend_user.core.time_display import display_timestamp
 
 RESULT_PAGE_CSS = """
@@ -45,21 +45,16 @@ RESULT_PAGE_CSS = """
   color: #d8e2f3; font-size: .82rem;
 }
 [class*="st-key-result-hero"] {
-  min-height: 15.5rem; display: grid; position: relative; overflow: hidden;
-  padding: 2rem !important; align-content: center; border: 1px solid #315886 !important;
-  border-radius: .85rem !important; color: #fff !important;
-  background: radial-gradient(circle at 52% 72%, #ffe5a0 0 7%, transparent 8%),
-              linear-gradient(165deg, #17406f, #5c88bf 62%, #efad75) !important;
-}
-[class*="st-key-result-hero"]::after {
-  content: "🤖  🕵️  🤖  🤖  🤖  🤖"; position: absolute; right: 1.5rem; bottom: 1rem;
-  color: #fff; font-size: clamp(1.1rem, 2.5vw, 2rem); letter-spacing: .35rem;
+  width: 100%; height: 100%; min-height: 100%; display: block; position: relative; overflow: hidden;
+  padding: 0 !important; align-content: center; border: 0 !important;
+  border-radius: .85rem !important; color: #fff !important; background: #071426 !important;
+  box-shadow: 0 1rem 2rem rgba(20,42,81,.14);
 }
 [class*="st-key-result-hero"] h1,
 [class*="st-key-result-hero"] h2,
 [class*="st-key-result-hero"] p { position: relative; z-index: 1; color: #fff !important; }
 [class*="st-key-result-summary"] {
-  min-height: 15.5rem; padding: 1.1rem !important;
+  height: 100%; min-height: 100%; box-sizing: border-box; padding: 1.1rem !important;
   border: 1px solid var(--result-border) !important;
   border-radius: .85rem !important; background: #fff !important;
   box-shadow: 0 .5rem 1.5rem rgba(20, 42, 81, .05);
@@ -73,9 +68,11 @@ RESULT_PAGE_CSS = """
   border-radius: .75rem !important; background: #fff !important;
 }
 [class*="st-key-result-hero"] img {
-  width: 100%; max-height: 11rem; object-fit: cover; position: relative; z-index: 1;
-  border-radius: .55rem; opacity: .96;
+  display: block; width: 100%; height: 100%; max-height: none; object-fit: contain;
+  position: relative; z-index: 1; border-radius: .85rem; opacity: .96;
 }
+[class*="st-key-result-hero"] > div,
+[class*="st-key-result-hero"] [data-testid="stImage"] { width: 100% !important; height: 100% !important; }
 .result-last-vote {
   margin-top: .55rem; color: var(--result-ink); font-size: .92rem; font-weight: 750;
   line-height: 1.35; overflow-wrap: anywhere;
@@ -116,8 +113,7 @@ RESULT_PAGE_CSS = """
 @media (max-width: 768px) {
   [data-testid="stMainBlockContainer"] { padding: 0 .8rem 2rem; }
   .result-header { margin: 0 -.8rem 1rem; padding: 0 .9rem; }
-  [class*="st-key-result-hero"], [class*="st-key-result-summary"] { min-height: auto; }
-  [class*="st-key-result-hero"]::after { opacity: .45; }
+  [class*="st-key-result-hero"], [class*="st-key-result-summary"] { height: auto; min-height: auto; }
 }
 </style>
 """
@@ -182,15 +178,16 @@ def render(snapshot: dict[str, Any]) -> None:
     winner_title, winner_caption = _winner_presentation(result.get("winner"))
     hero_col, summary_col = st.columns([1.4, 1])
     with hero_col:
-        with st.container(key="result-hero", border=True):
-            image_path = scenario_image_path(scenario)
+        with st.container(key="result-hero"):
+            image_path = result_image_path(result.get("winner")) or scenario_image_path(scenario)
             if image_path is not None:
-                # 결과 배너에도 동일한 시나리오 이미지를 사용하되, 승패 문구를 가리지
-                # 않도록 이미지와 결과 문구를 분리해 표시한다.
+                # 승리 배너 자체에 결과 문구가 포함되어 있으므로 원본 비율을 유지해
+                # 별도 카드 안에 넣지 않고 결과 카드 전체를 채우도록 표시한다.
                 st.image(str(image_path), width="stretch")
-            st.markdown(f"# {winner_title}")
-            st.markdown(f"### {winner_caption}")
-            st.text(str(scenario.get("title", "AI 마피아 게임")))
+            else:
+                st.markdown(f"# {winner_title}")
+                st.markdown(f"### {winner_caption}")
+                st.text(str(scenario.get("title", "AI 마피아 게임")))
     with summary_col:
         _render_summary(game=game, result=result)
 

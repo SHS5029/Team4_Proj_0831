@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 
 MAP_IMAGE_DIR = Path(__file__).resolve().parents[1] / "assets" / "maps"
+RESULT_IMAGE_DIR = Path(__file__).resolve().parents[1] / "assets" / "results"
+HOME_IMAGE_PATH = Path(__file__).resolve().parents[1] / "assets" / "main.png"
 
 # Backend의 scenario-v1 식별자는 변경하지 않고, Front의 정적 이미지 자산만 연결한다.
 SCENARIO_IMAGE_FILES = {
@@ -14,6 +16,11 @@ SCENARIO_IMAGE_FILES = {
     "CLOSING_MUSEUM": "3.png",
     "LAST_BANQUET_GUEST": "4.png",
     "STOPPED_NIGHT_TRAIN": "1.png",
+}
+
+RESULT_IMAGE_FILES = {
+    "CITIZEN": "end.jpg",
+    "MAFIA": "end_mafia.png",
 }
 
 
@@ -40,3 +47,18 @@ def scenario_image_path(scenario: Any) -> Path | None:
     filename = SCENARIO_IMAGE_FILES.get(key)
     path = MAP_IMAGE_DIR / filename if filename else None
     return path if path is not None and path.is_file() else None
+
+
+def result_image_path(winner: Any) -> Path | None:
+    """승리 진영에 맞는 결과 배너 자산을 반환하고, 잘못된 값은 노출하지 않는다."""
+
+    winner_key = str(winner or "").upper()
+    filename = RESULT_IMAGE_FILES.get(winner_key)
+    path = RESULT_IMAGE_DIR / filename if filename else None
+    return path if path is not None and path.is_file() else None
+
+
+def home_image_path() -> Path | None:
+    """홈 상단 소개 카드에 사용할 main 이미지를 반환한다."""
+
+    return HOME_IMAGE_PATH if HOME_IMAGE_PATH.is_file() else None
