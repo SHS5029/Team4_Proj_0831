@@ -10,6 +10,7 @@ from frontend_user.app_pages.game_page import (
     _process_shell_pending,
     _render_save_control,
     _render_shell_command,
+    render_game_exit_error,
     render_game_back_button,
     render_saved_control,
 )
@@ -145,18 +146,26 @@ def render(snapshot: dict[str, Any]) -> None:
     # 다른 플레이어 정보의 우발적 노출을 함께 방지한다.
     game = snapshot.get("game", {})
     game_id = str(game.get("game_id"))
-    st.markdown(ROLE_REVEAL_CSS, unsafe_allow_html=True)
-    render_application_header(
-        title="AI 마피아",
-        action_renderer=lambda: render_game_back_button(snapshot=snapshot),
-    )
-
-    scenario = snapshot.get("scenario", {})
     client = st.session_state["game.client"]
     _process_shell_pending(client=client, game_id=game_id)
-    # 이탈 팝업에서 저장 요청이 전송된 뒤 응답이 유실되어도 최초 요청의
-    # 재확인 제어를 유지한다. 아직 게임을 시작하지 않은 역할 공개도 같은 경계다.
-    _render_save_control(client=client, game_id=game_id, snapshot=snapshot)
+    st.markdown(ROLE_REVEAL_CSS, unsafe_allow_html=True)
+
+    def render_header_actions() -> None:
+        """낮 토론과 같은 헤더 저장·이탈 제어를 역할 공개에도 배치한다."""
+
+        save_column, back_column = st.columns(2)
+        with save_column:
+            _render_save_control(client=client, game_id=game_id, snapshot=snapshot)
+        with back_column:
+            render_game_back_button(snapshot=snapshot)
+
+    render_application_header(
+        title="AI 마피아",
+        action_renderer=render_header_actions,
+    )
+    render_game_exit_error()
+
+    scenario = snapshot.get("scenario", {})
     render_status_bar(game_id=game_id, snapshot=snapshot)
     me = own_private_view(snapshot)
     role_name, role_icon, role_text = ROLE_PRESENTATION.get(

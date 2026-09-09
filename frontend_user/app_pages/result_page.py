@@ -280,7 +280,7 @@ def _render_records(*, result: dict[str, Any], public_events: Any = None) -> Non
         and isinstance(player.get("display_name"), str) and player["display_name"].strip()
     }
     with st.container(key="result-records", border=True):
-        with st.expander("▣ 게임 기록 보기", expanded=False):
+        with st.expander("게임 기록 보기", expanded=False):
             night_col, vote_col = st.columns(2)
             with night_col:
                 st.markdown("#### 밤별 주요 기록")
@@ -482,7 +482,7 @@ def _render_actions(*, show_feedback: bool) -> None:
         if show_feedback:
             feedback_column, home_column = st.columns(2)
             if feedback_column.button(
-                "▣ 피드백 남기기",
+                "피드백 남기기",
                 key="result.feedback",
                 type="primary",
                 use_container_width=True,

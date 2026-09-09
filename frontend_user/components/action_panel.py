@@ -25,13 +25,14 @@ ACTION_ATTENTION_COMPONENT = st.components.v2.component(
 ACTION_PANEL_CSS = """
 <style>
 [class*="st-key-discussion-action-panel"] {
-  margin-top: .9rem; padding: .95rem !important; border: 1px solid #8eb6ff !important;
+  /* 공개 대화 패널과 발언 입력 패널 사이의 기본 여백을 줄인다. */
+  margin-top: .35rem !important; padding: .95rem !important; border: 1px solid #8eb6ff !important;
   border-radius: .75rem !important;
   background: linear-gradient(135deg, #f9fbff, #eef4ff) !important;
   box-shadow: 0 .7rem 1.8rem rgba(20, 42, 81, .10);
 }
 [class*="st-key-discussion-action-panel"] textarea {
-  min-height: 3.5rem; border-color: #8eb6ff; background: #fff !important;
+  min-height: 2.2rem; border-color: #8eb6ff; background: #fff !important;
   color: #172033 !important; -webkit-text-fill-color: #172033 !important;
 }
 [class*="st-key-discussion-action-panel"] textarea::placeholder {
@@ -48,6 +49,13 @@ ACTION_PANEL_CSS = """
 [class*="st-key-night-action-panel"] h3,
 [class*="st-key-night-action-panel"] p,
 [class*="st-key-night-action-panel"] label { color: #f3f7ff !important; }
+[class*="st-key-night-action-panel"] [data-testid="stText"],
+[class*="st-key-night-action-panel"] [data-testid="stText"] *,
+[class*="st-key-night-action-panel"] [data-testid="stWidgetLabel"],
+[class*="st-key-night-action-panel"] [data-testid="stWidgetLabel"] * {
+  color: #f3f7ff !important; -webkit-text-fill-color: #f3f7ff !important;
+  opacity: 1 !important;
+}
 [class*="st-key-night-action-panel"] [data-testid="stCaptionContainer"] {
   color: #b6c4da !important;
 }
@@ -106,6 +114,21 @@ ACTION_PANEL_CSS = """
 [class*="st-key-vote-action-panel"] [data-testid="stAlert"] * {
   color: #f3f7ff !important;
   -webkit-text-fill-color: #f3f7ff !important;
+  opacity: 1 !important;
+}
+/* 비활성화된 제출 버튼도 기본 테마의 회색 글자에 묻히지 않게 한다.
+   비활성 상태는 색상 대비로 구분하되, 안내 문구를 읽을 수 있는 불투명도를 유지한다. */
+[class*="st-key-night-action-panel"] [data-testid="stButton"] button,
+[class*="st-key-vote-action-panel"] [data-testid="stButton"] button {
+  color: #f3f7ff !important;
+  -webkit-text-fill-color: #f3f7ff !important;
+}
+[class*="st-key-night-action-panel"] [data-testid="stButton"] button:disabled,
+[class*="st-key-vote-action-panel"] [data-testid="stButton"] button:disabled {
+  color: #d9e5f7 !important;
+  -webkit-text-fill-color: #d9e5f7 !important;
+  background: #263b5c !important;
+  border-color: #58739d !important;
   opacity: 1 !important;
 }
 /* 투표 패널의 읽기 영역도 밤 행동 패널과 같은 밝은 글자 대비를 유지한다.
@@ -427,10 +450,12 @@ def _render_discussion(
     my_turn = window.get("deadline_at") is not None or window.get("turn_player_id") == me.get("player_id")
     pending = _pending_for_window(game_id=game_id, window=window, snapshot=snapshot)
     reservable = _can_reserve_speech(snapshot)
+    pass_available = _pass_is_available(snapshot)
 
     with st.container(key="discussion-action-panel", border=True):
         _render_pending_feedback(client=client, game_id=game_id, pending=pending)
-        if not my_turn or not reservable and not ({"SPEAK", "PASS"} & legal):
+        if ((not my_turn and not pass_available)
+                or (not reservable and not ({"SPEAK"} & legal) and not pass_available)):
             if window.get("remaining_ms") == 0:
                 st.info("토론 시간이 끝났습니다. 다음 단계를 기다리고 있습니다.")
             elif window.get("has_submitted"):
@@ -452,7 +477,6 @@ def _render_discussion(
             # 실패 직후 한 번만 복원한다. 이후 전체 rerun에서 원문을 반복 주입하면
             # 사용자가 고치고 있는 브라우저 초안이 다시 덮이므로 위젯 생성 뒤 소비한다.
             st.session_state[message_key] = draft["message"]
-        st.markdown("**발언 내용**")
         callback_args = {
             "game_id": game_id, "snapshot": snapshot,
             "user_id": getattr(st.session_state.get("game.client"), "user_id", None),
@@ -475,7 +499,7 @@ def _render_discussion(
             st.button(
                 "PASS",
                 key="action.PASS",
-                disabled=locked or "PASS" not in legal or speech_queue_busy(game_id),
+                disabled=locked or not pass_available or speech_queue_busy(game_id),
                 use_container_width=True,
                 on_click=_capture_discussion_command,
                 kwargs={**callback_args, "command_type": "PASS"},
@@ -554,7 +578,8 @@ def _render_night_action(
         targets = _valid_targets(snapshot=snapshot, command_type="SUBMIT_NIGHT_ACTION", ability_id=ability_id)
         if "SUBMIT_NIGHT_ACTION" not in legal or not targets:
             if window.get("has_submitted") or (pending and pending.get("status") == "SUCCEEDED"):
-                st.success("밤 행동을 제출했습니다. 다른 플레이어의 선택을 기다리고 있습니다.")
+                # 제출 완료 상태에서는 별도 알림을 반복하지 않고 화면을 조용히 유지한다.
+                return
             elif role == "CITIZEN" and not custom:
                 st.info("시민은 밤에 별도 행동을 할 필요가 없습니다. 아침까지 기다려 주세요.")
             else:
@@ -568,7 +593,6 @@ def _render_night_action(
         with st.container(key="night-action-selection", border=True):
             st.markdown("#### 행동 선택")
             st.caption(title)
-            st.caption("플레이어를 선택하면 파란 테두리로 표시됩니다.")
             target_labels = _target_labels(targets)
             target_id = st.radio(
                 "대상 선택",
@@ -639,7 +663,6 @@ def _render_vote_action(
                 submit_label = "최종 지목 제출  →"
             else:
                 st.markdown("#### 투표할 대상을 선택하세요.")
-                st.caption("플레이어를 선택하면 파란 테두리로 표시됩니다.")
                 submit_label = "투표 제출  →"
             _render_pending_feedback(client=client, game_id=game_id, pending=pending)
             if "SUBMIT_VOTE" not in set(snapshot.get("legal_actions", [])) or not targets:
@@ -702,14 +725,17 @@ def _action_status(snapshot: dict[str, Any]) -> tuple[str, str, str | None] | No
     phase = str(game.get("phase", ""))
     pending = _pending_for_window(game_id=str(game.get("game_id", "")), window=window)
     reservable = _can_reserve_speech(snapshot)
+    pass_available = _pass_is_available(snapshot)
     if _is_locked(window={**window, "has_submitted": False} if reservable else window, pending=pending):
         return None
     if phase in DISCUSSION_PHASES:
-        if (window.get("deadline_at") is None and window.get("turn_player_id") != me.get("player_id")) or not reservable and not ({"SPEAK", "PASS"} & legal):
+        if ((window.get("deadline_at") is None and window.get("turn_player_id") != me.get("player_id")
+             and not pass_available)
+                or (not reservable and not ({"SPEAK"} & legal) and not pass_available)):
             return None
         if reservable and "SPEAK" not in legal:
             label = "발언을 예약하세요 · 발언 제한이 풀리면 전송합니다"
-        elif "PASS" in legal and not (phase == "DAY_DISCUSSION" and game.get("day_number") == 1):
+        elif pass_available and not (phase == "DAY_DISCUSSION" and game.get("day_number") == 1):
             label = "발언을 입력하거나 PASS하세요"
         else:
             # 하단 안내도 입력 버튼과 같은 첫날 PASS 금지·서버 허용 경계를 따른다.
@@ -786,7 +812,6 @@ def _attention_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
     """중복을 줄인 live announcement만 browser component에 전달한다."""
 
     status = _action_status(snapshot)
-    warning = _countdown_warning_text(snapshot)
     window_id = _canonical_player_id(_window(snapshot).get("window_id"))
     game = snapshot.get("game", {})
     window = _window(snapshot)
@@ -794,11 +819,10 @@ def _attention_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
         # AI 발언마다 교체되는 예약 window를 인간의 새 행동으로 취급하지 않는다.
         # 같은 토론은 하나의 focus 단위이며 저장·재개로 deadline이 바뀌면 새로 안내한다.
         window_id = f"{game.get('game_id')}:{game.get('phase')}:{window.get('deadline_at')}"
+    # 상단에 중복으로 노출되던 "새 행동" 문구는 제거한다. 현재 행동과 남은 시간은
+    # 화면 하단의 고정 상태 바에서 계속 제공하므로, 접근성 컴포넌트에도 시각 문구를
+    # 전달하지 않아 본문과 안내가 겹치지 않게 한다.
     announcement = None
-    if status is not None:
-        announcement = f"새 행동: {status[0]}." + (f" {warning}" if warning else "")
-    elif warning:
-        announcement = warning
     return {
         "active": status is not None and window_id is not None,
         "window_id": window_id,
@@ -912,6 +936,30 @@ def _can_reserve_speech(snapshot: dict[str, Any]) -> bool:
                 and not _is_locked(window={**window, "has_submitted": False}, pending=None))
 
 
+def _pass_is_available(snapshot: dict[str, Any]) -> bool:
+    """2일차 이후 토론에서 PASS를 선택할 수 있는 화면상의 기본 조건을 확인한다.
+
+    첫날 토론은 PASS 없이 의견을 남기는 규칙이므로 제외한다. 이후에는 서버가
+    legal_actions에 PASS를 일시적으로 누락한 순간에도 사용자가 버튼을 볼 수 있게
+    하되, 실제 제출과 단계 전환은 여전히 서버의 최종 검증을 따르게 한다.
+    """
+
+    game = snapshot.get("game") if isinstance(snapshot.get("game"), dict) else {}
+    me = snapshot.get("me") if isinstance(snapshot.get("me"), dict) else {}
+    window = _window(snapshot)
+    day_number = game.get("day_number")
+    if day_number is None:
+        # 구버전 합성 snapshot에는 일차가 없을 수 있으므로 서버가 명시한 PASS만 따른다.
+        day_number = 2 if "PASS" in snapshot.get("legal_actions", []) else None
+    if (game.get("status") != "IN_PROGRESS"
+            or game.get("phase") not in DISCUSSION_PHASES
+            or type(day_number) is not int or day_number < 2
+            or me.get("alive") is not True
+            or window.get("kind") != "SPEECH"):
+        return False
+    return bool(window.get("deadline_at") or window.get("turn_player_id") == me.get("player_id"))
+
+
 def _latest_command_snapshot(*, game_id: str, snapshot: dict[str, Any],
                              command_type: str, user_id: Any,
                              reserve_speech: bool = False) -> dict[str, Any]:
@@ -935,6 +983,11 @@ def _latest_command_snapshot(*, game_id: str, snapshot: dict[str, Any],
         and old_window.get("deadline_at") == window.get("deadline_at")
     )
     reservation = reserve_speech and command_type == "SPEAK" and _can_reserve_speech(latest)
+    pass_override = (
+        command_type == "PASS"
+        and _pass_is_available(snapshot)
+        and _pass_is_available(latest)
+    )
     if (user_id is not None and str(current_user) != str(user_id)
             or game.get("game_id") != game_id or old_game.get("game_id") != game_id
             or not old_me.get("player_id") or me.get("player_id") != old_me.get("player_id")
@@ -943,8 +996,8 @@ def _latest_command_snapshot(*, game_id: str, snapshot: dict[str, Any],
             or any(game.get(key) != old_game.get(key) for key in ("phase", "round", "day_number"))
             or any(type(game.get(key)) is not int or type(old_game.get(key)) is not int
                    or game[key] < old_game[key] for key in ("state_version", "last_sequence"))
-            or not reservation and command_type not in latest.get("legal_actions", [])
-            or not reservation and command_type not in snapshot.get("legal_actions", [])
+            or not reservation and not pass_override and command_type not in latest.get("legal_actions", [])
+            or not reservation and not pass_override and command_type not in snapshot.get("legal_actions", [])
             or window.get("kind") != old_window.get("kind")
             or window.get("deadline_at") != old_window.get("deadline_at")
             or not window.get("window_id")

@@ -146,10 +146,15 @@ def render(client: ApiClient) -> None:
     }
     selected = _render_player_choices(in_flight=in_flight)
     custom_role, custom_valid = _render_role_settings(client, in_flight=in_flight)
+    role_assignment_text = (
+        "사용자는 커스텀한 역할로 배정됩니다"
+        if st.session_state.get("game.create_mode") == "CUSTOM_ROLE"
+        else "역할은 무작위로 배정됩니다"
+    )
     st.markdown(
         '<section class="setup-rules"><div class="setup-rule-book">📘</div><div>'
         '<div class="setup-rules-title">게임 방식</div><ul class="setup-rules-list">'
-        '<li>역할은 무작위로 배정됩니다</li><li>최대 5번째 밤까지 진행됩니다</li>'
+        f'<li>{role_assignment_text}</li><li>최대 5번째 밤까지 진행됩니다</li>'
         '<li>게임 중 언제든 저장할 수 있습니다</li></ul></div></section>',
         unsafe_allow_html=True,
     )
@@ -260,8 +265,12 @@ def _render_role_settings(client: ApiClient, *, in_flight: bool) -> tuple[dict |
         faction = st.radio("진영", ["CITIZEN", "MAFIA"],
                            format_func=lambda value: "시민 진영" if value == "CITIZEN" else "마피아 진영",
                            key="game.create_faction", disabled=in_flight, horizontal=True)
-        name = st.text_input("자유 직업명", key="game.create_role_name", disabled=in_flight,
-                             help="NFC 및 연속·앞뒤 공백 정리 후 1~40자입니다.")
+        name = st.text_input(
+            "자유 직업명",
+            key="game.create_role_name",
+            disabled=in_flight,
+            placeholder="직업명은 공백 정리 후 1~40자로 입력해 주세요.",
+        )
         if "game.ability_catalog" not in st.session_state:
             with st.spinner("능력 목록을 불러오고 있습니다."):
                 try:
@@ -288,23 +297,42 @@ def _render_role_settings(client: ApiClient, *, in_flight: bool) -> tuple[dict |
             return None, False
         for ability_id, item in allowed.items():
             with st.container(border=True):
-                st.text(item["label"])
-                st.caption(ABILITY_DESCRIPTIONS[ability_id])
+                if ability_id in {"night.attack.v1"}:
+                    st.markdown("**공격** · 기본 능력")
+                else:
+                    st.text(item["label"])
+                    st.caption(ABILITY_DESCRIPTIONS[ability_id])
         mandatory = ["night.attack.v1"] if faction == "MAFIA" else []
-        if mandatory:
-            st.info("공격은 마피아 진영의 필수 능력입니다.")
         options = [ability_id for ability_id in allowed if ability_id not in mandatory]
         key = f"game.create_abilities.{faction}"
-        if key in st.session_state:
-            st.session_state[key] = [value for value in st.session_state[key] if value in options]
-        selected = st.multiselect("사용할 능력 (총 1~3개)", options,
-                                  format_func=lambda value: allowed[value]["label"],
-                                  key=key, disabled=in_flight)
+        previous = st.session_state.get(key, [])
+        previous = [value for value in previous if value in options] if isinstance(previous, list) else []
+        max_optional = 3 - len(mandatory)
+        st.markdown("**능력 선택 · 최대 3개**")
+        if mandatory:
+            st.caption("공격은 기본 능력으로 포함됩니다.")
+        selected = []
+        for ability_id in options:
+            option_key = f"{key}.{ability_id}"
+            if option_key not in st.session_state:
+                st.session_state[option_key] = ability_id in previous
+            checked = st.checkbox(
+                allowed[ability_id]["label"],
+                key=option_key,
+                disabled=in_flight or (len(selected) >= max_optional and not st.session_state[option_key]),
+            )
+            if checked:
+                selected.append(ability_id)
+        # 다음 rerun에서도 현재 선택을 복원하되, 최대 개수 밖의 값은 저장하지 않는다.
+        selected = selected[:max_optional]
+        st.session_state[key] = selected
         ability_ids = mandatory + selected
         try:
             name = normalize_role_name(name)
         except ValueError as error:
-            st.caption(str(error))
+            # 빈 입력은 placeholder가 안내하므로 같은 문구를 오류로 반복하지 않는다.
+            if name.strip():
+                st.caption(str(error))
             return None, False
         if not 1 <= len(ability_ids) <= 3 or len(set(ability_ids)) != len(ability_ids):
             st.caption("능력을 1~3개 선택해 주세요.")

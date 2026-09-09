@@ -12,11 +12,10 @@ from frontend_user.core.view_models import custom_role_description
 
 import streamlit as st
 
-from frontend_user.components import vote_insights
 from frontend_user.components.action_panel import render as render_action_panel
 from frontend_user.components.action_panel import render_status_bar
 from frontend_user.components.action_panel import (
-    maintain_speech_queue, prefer_current_snapshot, speech_queue_busy,
+    _countdown_remaining_ms, maintain_speech_queue, prefer_current_snapshot, speech_queue_busy,
 )
 from frontend_user.components.sync_bridge import apply_sync, mount_sse
 from frontend_user.components.theme import render_application_header, render_header_back_button
@@ -78,9 +77,14 @@ GAME_PAGE_CSS = """
   box-shadow: 0 .5rem 1.5rem rgba(20, 42, 81, .05);
 }
 [class*="st-key-game-timeline-panel"] {
-  padding: 1rem !important; border: 1px solid var(--game-border) !important;
+  margin-top: 0 !important; margin-bottom: 0 !important; padding: 1rem !important;
+  border: 1px solid var(--game-border) !important;
   border-radius: .8rem !important; background: #fff !important;
   box-shadow: 0 .5rem 1.5rem rgba(20, 42, 81, .05);
+}
+[class*="st-key-game-incident-summary"] {
+  /* 사건 내용과 공개 대화 사이를 같은 짧은 간격으로 통일한다. */
+  margin-bottom: .35rem !important;
 }
 [class*="st-key-game-player-panel"] [data-testid="stText"],
 [class*="st-key-game-my-panel"] [data-testid="stText"] {
@@ -99,7 +103,7 @@ GAME_PAGE_CSS = """
   flex: 1 1 100%; min-width: 0; padding: .65rem .7rem;
 }
 [class*="st-key-game-timeline-scroll"] {
-  margin-top: .7rem; padding-right: .2rem;
+  margin-top: .35rem !important; padding-right: .2rem;
 }
 .game-panel-title {
   margin-bottom: .1rem; color: var(--game-ink); font-size: 1.05rem; font-weight: 800;
@@ -223,58 +227,6 @@ GAME_PAGE_CSS = """
 </style>
 """
 
-# 밤 화면은 역할 공개와 같은 어두운 배경을 쓰되, 낮 화면의 색상을 덮지 않도록
-# NIGHT_ACTION phase에서만 별도로 주입한다. 공개 발언·역할 등 서버 문자열은 이
-# 정적 스타일에 넣지 않고 기존 Streamlit 텍스트 렌더링을 유지한다.
-NIGHT_GAME_PAGE_CSS = """
-<style>
-[data-testid="stAppViewContainer"] {
-  color: #e8f0ff;
-  background:
-    radial-gradient(circle at 76% 22%, rgba(52, 101, 164, .32), transparent 24rem),
-    linear-gradient(115deg, #06111f 0%, #0a1e38 52%, #06111f 100%) !important;
-}
-[class*="st-key-game-player-panel"],
-[class*="st-key-game-timeline-panel"],
-[class*="st-key-game-selected-player-summary"] {
-  border-color: #29486e !important;
-  background: rgba(9, 28, 53, .92) !important;
-  box-shadow: 0 .8rem 2rem rgba(0, 5, 18, .28);
-}
-[class*="st-key-game-player-panel"] [data-testid="stMarkdownContainer"],
-[class*="st-key-game-timeline-panel"] [data-testid="stMarkdownContainer"],
-[class*="st-key-game-selected-player-summary"] [data-testid="stMarkdownContainer"],
-[class*="st-key-game-player-panel"] [data-testid="stCaptionContainer"],
-[class*="st-key-game-timeline-panel"] [data-testid="stCaptionContainer"],
-[class*="st-key-game-selected-player-summary"] [data-testid="stCaptionContainer"] {
-  color: #d9e6fb !important;
-}
-[class*="st-key-game-player-panel"] [data-testid="stBaseButton-secondary"],
-[class*="st-key-game-player-panel"] [data-testid="stVerticalBlockBorderWrapper"] {
-  border-color: #29486e !important;
-  background: rgba(13, 38, 70, .75) !important;
-}
-[data-testid="stChatMessage"] {
-  border: 1px solid #29486e;
-  border-radius: .7rem;
-  background: rgba(13, 38, 70, .72);
-}
-[class*="st-key-night-transition-banner"] {
-  margin-bottom: .8rem;
-  padding: 1rem 1.1rem !important;
-  border: 1px solid #466d9d !important;
-  border-radius: .8rem !important;
-  color: #eaf2ff !important;
-  background: linear-gradient(135deg, rgba(20, 56, 102, .95), rgba(7, 21, 42, .96)) !important;
-  box-shadow: 0 .8rem 2rem rgba(0, 5, 18, .24);
-}
-[class*="st-key-night-transition-banner"] h3,
-[class*="st-key-night-transition-banner"] [data-testid="stCaptionContainer"] {
-  color: #eaf2ff !important;
-}
-</style>
-"""
-
 PHASE_LABELS = {
     "DAY_DISCUSSION": "사건 설명과 낮 토론",
     "NIGHT_ACTION": "밤 행동",
@@ -291,6 +243,14 @@ ROLE_PRESENTATION = {
     "DOCTOR": ("의사", "🩺"),
     "CITIZEN": ("시민", "🧑"),
 }
+
+
+def _public_role_label(value: Any) -> str:
+    """공개 역할 코드만 사용자용 한글명으로 바꾸고 커스텀 역할명은 보존한다."""
+
+    label = str(value or "").strip()
+    standard_label = ROLE_PRESENTATION.get(label.upper())
+    return standard_label[0] if standard_label else label
 
 # player ID의 공개 문자열만 이용해 같은 player에게 같은 색을 부여한다. 이 색은
 # 역할·진영·행동 결과와 무관한 발언 식별용 표현이며 게임 정보를 암시하지 않는다.
@@ -330,8 +290,6 @@ def render(snapshot: dict[str, Any]) -> None:
     spectating = me.get("alive") is False
     day_number = game.get("day_number", 1)
     phase = str(game.get("phase", "확인 중"))
-    if phase == "NIGHT_ACTION":
-        st.markdown(NIGHT_GAME_PAGE_CSS, unsafe_allow_html=True)
     if spectating:
         header_phase = f"☀️ 낮 {day_number}일차 · 관전 중"
     else:
@@ -362,6 +320,7 @@ def render(snapshot: dict[str, Any]) -> None:
         phase_label=header_phase,
         action_renderer=render_header_actions,
     )
+    render_game_exit_error()
     # 낮·밤·투표·관전·저장 분기 전에 한 번만 렌더링해 모든 진행 화면 하단에
     # 현재 할 일과 Backend 기준 남은 시간을 같은 위치로 유지한다.
     render_status_bar(game_id=str(game.get("game_id")), snapshot=snapshot)
@@ -381,6 +340,7 @@ def render(snapshot: dict[str, Any]) -> None:
             _render_players(snapshot=snapshot, me=me, phase=str(phase))
         with center:
             _render_live_updates(client=client, snapshot=snapshot)
+            _render_bottom_agent_activity(snapshot=snapshot)
         return
 
     if spectating:
@@ -394,11 +354,16 @@ def render(snapshot: dict[str, Any]) -> None:
 
     action_in_right_panel = phase in RIGHT_ACTION_PHASES
     if action_in_right_panel:
-        # 행동 카드는 새 레이아웃의 전체 폭을 유지한다. 공개 기록 fragment도
-        # 연결해 제출 대기 중에도 마감·사망·종료 전이를 서버에서 받아 온다.
-        action_region = st.container(key="action-only-region")
-        _render_live_updates(client=client, snapshot=snapshot)
-        with action_region:
+        # 투표·재투표·밤 행동도 낮 토론과 같은 2열 구조를 사용한다. 왼쪽 공개
+        # player 목록은 유지하고, 공개 대화가 차지하던 중앙 영역에 행동 panel을
+        # 배치한다. 행동 제출·동기화는 기존 함수를 그대로 호출한다.
+        left, center = st.columns([0.82, 2.55])
+        with left:
+            _render_players(snapshot=snapshot, me=me, phase=str(phase))
+        with center:
+            # 공개 대화는 행동 단계에서 숨기되, sync fragment는 유지해 제출 대기
+            # 중에도 서버의 마감·사망·종료 전이를 계속 반영한다.
+            _render_live_updates(client=client, snapshot=snapshot, show_timeline=False)
             _render_visible_action_panel(
                 client=client,
                 game_id=str(game.get("game_id")),
@@ -418,8 +383,7 @@ def render(snapshot: dict[str, Any]) -> None:
                 game_id=str(game.get("game_id")),
                 snapshot=snapshot,
             )
-
-    # 사망자는 위의 전용 분기에서 반환되므로 이 아래에는 생존자 입력만 존재한다.
+        _render_bottom_agent_activity(snapshot=snapshot)
 
 
 def _sync_snapshot(*, client: Any, snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -533,7 +497,9 @@ def _shell_projection(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 
 @st.fragment(run_every=2)
-def _render_live_updates(*, client: Any, snapshot: dict[str, Any]) -> None:
+def _render_live_updates(
+    *, client: Any, snapshot: dict[str, Any], show_timeline: bool = True,
+) -> None:
     """자동 조회와 공개 기록을 입력 위젯 밖에서 갱신해 작성 중인 DOM을 보존한다."""
 
     latest = st.session_state.get("game.latest_snapshot", snapshot)
@@ -543,7 +509,6 @@ def _render_live_updates(*, client: Any, snapshot: dict[str, Any]) -> None:
     sending = (isinstance(pending, dict)
                and pending.get("game_id") == snapshot.get("game", {}).get("game_id")
                and pending.get("status") in {"PENDING_TO_RENDER", "IN_FLIGHT"})
-    reserved = speech_queue_busy(snapshot.get("game", {}).get("game_id"))
     connection = (st.session_state.get("game.sync_status"), st.session_state.get("game.sync_hidden"))
     # Enter/PASS callback이 보존한 요청을 action panel이 먼저 처리하게 한다.
     # 이 짧은 제출 경계에서는 sync·분석 GET과 화면 전환이 trigger를 앞서지 않는다.
@@ -563,17 +528,27 @@ def _render_live_updates(*, client: Any, snapshot: dict[str, Any]) -> None:
         st.rerun()
     game = latest.get("game", {})
     _render_special_roles(client=client, snapshot=latest)
+    if show_timeline:
+        if own_private_view(latest).get("alive") is False:
+            _render_spectator_timeline(snapshot=latest, me=own_private_view(latest))
+            if game.get("status") == "SAVED":
+                # 저장 화면에는 관전 전용 우측 패널이 없으므로 본인 결과를 여기서 복원한다.
+                _render_investigation_results(snapshot=latest)
+        else:
+            _render_timeline(snapshot=latest, scenario=latest.get("scenario", {}),
+                             phase=str(game.get("phase", "")), day_number=game.get("day_number", 1))
+
+
+@st.fragment(run_every=2)
+def _render_bottom_agent_activity(*, snapshot: dict[str, Any]) -> None:
+    """핵심 대화·행동 UI 아래에 접힌 AI 처리 참고 정보를 배치한다."""
+
+    latest = st.session_state.get("game.latest_snapshot", snapshot)
+    if latest.get("game", {}).get("game_id") != snapshot.get("game", {}).get("game_id"):
+        return
+    # AI 판단과 실행은 게임 진행에 필요한 공개 대화·행동 영역을 모두 표시한 뒤
+    # 페이지 최하단에서 접힌 상태로 렌더링해 사용자의 핵심 입력을 방해하지 않게 한다.
     _render_agent_activity(snapshot=latest)
-    if own_private_view(latest).get("alive") is False:
-        _render_spectator_timeline(snapshot=latest, me=own_private_view(latest))
-        if game.get("status") == "SAVED":
-            # 저장 화면에는 관전 전용 우측 패널이 없으므로 본인 결과를 여기서 복원한다.
-            _render_investigation_results(snapshot=latest)
-    else:
-        _render_timeline(snapshot=latest, scenario=latest.get("scenario", {}),
-                         phase=str(game.get("phase", "")), day_number=game.get("day_number", 1))
-    if not sending and not reserved:
-        vote_insights.render(client=client, game_id=str(game.get("game_id")), snapshot=latest)
 
 
 def _render_visible_action_panel(**kwargs: Any) -> None:
@@ -621,7 +596,11 @@ def _render_game_progress(*, game: dict[str, Any], compact: bool = False) -> Non
         "FINAL_ACCUSATION": 0.95,
     }.get(phase, 0.1)
     progress_value = min(100, max(1, round(((day_number - 1 + phase_weight) / 5) * 100)))
-    progress_text = f"{progress_value}%" if compact else f"게임 진행률 · 낮 {day_number}일차 / 최대 5번째 밤"
+    progress_text = (
+        f"게임 진행률 {progress_value}%"
+        if compact
+        else f"게임 진행률 · 낮 {day_number}일차 / 최대 5번째 밤"
+    )
     st.progress(progress_value, text=progress_text)
     if not compact:
         st.caption("승패 조건이 충족되면 최대 진행 전에도 게임이 종료될 수 있습니다.")
@@ -752,8 +731,7 @@ def _render_players(*, snapshot: dict[str, Any], me: dict[str, Any], phase: str)
                 '</div>',
                 unsafe_allow_html=True,
             )
-        if custom_role_description(me):
-            st.text(custom_role_description(me))
+        _render_custom_private_information(me=me)
         st.markdown('<div class="game-panel-title">플레이어 목록</div>', unsafe_allow_html=True)
         st.markdown(
             f'<div class="game-panel-caption">전체 {len(players)}명 · 생존 {alive_count}명</div>',
@@ -797,7 +775,10 @@ def _render_players(*, snapshot: dict[str, Any], me: dict[str, Any], phase: str)
                 )
                 revealed_role = player.get("revealed_role")
                 if revealed_role:
-                    st.text(f"공개 역할: {player.get('revealed_role_name') or revealed_role}")
+                    revealed_role_name = _public_role_label(
+                        player.get("revealed_role_name") or revealed_role
+                    )
+                    st.text(f"공개 역할: {revealed_role_name or '역할 확인'}")
             if str(player.get("player_id")) == selected_player_id:
                 _render_selected_player_summary(
                     snapshot=snapshot,
@@ -910,6 +891,7 @@ def _render_spectator_layout(
             st.caption("게임은 AI 플레이어끼리 계속 진행되며 공개 범위의 정보만 표시됩니다.")
         _render_live_updates(client=client, snapshot=snapshot)
         _render_spectator_controls(client=client, game_id=game_id, snapshot=snapshot)
+        _render_bottom_agent_activity(snapshot=snapshot)
     with right:
         _render_spectator_private(snapshot=snapshot, me=me)
 
@@ -995,15 +977,16 @@ def _render_spectator_timeline(*, snapshot: dict[str, Any], me: dict[str, Any]) 
         str(player.get("player_id")): str(player.get("display_name", "플레이어"))
         for player in public_players(snapshot)
     }
+    # 관전 페이지도 일반 진행 페이지와 같은 순서를 사용해 사건 확인 위치를 통일한다.
+    _render_incident_summary(snapshot.get("scenario"), me=me)
     presentations = _player_presentations(public_players(snapshot))
     with st.container(key="spectator-timeline-panel", border=True):
         title_column, progress_column = st.columns([3, 1])
         title_column.markdown("### ▣ 공개 타임라인")
         with progress_column:
-            st.caption("게임 진행률")
             game = snapshot.get("game") if isinstance(snapshot.get("game"), dict) else {}
             _render_game_progress(game=game, compact=True)
-        _render_incident_summary(snapshot.get("scenario"), me=me)
+        _render_custom_private_information(me=me)
         _render_phase_briefing(
             snapshot=snapshot,
             phase=str(game.get("phase", "DAY_DISCUSSION")),
@@ -1033,22 +1016,23 @@ def _render_incident_summary(scenario: Any, *, me: dict[str, Any] | None = None)
 
     details = scenario if isinstance(scenario, dict) else {}
     private = me if isinstance(me, dict) else {}
-    with st.expander("🗂️ 사건 내용", expanded=False):
-        image_path = scenario_image_path(details)
-        if image_path is not None:
-            # 사건 이미지는 공개 시나리오의 분위기만 전달하며, 개인 알리바이·단서는
-            # 이미지 자산에 포함하지 않는다. 자산이 없으면 기존 텍스트 화면을 유지한다.
-            st.image(str(image_path), width="stretch")
-        st.markdown(f"#### {details.get('title', '사건 정보')}")
-        victim = details.get("victim", "알 수 없음")
-        locations = details.get("locations", [])
-        location_text = ", ".join(str(item) for item in locations) if isinstance(locations, list) else ""
-        st.caption(f"피해자: {victim} · 장소: {location_text}")
-        st.write(str(details.get("background", "")))
-        st.markdown("**내 알리바이**")
-        st.write(str(private.get("alibi", "없음")))
-        st.markdown("**사건 단서**")
-        st.write(str(private.get("observation", "없음")))
+    with st.container(key="game-incident-summary"):
+        with st.expander("🗂️ 사건 내용", expanded=False):
+            image_path = scenario_image_path(details)
+            if image_path is not None:
+                # 사건 이미지는 공개 시나리오의 분위기만 전달하며, 개인 알리바이·단서는
+                # 이미지 자산에 포함하지 않는다. 자산이 없으면 기존 텍스트 화면을 유지한다.
+                st.image(str(image_path), width="stretch")
+            st.markdown(f"#### {details.get('title', '사건 정보')}")
+            victim = details.get("victim", "알 수 없음")
+            locations = details.get("locations", [])
+            location_text = ", ".join(str(item) for item in locations) if isinstance(locations, list) else ""
+            st.caption(f"피해자: {victim} · 장소: {location_text}")
+            st.write(str(details.get("background", "")))
+            st.markdown("**내 알리바이**")
+            st.write(str(private.get("alibi", "없음")))
+            st.markdown("**사건 단서**")
+            st.write(str(private.get("observation", "없음")))
 
 
 def _render_spectator_private(*, snapshot: dict[str, Any], me: dict[str, Any]) -> None:
@@ -1067,10 +1051,7 @@ def _render_spectator_private(*, snapshot: dict[str, Any], me: dict[str, Any]) -
         st.markdown("### 내 정보 (당신)")
         if custom_role_description(me):
             role_name = me["role_name"]
-            st.text(custom_role_description(me))
-            st.text(f"{role_icon} {role_name}")
-        else:
-            st.markdown(f"## {role_icon} {role_name}")
+        st.markdown(f"## {role_icon} {role_name}")
         st.error("사망")
         st.markdown("#### 🔒 내 정보 (비공개)")
         st.caption("이 정보는 다른 플레이어에게 공개되지 않습니다.")
@@ -1100,17 +1081,18 @@ def _render_timeline(
 ) -> None:
     """사건 설명과 공개 대화를 중앙의 큰 스크롤 영역에 표시한다."""
 
+    # 사건 정보는 대화 흐름과 분리해 타임라인 패널보다 먼저 배치한다. 기본 접힘을
+    # 유지하므로 필요한 순간에만 열어 확인할 수 있고, 공개 발언의 시선 흐름을 막지 않는다.
+    me = own_private_view(snapshot)
+    _render_incident_summary(scenario, me=me)
     with st.container(key="game-timeline-panel", border=True):
         title_column, progress_column = st.columns([3, 1])
         title_column.markdown("### 💬 공개 대화")
         with progress_column:
-            st.caption("게임 진행률")
             game = snapshot.get("game") if isinstance(snapshot.get("game"), dict) else {}
             _render_game_progress(game=game, compact=True)
         # AI GM 브리핑은 player 발언이 쌓이는 scroll 영역 밖에 둔다. 따라서 최신
         # 대화로 자동 스크롤돼도 낮·밤 전환과 사건의 공개 안내를 계속 확인할 수 있다.
-        me = own_private_view(snapshot)
-        _render_incident_summary(scenario, me=me)
         # 이전 별도 내 정보 열이 사라져도 본인 탐정의 확정 결과는 계속 제공한다.
         # 공개 채팅 event와 분리된 영역에서 기존 private projection 검증을 재사용한다.
         with st.container(key="game-investigation-results"):
@@ -1136,6 +1118,36 @@ def _render_timeline(
                     presentations=presentations,
                     my_player_id=me.get("player_id"),
                 )
+
+
+def _render_custom_private_information(*, me: dict[str, Any]) -> None:
+    """커스텀 역할의 개인 설명을 왼쪽 내 정보 아래에서 읽기 쉽게 표시한다.
+
+    커스텀 역할 설명은 본인에게만 허용된 정보이므로 공개 플레이어 목록과 분리한다.
+    설명의 진영·능력명·행동 요약은 굵게 강조하고, 서버에서 전달된 문장은 HTML로
+    해석되지 않도록 escape해 개인 정보가 화면 구조를 깨지 않게 한다.
+    """
+
+    description = custom_role_description(me)
+    if not description:
+        return
+    with st.container(key="game-custom-private-information", border=True):
+        st.markdown("#### 🔒 내 역할 정보")
+        st.caption("나에게만 표시됩니다.")
+        lines = []
+        for line in str(description).splitlines():
+            heading, separator, body = line.partition(":")
+            if separator:
+                lines.append(
+                    f'<div style="margin:.25rem 0;line-height:1.45;">'
+                    f'<strong>{escape(heading)}:</strong> {escape(body.strip())}</div>'
+                )
+            else:
+                lines.append(
+                    f'<div style="margin:.25rem 0;line-height:1.45;">'
+                    f'<strong>{escape(line)}</strong></div>'
+                )
+        st.markdown("".join(lines), unsafe_allow_html=True)
 
 
 def _player_conversation_events(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1893,6 +1905,11 @@ def render_game_back_button(*, snapshot: dict[str, Any]) -> None:
     else:
         _dismiss_exit_dialog()
         render_header_back_button(current_page="game")
+
+
+def render_game_exit_error() -> None:
+    """홈 이동·삭제 충돌 알림을 헤더 버튼이 아닌 페이지 상단에 표시한다."""
+
     if message := st.session_state.pop("game.exit_error", None):
         st.warning(message)
 
@@ -1952,11 +1969,17 @@ def _render_save_confirmation_dialog(*, game_id: str, snapshot: dict[str, Any], 
         else f"낮 {game.get('day_number', 1)}일차"
     )
     remaining_ms = window.get("remaining_ms")
+    if type(remaining_ms) is not int:
+        # 헤더의 저장 다이얼로그는 하단 상태 바보다 먼저 렌더링될 수 있으므로,
+        # 원본 snapshot에 계산값이 없어도 동일한 서버 시각 기준으로 잔여 시간을 만든다.
+        remaining_ms = _countdown_remaining_ms(game_id=game_id, snapshot=snapshot)
     if type(remaining_ms) is int and remaining_ms >= 0:
         remaining_seconds = (remaining_ms + 999) // 1000
         remaining_text = f"{remaining_seconds // 60:02}:{remaining_seconds % 60:02}"
     else:
-        remaining_text = "시간 확인 중"
+        # 값을 아직 계산할 수 없는 순간에도 다이얼로그의 시간 영역에는 설명 문구 대신
+        # 시간 형식을 유지해 화면이 흔들리거나 긴 텍스트가 노출되지 않게 한다.
+        remaining_text = "--:--"
 
     @st.dialog("저장 / 게임 삭제" if exiting else "게임 저장", on_dismiss=_dismiss_exit_dialog)
     def save_dialog() -> None:
@@ -1967,8 +1990,11 @@ def _render_save_confirmation_dialog(*, game_id: str, snapshot: dict[str, Any], 
             phase_col.markdown(f"**{phase_label}**")
             phase_col.caption(cycle)
             time_col.metric("남은 시간", remaining_text)
-        st.info("게임을 저장하고 나가면 나중에 이어서 플레이할 수 있습니다.")
-        st.caption("마지막으로 확정된 진행 상황을 저장합니다. 작성 중인 입력이나 처리 중인 응답은 포함되지 않을 수 있습니다.")
+        if exiting:
+            st.caption(
+                "저장하고 나가면 나중에 이어서 플레이할 수 있으며, "
+                "게임 삭제를 선택하면 이 게임의 진행 상황과 기록이 삭제되며 복구할 수 없습니다."
+            )
         locked = bool(st.session_state.get("game.sync_hidden")) or any(
             isinstance(pending := st.session_state.get(key), dict)
             and pending.get("game_id") == game_id and pending.get("status") in SHELL_LOCKED
@@ -1976,7 +2002,6 @@ def _render_save_confirmation_dialog(*, game_id: str, snapshot: dict[str, Any], 
         )
         delete_pending = _has_pending_deletion(game_id)
         if exiting:
-            st.warning("게임 삭제를 선택하면 이 게임의 진행 상황과 기록이 삭제되며 복구할 수 없습니다.")
             if st.session_state.get("game.delete_error"):
                 st.error("삭제 결과를 확인하지 못했습니다. 같은 삭제 요청 다시 확인을 눌러 주세요.")
         save_col, continue_col = st.columns(2)
