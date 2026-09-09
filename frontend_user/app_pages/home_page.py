@@ -91,13 +91,8 @@ def render(client: ApiClient) -> None:
     """게임 목록의 loading·empty·error·success 상태를 홈 레이아웃 안에서 표시한다."""
 
     st.markdown(HOME_CSS, unsafe_allow_html=True)
-    def render_header_actions() -> None:
-        if st.button("피드백", key="home.feedback", width="stretch"):
-            _invalidate_games()
-            st.session_state["navigation.page"] = "feedback"
-            st.rerun()
-
-    render_application_header(title="AI 마피아", action_renderer=render_header_actions)
+    # 홈 헤더에는 별도 동작 버튼을 표시하지 않지만 공통 헤더의 필수 콜백 계약은 유지한다.
+    render_application_header(title="AI 마피아", action_renderer=lambda: None)
     hero_copy, hero_art = st.columns([.9, 1.1], gap="large")
     with hero_copy:
         st.markdown(
@@ -140,9 +135,7 @@ def render(client: ApiClient) -> None:
         st.session_state["navigation.page"] = "create"
         st.rerun()
 
-    home_tab, custom_role_tab, rules_tab = st.tabs(
-        ["홈", "직업 생성 커스텀", "게임 규칙"]
-    )
+    home_tab, rules_tab = st.tabs(["홈", "게임 규칙"])
     with home_tab:
         # UUID를 확인하기 전에는 다른 게임의 시나리오·진행 상태를 노출하지 않는다.
         # UUID가 준비된 뒤에만 목록 API cache를 화면에 사용한다.
@@ -186,13 +179,6 @@ def render(client: ApiClient) -> None:
                                 player_info_ready=player_info_ready,
                             )
 
-    with custom_role_tab:
-        st.markdown('<div class="home-section-title">직업 생성 커스텀</div>', unsafe_allow_html=True)
-        with st.container(border=True):
-            st.subheader("나만의 직업 설정")
-            st.info("커스텀 직업은 백엔드 연결 후 사용할 수 있어요.")
-            st.caption("새 게임 설정에서 커스텀 직업 사용 여부를 확인할 수 있습니다.")
-
     with rules_tab:
         st.markdown('<div class="home-section-title">AI 마피아 게임 규칙</div>', unsafe_allow_html=True)
         with st.container(border=True):
@@ -234,8 +220,9 @@ def render(client: ApiClient) -> None:
             st.divider()
             st.markdown("### 직업 커스텀")
             st.markdown(
-                "- 홈 화면에서 원하는 직업의 역할을 선택해 새로운 직업을 커스텀할 수 있습니다.\n"
-                "- 새 게임 설정에서 커스텀 직업 사용 여부를 선택할 수 있습니다."
+                "- 새 게임 설정에서 `커스텀 직업` 모드를 선택할 수 있습니다.\n"
+                "- 능력은 최대 3개까지 선택할 수 있습니다.\n"
+                "- 설정한 커스텀 역할은 사용자에게 배정됩니다."
             )
 
 
