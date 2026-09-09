@@ -31,9 +31,12 @@ AI/MCP ────────┘        내부 Agent API ───────
 | `X-Request-Id` | 요청 추적 |
 | `Idempotency-Key` | 변경 요청 중복 방지 |
 | `Last-Event-ID` | SSE 재연결 cursor |
-| 내부 capability header | Agent/MCP 작업 범위 증명 |
+| 내부 capability header | 운영 보강 시 Agent/MCP 작업 범위 증명 |
 
-header 값은 신뢰하지 않고 UUID 형식·허용 범위·만료 상태를 검증한다.
+header 값은 신뢰하지 않고 UUID 형식·허용 범위·만료 상태를 검증한다. 현재
+내부 MCP API는 capability header를 실제로 받지 않으며, game·actor·phase·window·
+state version binding과 Agent Job 상태를 Backend에서 검증한다. capability header
+전달·검증은 운영 보강 범위다.
 
 ### 3.2 공통 응답
 
@@ -108,12 +111,15 @@ version을 binding으로 포함한다. 응답은 public·me·turn·persona scope
 제출 payload는 action type, target, message, proposal id와 상태 binding을 포함한다.
 Backend는 다음을 다시 검증한다.
 
-- capability 유효성
+- 내부 요청의 game·actor·window binding
 - actor와 game의 관계
 - 현재 phase와 window
 - 허용 action과 target
 - expected state version
 - 중복 proposal
+
+Agent job capability의 발급·수명·폐기는 Agent 실행 경계에서 관리하며, API 설계서의
+핵심 계약은 capability 원문이 아니라 요청 binding과 Backend 최종 검증이다.
 
 검증 성공 뒤에만 Game Engine이 적용하고 receipt를 반환한다. 내부 API의 성공은
 “모델이 선택했다”가 아니라 “Backend가 확정 적용했다”는 의미로 정의한다.

@@ -9,13 +9,26 @@
 제품·API·DB·MCP·화면 계약과 저장소 디렉터리 구조를 입력으로 삼아, 현재 코드의
 파일·클래스·함수·호출 관계를 역추적한 구현 순서를 정의한다.
 
-상세 계약은 다음 설계서를 참조한다.
+상세 계약은 다음 arrangement 설계서를 참조한다.
 
-- [공통 제품·시나리오 설계](개발상세플랜/AI_MAFIA_MASTER_PLAN.md)
-- [API 계약](개발상세플랜/AI_MAFIA_API_SPEC.md)
-- [DB·Redis 설계](개발상세플랜/AI_MAFIA_DB_DESIGN.md)
-- [MCP Server 설계](개발상세플랜/AI_MAFIA_MCP_SERVER_DESIGN.md)
-- [화면 흐름 설계](개발상세플랜/AI_MAFIA_SCREEN_FLOW.md)
+- [전체 시스템 설계](AI_MAFIA_SYSTEM_ARCHITECTURE_DESIGN.md)
+- [DB·Redis 설계](01_DB_REDIS_DESIGN.md)
+- [API 계약](02_API_DESIGN.md)
+- [MCP Server 설계](03_MCP_DESIGN.md)
+- [게임 엔진·시나리오 설계](04_GAME_ENGINE_SCENARIO_DESIGN.md)
+- [화면 설계](05_SCREEN_DESIGN.md)
+- [에이전트 아키텍처 설계](06_AGENT_ARCHITECTURE_DESIGN.md)
+
+영역별 세부 구현 계획은 다음 문서에서 관리한다. 세부 계획서는 이 상위 계획서의
+IP 작업과 해당 설계서를 연결하며, 각 문서의 범위를 넘어서는 작업을 정의하지
+않는다.
+
+- [DB·Redis 세부 구현 계획](implementation/01_DB_REDIS_IMPLEMENTATION_PLAN.md)
+- [API 세부 구현 계획](implementation/02_API_IMPLEMENTATION_PLAN.md)
+- [MCP 세부 구현 계획](implementation/03_MCP_IMPLEMENTATION_PLAN.md)
+- [게임 엔진 세부 구현 계획](implementation/04_GAME_ENGINE_IMPLEMENTATION_PLAN.md)
+- [화면 세부 구현 계획](implementation/05_SCREEN_IMPLEMENTATION_PLAN.md)
+- [Agent 세부 구현 계획](implementation/06_AGENT_IMPLEMENTATION_PLAN.md)
 
 설계서의 상세 schema를 이 문서에 복사하지 않는다. 대신 각 작업에서 실제로
 사용하는 필드, 함수, 호출 순서, 오류와 테스트를 명시한다.
@@ -86,7 +99,7 @@ Agent Workflow를 actor별 Context와 함께 반복 실행하는 구조로 구�
 | 7 | IP-07 | 공개 Backend API | `backend/app/routers/`, `main.py` | health·game·sync·feedback·admin API | IP-05, IP-06 |
 | 8 | IP-08 | Agent Context·계약 | `backend/app/agent/`, `llm_provider/schemas.py` | scope projection·proposal DTO·정책 | IP-04, IP-05 |
 | 9 | IP-09 | Provider·Agent 실행 | `backend/app/llm_provider/`, `agent/orchestrator.py` | 모델 호출·교정·fallback·job 완료 | IP-03, IP-08 |
-| 10 | IP-10 | MCP runtime | `mcp_server/mafia_game/` | session·Resource·Prompt·Tool·HTTP adapter | IP-07, IP-08 |
+| 10 | IP-10 | MCP runtime | `mcp_server/mafia_game/` | FastMCP SDK session·Resource·Prompt·Tool·HTTP adapter | IP-07, IP-08 |
 | 11 | IP-11 | AI worker·관찰성 | `ai_progress_worker.py`, `agent/activity.py` | 열린 window 실행·복구·trace | IP-05, IP-09, IP-10 |
 | 12 | IP-12 | 사용자·관리자 Front | `frontend_user/`, `frontend_admin/` | 화면·API client·sync·상태 표시 | IP-07, IP-11 |
 | 13 | IP-13 | 통합·운영 검증 | `backend/tests/`, `frontend_*/tests/`, `tests/`, `scripts/` | 회귀·장애·DB·브라우저 검증 | IP-01~12 |
@@ -122,7 +135,7 @@ command가 schema 단계에서 거부된다.
 
 **구현 순서:** 사용자·scenario·player·fact → game·window·submission·event →
 receipt·snapshot·agent job·capability → feedback·audit·knowledge·speech analysis
-→ custom role·ability additive migration → version 확인·rollback helper.
+→ custom role·ability additive migration → version 확인·재실행 검증.
 
 **계약:** PostgreSQL이 확정 원본이다. migration 계정과 runtime 계정을 구분하고,
 기존 migration을 수정하지 않고 additive migration을 추가한다.
@@ -158,10 +171,10 @@ query가 repository 단위 테스트를 통과한다.
 **대상 파일:** `backend/app/game_engine/engine.py`, `commands.py`, `errors.py`,
 `fallback.py`, `replay.py`, `rng.py`, `phases/`, `rules/` 전체.
 
-**핵심 계약:** `GameEngine.apply(state, command)`이 transition result를 반환한다.
-phase 모듈은 유효 command만 받아 새 상태와 event 정보를 반환한다. fallback은
-허용 후보에서만 deterministic 선택하고, RNG는 같은 seed·후보 순서에서 같은
-결과를 반환한다.
+**핵심 계약:** Application Service가 command type에 맞는 Game Engine의 phase별
+명령 처리를 호출하고, Engine은 유효성 검증 뒤 상태와 event 정보를 변경한다.
+fallback은 허용 후보에서만 deterministic 선택하고, RNG는 같은 seed·후보 순서에서
+같은 결과를 반환한다.
 
 **구현 순서:** 역할·생존자 → phase 전이 → 토론 → 밤 행동 → 투표·재투표 →
 최종 지목 → 승패 → 저장·재개 replay.
@@ -223,7 +236,8 @@ agent context/action.
 
 **계약:** `X-User-Id`, `X-Request-Id`, `Idempotency-Key`, `Last-Event-ID`를
 형식 검증한다. 공개 응답에서 private role·secret·AI 내부 추론을 제거한다.
-내부 API는 capability와 요청 서명을 검증한다.
+내부 API는 game·actor·window·state binding과 Backend 내부 검증을 적용한다. Agent
+job capability의 발급·수명·폐기는 Agent 실행 경계에서 관리한다.
 
 **완료 기준:** success/reject/idempotency 응답, CORS/SSE header, 소유권·allowlist·
 redaction 테스트가 통과한다.
@@ -281,13 +295,17 @@ proposal 복구가 재현되고, 실제 모델 호출 없이 회귀 테스트가
 `api/resources/`, `api/tools/`, `api/prompts/`, `integrations/engine_http.py`,
 `services/resources.py`, `core/audit.py`, `ports/`, `schemas/`, `domain/`.
 
-**계약:** session initialize 시 capability와 binding을 검증하고 Resource·Prompt·
-Tool 요청은 Backend 내부 HTTP adapter로 전달한다. `submit_action` 결과는
+**계약:** FastMCP SDK session과 요청 binding을 확인하고 Resource·Prompt·Tool 요청은
+Backend 내부 HTTP adapter로 전달한다. Agent job capability의 수명 관리는 Backend
+Agent 실행 경계에서 담당하며, 현재 MCP wire 요청에는 capability header를 전달하지
+않는다. `submit_action` 결과는
 `accepted`, `replayed`, typed receipt를 검증한 뒤 반환한다. Tool 입력으로 권한을
 확대하지 않는다.
 
-**완료 기준:** 정상 session 왕복, 만료·재사용 capability 거부, scope 격리,
-Resource schema, Tool phase/target 검증, dependency payload redaction을 확인한다.
+**완료 기준:** 정상 FastMCP session 왕복, 요청 binding·scope 격리, Resource schema,
+Tool phase/target 검증, dependency payload redaction을 확인한다. Agent capability의
+만료·재사용 검증은 Agent 실행 경계의 별도 검증 항목으로 관리하며, MCP session-level
+capability 인증은 운영 보강 범위로 구분한다.
 
 ### IP-11. AI worker와 관찰 가능성
 
@@ -412,19 +430,21 @@ Team DB 검증은 migration·seed·DB/Redis health를 먼저 확인하고 테스
 
 | 작업 ID | 구현 상태 | focused test | 통합 검증 | 남은 문제 | 근거 |
 |---|---|---|---|---|---|
-| IP-01 | 계획 | - | - | - | schema 테스트 |
-| IP-02 | 계획 | - | - | - | migration 결과 |
-| IP-03 | 계획 | - | - | - | repository 테스트 |
-| IP-04 | 계획 | - | - | - | Engine 테스트 |
-| IP-05 | 계획 | - | - | - | API/DB 결과 |
-| IP-06 | 계획 | - | - | - | Redis 결과 |
-| IP-07 | 계획 | - | - | - | API 테스트 |
-| IP-08 | 계획 | - | - | - | projection/proposal 테스트 |
-| IP-09 | 계획 | - | - | - | Agent 테스트 |
-| IP-10 | 계획 | - | - | - | MCP 왕복 결과 |
-| IP-11 | 계획 | - | - | - | activity/worker 결과 |
-| IP-12 | 계획 | - | - | - | Front 테스트 |
-| IP-13 | 계획 | - | - | - | E2E·회귀 결과 |
+| IP-01 | 구현 | 관련 schema 테스트 | 미확인 | 실행 결과 갱신 필요 | `backend/app/core/`, `models/`, `schemas/` |
+| IP-02 | 구현 | migration 테스트 | 미확인 | 전체 rollback은 제공하지 않음 | `backend/migrations/`, `infrastructure/migrations.py` |
+| IP-03 | 구현 | repository 테스트 | 미확인 | 실행 결과 갱신 필요 | `backend/app/repositories/` |
+| IP-04 | 구현 | Engine 테스트 | 미확인 | 실행 결과 갱신 필요 | `backend/app/game_engine/` |
+| IP-05 | 구현 | game service 테스트 | 미확인 | 실행 결과 갱신 필요 | `backend/app/services/game/` |
+| IP-06 | 구현 | infrastructure 테스트 | 미확인 | 실행 결과 갱신 필요 | `backend/app/infrastructure/redis/` |
+| IP-07 | 구현 | Backend API 테스트 | 미확인 | 실행 결과 갱신 필요 | `backend/app/routers/` |
+| IP-08 | 구현 | Context·proposal 테스트 | 미확인 | 별도 Agent 설계서는 추후 작성 | `backend/app/agent/`, `llm_provider/` |
+| IP-09 | 구현 | Agent Manager 테스트 | 미확인 | 실행 결과 갱신 필요 | `backend/app/agent/orchestrator.py` |
+| IP-10 | 구현 | MCP 테스트 | 미확인 | 공개 interface와 내부 처리 구분 유지 | `mcp_server/mafia_game/` |
+| IP-11 | 구현 | worker·activity 테스트 | 미확인 | 실행 결과 갱신 필요 | `ai_progress_worker.py`, `agent/activity.py` |
+| IP-12 | 구현 | User/Admin Front 테스트 | 미확인 | 실행 결과 갱신 필요 | `frontend_user/`, `frontend_admin/` |
+| IP-13 | focused 검증 | 테스트 파일 존재 | 통합 실행 필요 | Team DB·브라우저 결과 갱신 필요 | `backend/tests/`, `frontend_*/tests/` |
 
-이 표의 상태는 코드가 존재한다는 이유만으로 `완료`로 바꾸지 않는다. 구현·focused
-검증·통합 검증·E2E 검증을 각각 확인한 뒤 갱신한다.
+이 표는 현재 코드와 테스트 파일의 정적 확인을 반영한 상태다. `구현`은 구현
+구성요소가 존재한다는 뜻이며 테스트 통과를 의미하지 않는다. 테스트 명령과 실제
+DB·MCP·브라우저 왕복 결과를 확인한 뒤 `focused 검증`, `통합 검증`, `완료`로
+단계적으로 갱신한다.

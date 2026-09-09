@@ -27,7 +27,11 @@
 
 현재 구현을 빈 디렉터리에서 구축하기 위한 통합 설계 문서는
 [arrangement 전체 시스템 설계서](docs/arrangement/AI_MAFIA_SYSTEM_ARCHITECTURE_DESIGN.md)와
-그 하위 DB·Redis·API·MCP·게임 엔진·화면 설계서에서 확인할 수 있습니다.
+그 하위 DB·Redis·API·MCP·게임 엔진·화면·에이전트 아키텍처 설계서에서 확인할 수 있습니다.
+영역별 구현 순서와 검증 기준은 [세부 구현 계획서 목록](docs/arrangement/AI_MAFIA_IMPLEMENTATION_PLAN.md)을
+참조하며, 문제 정의·사용자 가치·MVP 범위는 [프로젝트 기획서](docs/arrangement/00_AI_MAFIA_PROJECT_PROPOSAL.md)에,
+Agent의 실행·검증 결과와 한계는 [에이전트 시험 결과 보고서](docs/arrangement/07_AGENT_TEST_RESULT_REPORT.md)에,
+계획에서 실제 구현·오류 개선·통합 검증까지의 흐름은 [프로젝트 수행과정 보고서](docs/arrangement/08_PROJECT_EXECUTION_REPORT.md)에 정리합니다.
 
 <a id="agents"></a>
 
@@ -411,6 +415,7 @@ Front는 raw MCP Tool을 직접 호출하지 않습니다. 세 밤 능력은 log
 │   ├── tests/
 │   └── mcp_2/                        # 후속 MCP 독립 예약 패키지
 ├── docs/
+│   ├── arrangement/                  # 프로젝트 기획·Agent 평가·현재 구현 기준 시스템·영역별 설계·세부 구현 계획
 │   ├── diagrams/                     # README 시스템 관계도 원본·HTML·SVG·검증 근거
 │   ├── fix/                          # 날짜별 변경·검증 기록 모음
 │   ├── AI_MAFIA_GAME_TEST_GAP_REPORT.md # 게임 테스트 관점 미구현·미연결·규칙 차이 점검표

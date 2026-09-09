@@ -14,6 +14,10 @@ LLM Provider, MCP Server, PostgreSQL, Redis의 관계를 정의하며, 구현에
 현재 코드에 구현된 구조를 기준으로 작성한다. StateGraph runtime, 지속 요약
 memory, 자동 학습처럼 구현되지 않은 기능은 현재 아키텍처로 표현하지 않는다.
 
+전체 시스템 설계서는 에이전트가 시스템 안에서 연결되는 위치와 데이터 경계만
+정의한다. 에이전트 내부의 판단 상태, 세부 Tool 선택 전략과 평가 방법은 별도의
+에이전트 아키텍처 설계서 작성 범위로 남긴다.
+
 ## 0. 하위 설계서
 
 이 문서는 전체 구조와 컴포넌트 간 경계를 정의하고, 다음 하위 설계서가 각 영역의
@@ -25,6 +29,7 @@ memory, 자동 학습처럼 구현되지 않은 기능은 현재 아키텍처로
 - [MCP 설계서](03_MCP_DESIGN.md)
 - [게임 엔진·시나리오 설계서](04_GAME_ENGINE_SCENARIO_DESIGN.md)
 - [화면 설계서](05_SCREEN_DESIGN.md)
+- [에이전트 아키텍처 설계서](06_AGENT_ARCHITECTURE_DESIGN.md)
 
 ## 2. 시스템 목표와 범위
 
@@ -236,6 +241,16 @@ stateDiagram-v2
 게임 phase 전이는 Frontend나 LLM이 계산하지 않는다. Backend Game Engine이 현재
 상태, command, 생존자, deadline, 승리 조건을 검증하고 결정한다.
 
+주요 전이 조건은 다음과 같다.
+
+- 첫날 `DAY_DISCUSSION` 종료 → `NIGHT_ACTION`
+- 둘째 날 이후 `DAY_DISCUSSION` 종료 → `DAY_VOTE`
+- `DAY_VOTE` 동률 → `REVOTE`
+- 일반 투표 해소 후 승패가 없으면 → `NIGHT_ACTION`
+- 다섯 번째 밤 이후 → `FINAL_DISCUSSION`
+- `FINAL_DISCUSSION` 종료 → `FINAL_ACCUSATION`
+- 최종 지목 해소 후 → `COMPLETED`
+
 ### 4.2 AI 실행 상태 그래프
 
 ```mermaid
@@ -318,7 +333,7 @@ sequenceDiagram
 | `Idempotency-Key` | 변경 요청 중복 방지 |
 | `X-Request-Id` | 요청 추적 |
 | `Last-Event-ID` | SSE 재연결 cursor |
-| capability | 내부 Agent/MCP 권한 증명 |
+| capability | Agent 실행 경계에서 Job 범위를 제한하는 권한 정보; 현재 MCP wire header로 전달하지 않음 |
 
 ### 5.2 공개·내부 인터페이스
 
@@ -337,9 +352,12 @@ flowchart LR
 ```
 
 공개 API는 게임 생성·조회·command·sync/SSE·feedback·관리자 조회를 제공한다.
-내부 API는 Agent Context와 action 제출을 제공하며 capability와 내부 요청 인증을
-적용한다. 상세 field schema는 API 설계서가 소유하고, 구현 계획서는 파일별 사용
-필드를 관리한다.
+내부 API는 Agent Context와 action 제출을 제공하며 game·actor·window·state binding과
+Backend의 내부 검증을 적용한다. Agent job capability의 발급·폐기는 Agent 실행
+경계에서 담당하지만, 현재 최소 MCP wire 경로에는 capability header를 전달하지
+않는다. capability를 MCP session 인증까지 확장하는 것은 운영 보강 범위다.
+상세 field schema는 API 설계서가 소유하고, 구현 계획서는 파일별 사용 필드를
+관리한다.
 
 ### 5.3 Agent·MCP 계약
 
@@ -449,7 +467,8 @@ flowchart TD
 - User Front는 `X-User-Id`와 Backend 소유권 검증을 사용한다.
 - Agent Context는 public/me/turn/persona scope를 분리한다.
 - 모델이 반환한 actor, 권한, state version으로 서버 binding을 변경하지 않는다.
-- MCP capability는 내부 요청 범위와 수명을 제한한다.
+- Agent job capability는 Agent 실행 범위와 수명을 제한하며, MCP는 요청 binding과
+  Backend 검증을 통과한 범위만 전달한다.
 - MCP runtime은 DB·Redis에 직접 접근하지 않는다.
 - public 응답·activity·cache에 private role, secret, capability 원문을 넣지 않는다.
 - 모델의 내부 추론 전문과 raw prompt를 저장·공개하지 않는다.
