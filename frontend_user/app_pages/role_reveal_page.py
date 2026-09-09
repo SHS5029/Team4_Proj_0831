@@ -16,7 +16,9 @@ from frontend_user.app_pages.game_page import (
 )
 from frontend_user.components.action_panel import render_status_bar
 from frontend_user.components.theme import render_application_header
-from frontend_user.core.view_models import own_private_view, public_players, custom_role_description
+from frontend_user.core.view_models import (
+    own_private_view, private_fact_first_person, public_players, custom_role_description,
+)
 
 ROLE_REVEAL_CSS = """
 <style>
@@ -199,10 +201,14 @@ def render(snapshot: dict[str, Any]) -> None:
         st.info(role_text)
         with st.container(key="role-alibi", border=True):
             st.markdown("#### ◷ 나의 알리바이")
-            st.write(str(me.get("alibi", "없음")))
+            st.write(private_fact_first_person(
+                me.get("alibi"), me=me, players=public_players(snapshot),
+            ))
         with st.container(key="role-observation", border=True):
             st.markdown("#### ◉ 내가 본 것")
-            st.write(str(me.get("observation", "없음")))
+            st.write(private_fact_first_person(
+                me.get("observation"), me=me, players=public_players(snapshot),
+            ))
         st.markdown(
             '<div class="role-private-note">🔒 &nbsp; 이 정보는 나에게만 보여요</div>',
             unsafe_allow_html=True,

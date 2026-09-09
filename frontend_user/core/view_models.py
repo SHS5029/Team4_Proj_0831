@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -35,6 +36,49 @@ def own_private_view(snapshot: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(me, dict):
         return {}
     return {key: me.get(key) for key in ("player_id", "role", "alive", "spectator", "alibi", "observation", "private_events", "role_name", "faction", "ability_ids", "ability_options") if key in me}
+
+
+def private_fact_first_person(
+    text: Any, *, me: dict[str, Any], players: list[dict[str, Any]],
+) -> str:
+    """본인 전용 사실 문장의 좌석 주어를 사용자 시점으로 바꾼다.
+
+    Backend가 저장한 개인 원문은 ``좌석 N은`` 또는 ``플레이어 N은``처럼
+    제3자 주어로 시작할 수 있다. Front는 본인 player의 좌석·표시 이름과
+    일치하는 문장만 ``나는``으로 바꾸고, 다른 사람을 가리키는 내용이나
+    예상하지 못한 문장은 원문을 그대로 유지한다.
+    """
+
+    value = str(text).strip() if text is not None else ""
+    if not value:
+        return "없음"
+    player_id = me.get("player_id")
+    own_player = next(
+        (
+            player for player in players
+            if isinstance(player, dict) and player.get("player_id") == player_id
+        ),
+        {},
+    )
+    seat = own_player.get("seat")
+    subjects = []
+    if type(seat) is int and seat > 0:
+        subjects.extend((f"좌석 {seat}", f"플레이어 {seat}"))
+    display_name = own_player.get("display_name")
+    if isinstance(display_name, str) and display_name.strip():
+        subjects.append(display_name.strip())
+    for subject in subjects:
+        match = re.match(rf"^{re.escape(subject)}\s*(?:은|는|이|가)\s*", value)
+        if match:
+            first_person = f"나는 {value[match.end():]}"
+            # 알리바이 원문이 제3자의 진술 형식으로 저장된 경우에도 사용자에게
+            # 직접 경험을 기록한 문장으로 읽히도록 보고형 어미를 제거한다.
+            return re.sub(
+                r"고\s*(?:말했다|전했다|진술했다|설명했다)([.!?])?$",
+                r"\1",
+                first_person,
+            )
+    return value
 
 
 def public_timeline(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
