@@ -25,6 +25,10 @@
 | AI별로 입력을 새로 구성하고 개별 요청 | MCP로 허용된 문맥 조회와 행동 위임 | Backend가 유효성·마감·승패 확정 |
 | 다른 AI의 비공개 컨텍스트 공유 없음 | 모델 출력은 아직 확정되지 않은 제안 | PostgreSQL은 원본, Redis는 공개 이력 캐시 |
 
+현재 구현을 빈 디렉터리에서 구축하기 위한 통합 설계 문서는
+[arrangement 전체 시스템 설계서](docs/arrangement/AI_MAFIA_SYSTEM_ARCHITECTURE_DESIGN.md)와
+그 하위 DB·Redis·API·MCP·게임 엔진·화면 설계서에서 확인할 수 있습니다.
+
 <a id="agents"></a>
 
 ## 01 · 공개 대화는 함께, 의사결정은 각자
