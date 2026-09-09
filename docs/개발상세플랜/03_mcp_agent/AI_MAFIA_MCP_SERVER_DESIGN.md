@@ -486,6 +486,26 @@ stack은 어떤 매핑에서도 agent에게 전달하지 않는다.
 
 ## 12. 구조화 로그와 redaction
 
+### 2026-09-09 현재 FastMCP 진단 로그 보완 (WU-M5)
+
+사용자가 요청한 단일 WU-M5는 현재 실행 중인 FastMCP의 HTTP 요청과 Backend
+콜백 진단을 기존 `main.py`, `integrations/engine_http.py` 안에 추가한다. 새 디렉터리,
+DB 접근·schema, Resource·Tool 계약이나 fallback 판정은 추가하지 않는다. 이 현재
+프로파일에서는 stderr 수집을 명시적으로 사용하며 기존 실행 스크립트가 출력 파일을
+선택한다. 아래 과거 선행 구현의 기본 sink 폐기 설명보다 이 절을 우선한다.
+
+API 9.4의 여섯 application field만 기록하고 UTC·PID는 표준 process metadata로
+덧붙인다. HTTP 요청마다 새 UUID를 만들어 SDK가 전달한 해당 요청의 ASGI scope에서
+복원하므로 장수 session task가 initialize의 추적 ID를 재사용하지 않는다. MCP HTTP
+상태와 JSON-RPC 오류, Backend callback의 scope별 성공·HTTP 실패·연결/읽기/쓰기/풀
+timeout·취소를 서로 구분한다. 요청·응답 body는 제한된 크기 안에서 operation과
+오류 유무를 분류할 때만 사용하고 출력하거나 요청 종료 후 보관하지 않는다.
+표준 SDK·HTTP·Uvicorn logger의 원문은 출력 전에 고정 분류로 교체한다. 진단 출력
+실패는 게임 결과나 예외 전파를 변경하지 않는다. 검증은 합성 HTTP/ASGI 성공·오류·
+취소·동시 요청 및 민감 marker 비노출을 포함하며, 재실행 후 팀 DB의 실제 테스트
+게임과 로그의 시각·요청 수를 대조한다. 다른 MCP로 향하거나 이 MCP에 도달하지
+않은 요청의 실제 endpoint·실행 위치는 이 서버 로그만으로 판정하지 않는다.
+
 API 9.4절의 application allowlist만 사용한다. 적용 범위는 initialize, consume,
 Resource, Tool, Engine adapter, teardown의 성공·거부·예외 전체다.
 

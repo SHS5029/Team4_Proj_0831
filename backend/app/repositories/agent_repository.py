@@ -227,10 +227,11 @@ class PostgresAgentRepository:
             if old_status in {"RESERVED", "SUCCEEDED", "FALLBACK"} and old_expires > current:
                 return None
             if old_version != state_version:
-                if job_kind != "VOTE":
+                if job_kind not in {"SPEECH", "VOTE"}:
                     return None
-                # 저장·재개 등으로 판단 기준이 달라진 투표는 만료된 이전 결과를
-                # 옮기지 않는다. 현재 binding 검증 후 새 token으로 처음부터 판단한다.
+                # 저장·재개로 버전이 바뀐 발언·투표는 현재 binding과 lease 회수
+                # 조건을 통과했어도 과거 판단 결과를 재사용하지 않는다. 새 token과
+                # 현재 버전으로 예약해 이전 worker의 늦은 완료를 계속 거부한다.
                 cursor.execute(
                     """
                     UPDATE agent_jobs SET reserved_state_version = %s, status = 'RESERVED',

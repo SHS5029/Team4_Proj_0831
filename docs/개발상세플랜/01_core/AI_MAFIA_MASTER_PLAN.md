@@ -248,6 +248,15 @@ DB schema와 공개 API를 변경하지 않고 팀 DB 세션 임시 테이블에
 
 ### 1.4 계약 단순화
 
+2026-09-09 단일 PC 실게임 재검증의 WU-B6는 저장·재개 후 AI 발언 예약의 정체를
+수정한다. 기존 `backend/app/repositories/agent_repository.py`에서 현재 게임·열린
+발언 window·생존 AI·미제출 binding과 이전 lease 만료를 확인한 경우, 버전이 바뀐
+SPEECH 작업도 새 token·현재 버전으로 다시 예약한다. 이전 proposal·failure·완료
+시각은 초기화하고 과거 결과를 새 버전으로 옮기지 않는다. 유효 lease의 중복 거부,
+이전 token의 완료 거부와 닫힌 window·저장 상태 거부는 유지한다. 공개 API·DB
+schema·MCP runtime·파일 구조는 변경하지 않으며, 코디네이터가 실게임과 README를
+담당하고 Backend 작업자는 기존 예약 파일과 임시 합성 검증만 담당한다.
+
 2026-09-08 반복 대사 실게임 점검의 단일 WU-B6는 Backend의 발언 장애 복구를
 보완한다. 첫날의 짧은 기본 SPEAK 계약은 유지하되 모든 actor가 동일한 주장을
 반복하지 않도록 공개 대화와 예약 식별자를 사용해 사실을 단정하지 않는 질문을
@@ -763,6 +772,13 @@ WU-M5의 MCP 내부 로그 경계는 `mcp_server/mafia_game/ports/audit.py`,
 Tool 경로는 WU-M4 계약 정리 뒤 연결한다. 운영 sink와 보존 정책을 결정하지 않은
 상태에서는 주입된 sink에만 허용 metadata를 전달하며 기본값은 기록 폐기다.
 이 선행 구현은 OPEN-04 해소나 WU-M5 전체 완료를 뜻하지 않는다.
+
+2026-09-09 사용자의 MCP 로깅·재실행 요청은 현재 FastMCP 프로파일의 단일 WU-M5
+보완이다. 기존 `main.py`와 `integrations/engine_http.py`에서 HTTP·Backend 콜백을
+요청별 UUID와 API 9.4의 허용 필드로 계측하고 stderr에 기록한다. UTC·PID만 표준
+process metadata로 추가하며 게임 식별자·payload·header·예외 원문은 기록하지 않는다.
+관련 정본과 README를 갱신하고 합성 로그 검증 뒤 실제 테스트 게임으로 관측한다.
+Backend·Frontend 코드, DB·공개 API·게임 규칙은 변경하지 않는다.
 
 ## 9. 체크포인트
 

@@ -211,6 +211,9 @@ Backend 권위 deadline
 - 투표는 후보별 집계만 공개하고 밤 사망 역할은 숨기며 처형 역할만 공개
 - AI GM은 공개 확정 이벤트만 받고 전체 비공개 상태는 Backend만 보유
 - 저장한 게임은 이어서 재개할 수 있고, 사용자는 진행·저장 게임을 수동으로 삭제할 수 있습니다
+- 저장·재개로 상태 버전이 바뀐 AI 발언은 기존 lease가 만료되고 같은 발언 창이 열려
+  있으며 미제출인 경우 새 예약으로 다시 생성합니다. 이전 결과는 재사용하지 않고,
+  유효 lease의 중복 예약과 이전 worker의 늦은 완료는 계속 거부합니다
 - `IN_PROGRESS` 게임은 마지막 사용자 command 뒤 15분간 새 사용자 command가 없으면
 중앙 worker가 자동 삭제합니다(SAVED·COMPLETED·FAILED는 자동 삭제하지 않음)
 
@@ -425,6 +428,7 @@ pgvector·RAG 확장도 구분했습니다. 팀 DB의 색인 적용 여부는 20
 │   ├── components/                   # identity bridge·테마·투표 보조 등 공통 UI
 │   ├── core/                         # identity·session·api_client·sync
 │   ├── assets/                       # 사용자 화면 이미지·맵·결과 배경
+│   ├── tests/, pytest.ini            # 현재 남아 있는 사용자 Front 회귀 테스트
 │   ├── .streamlit/secrets.toml.example
 │   └── README.md
 ├── frontend_admin/
@@ -433,10 +437,6 @@ pgvector·RAG 확장도 구분했습니다. 팀 DB의 색인 적용 여부는 20
 │   ├── components/                   # 관리자 UI·브라우저 연동 컴포넌트
 │   ├── core/                         # 관리자 API client·식별·응답 모델
 │   └── README.md
-├── remotion/
-│   ├── package.json                  # Remotion 영상 작업공간과 npm 명령
-│   ├── src/                          # 영상 Composition·React 마크업
-│   └── README.md                     # Remotion 전용 실행 안내
 ├── mcp_server/
 │   ├── pyproject.toml, uv.lock       # Python 3.12·MCP SDK 1.29.1 독립 실행 환경
 │   └── mafia_game/
@@ -470,11 +470,12 @@ pgvector·RAG 확장도 구분했습니다. 팀 DB의 색인 적용 여부는 20
 도식 본문은 한국어이며 Archify의 고정 뷰어 UI와 HTML 언어 표시는 영어로 남습니다.
 생성물의 검증·바이트 식별 정보는 [도식 검증 기록](docs/diagrams/validation.md)에 보존합니다.
 
-2026-09-09 정리에서 네 컴포넌트의 테스트 소스와 캐시, 비어 있는 디렉터리·`__init__.py`,
+2026-09-09 정리에서 테스트 소스와 캐시, 비어 있는 디렉터리·`__init__.py`,
 참조되지 않던 Backend Agent/MCP 예약 모듈, 실행 코드가 없던 `mcp_2`, 현재 실행 경로와
 분리된 과거 MCP 계층을 제거했습니다. Python `Protocol`의 `...`와 예외 정리용 `pass`는
 완성된 코드의 일부이므로 유지했습니다. 삭제한 Git 추적 파일은 저장소 이력에서 복구할
-수 있지만, 자동 회귀를 재개하려면 테스트 경로 설정도 함께 복원해야 합니다.
+수 있습니다. 현재 checkout에는 사용자 Front 테스트 11개와 `pytest.ini`가 있으며,
+Backend·MCP·관리자 Front의 기존 회귀를 재개하려면 해당 테스트와 경로 설정을 복원해야 합니다.
 
 같은 날 개발 문서는 `01_core`부터 `99_archive`까지 역할별로 재분류했습니다. 저장소
 루트에 중복돼 있던 Frontend 기술 설계와 Backend 인계 문서는 변경 내용이 더 많은 최신본을
@@ -491,7 +492,6 @@ pgvector·RAG 확장도 구분했습니다. 팀 DB의 색인 적용 여부는 20
 ### 사전 준비
 
 - Python 3.12 이상
-- Node.js 18 이상 (Remotion·MuAPI CLI)
 - PostgreSQL 서버와 데이터베이스 생성 권한(MCP 섹터 운영 책임)
 - Redis 실행 환경(MCP 섹터 운영 책임)
 - 권장 패키지 관리자: [uv](https://docs.astral.sh/uv/)
@@ -543,37 +543,6 @@ chmod 600 frontend_user/.streamlit/secrets.toml
 
 </details>
 
-<details>
-<summary>Remotion·MuAPI 영상 작업공간</summary>
-
-`remotion/`은 기존 Python 앱과 분리한 Remotion 4 작업공간입니다. 현재는 기본
-`MyComp` Composition만 포함하며, 영상 마크업은 `remotion/src/`에 추가합니다.
-
-MuAPI CLI 인증은 전역 설정에 저장하고, 저장소의 이미지·영상 보조 스크립트가 읽을
-`MUAPI_KEY`는 로컬 `.env`에만 둡니다. 두 위치 모두 실제 키를 README·`.env.example`·Git
-이력에 기록하지 마세요.
-
-```bash
-# MuAPI CLI가 없는 환경에서 설치하는 예시
-uv tool install muapi-cli
-
-# 키를 저장·검증합니다. 키 값은 터미널에서 직접 입력하고 이 저장소에는 기록하지 않습니다.
-muapi auth configure
-muapi auth status
-
-# Remotion 의존성·정적 검증·Studio 미리보기
-npm --prefix remotion install
-npm --prefix remotion run lint
-npm --prefix remotion run dev -- --no-open
-```
-
-MuAPI API 호출 및 영상 렌더링은 별도 명령이므로 기본 설치·lint 검증에서는 실행하지
-않습니다. 생성이 필요한 경우에만 Remotion의 `npx remotion render` 또는 MuAPI 보조
-스크립트를 명시적으로 실행합니다. 자세한 CLI 안내는 [MuAPI 문서](https://muapi.ai/docs/cli)를
-참고하세요.
-
-</details>
-
 <a id="configuration"></a>
 
 <details>
@@ -613,7 +582,8 @@ AI_MAFIA_STORAGE_MODE=team
 - LLM Provider는 `LLM_PROVIDER`로 `dummy`(테스트 전용 고정 PASS)·`local`·`openai`·
 `gemini` 중 하나를 선택하고, `config.py`가 모델·필수 키를 검증합니다.
 - `LLM_TIMEOUT_SECONDS`(기본 30초)는 모든 중앙 Agent의 요청별 상한입니다. 실제
-요청은 창·예약 마감에서 완료·제출 여유 3초를 뺀 잔여 시간보다 길게 실행하지 않습니다.
+호출 제한은 `min(LLM_TIMEOUT_SECONDS, 창·예약 마감까지 남은 시간 - 완료·제출 여유 3초)`이며,
+Provider에 전달하는 timeout과 `asyncio.timeout`으로 함께 적용합니다.
 3초는 여유이며 DB·네트워크 지연에도 제출 완료를 보장하는 값은 아닙니다. 늦은 제출은
 기존 마감·상태 검증으로 거부합니다. OpenAI의 `high` 추론 노력과 출력 한도는 유지합니다.
 - Backend 중앙 AI worker는 `MCP_SERVER_URL`로 FastMCP 서버를 호출합니다.
@@ -622,13 +592,6 @@ AI_MAFIA_STORAGE_MODE=team
 - 공개 발언 분석은 `SPEECH_ANALYSIS_ENABLED=false`가 기본이며, 활성화하려면
 migration 006·008 적용과 [.env.example](.env.example)의 `SPEECH_ANALYSIS_*` 설정이
 필요합니다.
-
-### Remotion·MuAPI
-
-`.env.example`에는 미디어 생성 스크립트용 `MUAPI_KEY` placeholder가 있습니다. 실제 키는
-로컬 `.env`에만 설정하고, MuAPI CLI는 `muapi auth configure`로 전역 인증을 설정합니다.
-Remotion 번들은 현재 MuAPI를 직접 호출하지 않으며, 생성된 이미지·영상이나 이후 추가할
-서버 측 adapter를 Composition 입력으로 사용하는 구조입니다.
 
 | 환경 소비자 | 허용하는 AI 마피아 관련 키 | 주입 금지 |
 | --- | --- | --- |
@@ -704,6 +667,11 @@ seed를 얻도록 012를 추가했습니다. 012는 현재 team DB에서 없는 
 ./run_openai.sh          # Backend·MCP·Front 동시 실행
 ```
 
+`.env`의 `OPENAI_MODEL`을 변경한 뒤에는 실행 중인 Backend를 재기동해야 합니다.
+이 항목이 없으면 현재 코드의 기본 모델인 `gpt-4.1-mini`가 선택됩니다.
+`--check`가 출력하는 실제 선택 모델을 확인하세요. 이 점검은 설정·import 확인이며
+해당 모델의 API 접근 권한이나 실제 응답 성공까지 검증하지는 않습니다.
+
 Windows PowerShell 또는 명령 프롬프트에서는 다음처럼 실행합니다.
 
 ```bat
@@ -750,10 +718,69 @@ BACKEND_API_URL=http://127.0.0.1:8000 ADMIN_DEMO_MODE=false \
 health 주소: 수동 Backend `http://127.0.0.1:8000/health`, 동시 실행
 `http://127.0.0.1:18000/health` → `{"status":"ok"}`.
 
+### Backend 공유 · Frontend는 localhost 유지
+
+같은 네트워크의 다른 PC가 이 Backend를 사용하려면 기존 통합 실행을 종료하고
+아래 세 명령을 각각 실행합니다. Backend만 `0.0.0.0:18000`에서 수신하고,
+MCP와 사용자 Front는 localhost에 유지합니다. `run_openai.sh`의 기본 bind 주소는
+여전히 `127.0.0.1`이므로 통합 스크립트로 다시 시작하면 LAN 공개가 해제됩니다.
+
+```bash
+# MCP를 먼저 기동해 Backend worker가 시작할 때 연결할 수 있게 합니다.
+(cd mcp_server && BACKEND_API_URL=http://127.0.0.1:18000 \
+  MCP_LISTEN_HOST=127.0.0.1 MCP_LISTEN_PORT=18100 .venv/bin/python -m mafia_game)
+
+# 팀 DB·모델 설정은 루트 .env를 사용합니다.
+LLM_PROVIDER=openai MCP_SERVER_URL=http://127.0.0.1:18100 \
+CORS_ALLOWED_ORIGINS=http://127.0.0.1:18501,http://localhost:18501,http://127.0.0.1:18502,http://localhost:18502 \
+  .venv/bin/python -m uvicorn backend.app.main:app \
+  --reload --reload-dir backend/app --host 0.0.0.0 --port 18000
+
+# 이 PC의 사용자 Front는 http://localhost:18501에서 접속합니다.
+BACKEND_API_URL=http://127.0.0.1:18000 .venv/bin/python -m streamlit run \
+  frontend_user/app.py --server.address 127.0.0.1 --server.port 18501 --server.headless true
+
+# 동일 Backend를 쓰는 두 번째 Frontend는 별도 터미널에서 실행할 수 있습니다.
+BACKEND_API_URL=http://127.0.0.1:18000 .venv/bin/python -m streamlit run \
+  frontend_user/app.py --server.address 127.0.0.1 --server.port 18502 --server.headless true
+```
+
+다른 PC의 Front는 `BACKEND_API_URL`을 이 PC의 LAN IP와 `18000` 포트로 지정하고
+localhost의 `18501` 포트에서 실행합니다. 같은 팀 DB를 처리하는 Backend worker를
+한 곳으로 모으려면 다른 PC의 Backend 실행도 종료해야 합니다. `/health` 외에
+`/ready`가 PostgreSQL·Redis 모두 `ok`인지 확인하고, Redis는 기존 환경을 기동합니다.
+Frontend 프로세스에는 AI background worker가 없으므로 여러 포트로 실행해도
+AI 차례를 중복 선점하지 않습니다. 각 포트의 origin은 Backend
+`CORS_ALLOWED_ORIGINS`에 개별 등록해야 브라우저의 SSE·polling 동기화가 동작합니다.
+
 진행 로그 확인:
 
 ```bash
 tail -f backend/logs/game-progress.log
+```
+
+MCP를 `python -m mafia_game`으로 기동하면 stderr에 구조화 진단 로그를 기록합니다.
+각 HTTP 요청과 그 안의 Backend 콜백은 같은 `correlation_id`를 공유하며,
+`request_id`는 각 작업의 시작·종료를 연결합니다. UTC `timestamp`·`process`와
+`operation`, `status`, `duration_ms`, `error_class`만 기록하고 게임·사용자 ID,
+대사·역할·토큰·header·예외 원문은 기록하지 않습니다. SDK의 원문 진단도 고정
+분류로 바꿉니다. 로그 출력 실패는 요청 결과나 취소 전파를 변경하지 않습니다.
+
+- `mcp.initialize`, `mcp.resources.read`, `mcp.tools.call`은 MCP 요청 결과입니다.
+  HTTP 200 안의 JSON-RPC 실패는 `MCP_RPC_ERROR`, Tool 실패는 `MCP_TOOL_ERROR`입니다.
+- `backend.context.public/me/turn/persona`, `backend.action`은 Backend 콜백 결과입니다.
+  `MCP_BACKEND_HTTP_403`처럼 HTTP 상태를 보존하고 `CONNECT_TIMEOUT`, `READ_TIMEOUT`,
+  `WRITE_TIMEOUT`, `POOL_TIMEOUT`을 구분합니다. 같은 `correlation_id`로 MCP 오류와
+  콜백의 세부 오류를 대조합니다.
+- 분류용 요청·응답 복사본은 각각 16 KiB·64 KiB로 제한합니다. 이를 넘으면 본문
+  분류를 생략하고 HTTP 결과만 남기며 실제 전송 본문은 변경하지 않습니다.
+
+진단 실행의 stderr를 루트 `mcp_runtime.error.log`로 모았다면 다음 명령으로 봅니다.
+모듈 자체는 파일·DB·queue를 만들지 않으며 기본 통합 실행에서는 터미널에 표시합니다.
+MCP 코드 변경은 자동 reload되지 않으므로 MCP 프로세스를 다시 기동해야 합니다.
+
+```bash
+tail -f mcp_runtime.error.log
 ```
 
 관리자 앱의 실제 조회는 Backend `ADMIN_USER_IDS`에 등록된 UUID가 필요합니다.
@@ -794,6 +821,92 @@ Backend만 리로드할 때는 Backend 터미널에서 `Ctrl+C` 후 위 Backend 
 
 ### 검증 기록과 현재 상태
 
+2026-09-09 WU-B6에서는 `.env`의 `OPENAI_MODEL=gpt-5.6-luna`를 확인하고
+Backend·MCP·사용자 Front를 재기동한 뒤, 6인 박물관 게임 한 판을 브라우저에서
+진행했습니다. 저장·재개 두 번을 포함해 14:56:38 KST에 마피아 승리로 종료됐으며,
+브라우저 결과와 Backend의 버전 51 완료 기록을 대조했습니다. 종료 후 Backend
+`/ready`의 PostgreSQL·Redis와 사용자 Front health는 모두 정상입니다.
+
+- **수정한 원인:** 저장 전 버전으로 남은 SPEECH 예약이 만료돼도 재개 후 버전에서는
+  재예약되지 않아 AI가 계속 `SKIPPED`되는 오류였습니다. 기존 예약 저장소에서
+  SPEECH도 현재 binding 검증 뒤 새 token·현재 버전으로 예약하도록 수정했습니다.
+  같은 실게임에서 예약 버전 37→39, 새 token, 정상 생성·원장 제출·`APPLIED`까지
+  확인했고 재개부터 적용까지 약 11.2초였습니다.
+- **로컬 MCP·모델:** 해당 게임의 로컬 컨텍스트 완료는 25건, `MCP_CONTEXT_FAILED`는
+  0건입니다. `PROVIDER_TIMEOUT` 1건은 MCP 조회 성공 후 게임 마감의 제출 여유
+  3초를 제외한 모델 예산이 약 4.185초 남았을 때 발생했고 fallback이 적용됐습니다.
+  별도 `AGENT_TIME_BUDGET_EXHAUSTED` 1건은 호출 전에 남은 예산이 소진된 경우입니다.
+  이 기록만으로 API 인증·모델 접근 오류나 OpenAI 서비스 장애를 판정하지 않습니다.
+- **남은 실행 환경 문제:** 최종 DB 작업 51건은 성공 23건, `MCP_UNAVAILABLE`
+  fallback 25건, timeout fallback 1건, STALE 1건, 수정 전 잔여 RESERVED 1건입니다.
+  DB 작업 행은 재예약으로 갱신되므로 호출 횟수와 다릅니다. 로컬 Backend에
+  `PGAPPNAME`을 붙인 상태에서 MCP 실패 행의 `xmin`과 별도 무표식 연결의
+  `backend_xid`가 일치했고, 성공 행은 로컬 표시 연결과 일치했습니다. 직접 연결을
+  대조한 실패 표본은 1건이며 25건 모두를 그 세션에 귀속시키지는 않습니다. 단일 Backend
+  실행으로 제한됐다고 확정할 수 없으며, 별도 연결의 실제 PC·실패 MCP 주소는 아직
+  특정되지 않았습니다. 후반에는 다른 게임도 실행돼 MCP 런타임 전체 건수를 이 한
+  게임의 성공률로 사용하지 않았습니다.
+- **검증:** 팀 DB의 세션 전용 TEMP 합성 자료로 수정 전 실패 9건을 재현하고,
+  수정 후 예약·만료·중복·이전 token 거부·기존 VOTE 동작 27개 테스트를 통과했습니다.
+  public 게임 자료는 읽거나 쓰지 않고 transaction을 rollback했습니다. 이 검증은
+  단일 연결의 SQL 경계를 다루며 실제 다중 연결 경합 전체를 검증하지는 않습니다.
+  사용자 Front 전체 회귀는 606개 통과·54개 실패했습니다. 실패는 수정하지 않은
+  화면의 `vote_insights` 속성·widget key·표시 기대값에 있고 이번 범위에서 수정하지
+  않았습니다. 실행 분담 확인이 늦어 작업자와 코디네이터가 각 한 번 실행했으며
+  결과는 같고 추가 반복은 하지 않았습니다. Backend·MCP 기존 전체 suite는 소스가
+  없어 생략했고, 네 런타임의 compile·Ruff `E9`와 문서 포함 diff 검사는 통과했습니다. `scripts/`는
+  현재 checkout에 없어 compile 대상에서 제외합니다. 추가 유료 자동 회귀와
+  migration은 실행하지 않았습니다.
+
+2026-09-09 WU-M5 MCP 진단 로그는 합성 HTTP 성공·상태 오류·잘못된 JSON,
+네 종류의 timeout·transport 오류, 취소 전파와 로그 출력 장애를 확인했습니다.
+실제 FastMCP를 연결한 두 동시 세션에서 요청별 correlation 분리, Backend 403과
+HTTP 200 내부 RPC 오류의 연결, 본문 크기 제한과 민감 marker 제거도 통과했습니다.
+변경한 두 Python 파일의 Ruff `F,I` 검사와 `git diff --check`가 통과했습니다.
+삭제된 MCP 테스트 소스를 복원하지 않았으므로 기존 전체 회귀 스위트는 실행하지
+않았고, 별도 테스트 파일 없이 합성 검증을 수행했습니다.
+
+MCP를 재기동한 뒤 Backend `/ready`와 MCP initialize의 200 응답을 확인했습니다.
+localhost:18502의 실제 6인 게임을 Day 2까지 진행하고 저장했으며, MCP 로그·Backend
+진행 로그·팀 DB를 대조했습니다. MCP의 세션 초기화 26건과 컨텍스트 콜백 104건은
+모두 성공했고 콜백 최댓값은 약 450 ms였습니다. 같은 게임의 AI 발언 45건은 정상
+모델 발언 21건, `MCP_UNAVAILABLE` 기본 발언 12건·PASS 11건, `PROVIDER_TIMEOUT`
+기본 발언 1건이었습니다. 후자의 로컬 timeout은 설정 상한 30초보다 행동 창의 남은
+시간이 짧아 실제 LLM 예산이 약 0.99초로 줄어든 경우였습니다. `MCP_UNAVAILABLE`
+발언 23건에는 로컬 Backend의 FALLBACK·APPLIED 기록이 없었고, 같은 관측 구간에
+별도 무표식 DB 연결의 `agent_jobs` INSERT·UPDATE 실행을 확인했습니다. 이 첫
+관측에서는 개별 실패 행과 해당 연결을 직접 연결하지 못했습니다.
+
+후속 추가 분석에서는 별도 완료 게임의 컨텍스트 콜백 156건도 모두 성공했지만,
+`MCP_UNAVAILABLE` 기본 발언 10건·PASS 20건·밤 행동 5건이 실제 적용됐음을
+확인했습니다. 로컬의 행동 제출 HTTP 409 두 건은 상태 변경에 따른 거부이며 이
+실패 코드와 구분합니다. 두 게임의 원래 관측 구간에서 MCP 실패 발언 53건 중
+51건은 로컬 STARTED·SKIPPED만 있고 2건은 해당 actor·예약 버전의 기록이 없습니다.
+전체 실행 sequence의 연속성과 현재 복구 경로를 대조해 일반적인 로그 회전 누락이나
+저장 proposal 재사용으로 이 불일치를 설명하기 어렵다는 점도 확인했습니다.
+
+2026-09-09 05:22:55.677~05:23:15.767 UTC에는 다른 진행 게임이 없는 상태에서
+기존 진단 게임만 재개하고 로컬 Backend 부모·자식 세 프로세스를 20초간 일시
+정지했습니다. 21회 관측 모두 정지 상태였으며, 초기 3초를 제외한 뒤 생성된 새
+발언 작업 3건이 `MCP_UNAVAILABLE`로 완료되고 PASS로 실제 제출됐습니다.
+게임 버전은 56에서 60으로 진행됐고 이 구간의 로컬 MCP 로그는 0건이었습니다.
+정지 이후 시각만으로 판정하지 않고 새 예약→실패 완료→PASS 제출→다음 버전의
+연속 진행을 확인해 이미 전송된 단일 SQL과 구분했습니다.
+그중 실패 행의 `xmin=158079`가 정지 후 새로 연결된 무표식 DB 세션의
+`backend_xid=158079`와 일치했습니다. 이는 별도 실행이 해당 FALLBACK 행 버전을
+작성했다는 증거이며, 물리 PC나 원래 실패를 판정한 코드·MCP 주소까지 식별하지는
+않습니다. `xmin`은 현재 행 버전의 작성 트랜잭션이므로 중간 실패 버전 이후의
+lease 수정과 최초 실패 확정을 구분하는 추가 증거가 필요합니다.
+DB에 표시되는 client 주소는 중계 주소이고 연결·SQL 이력 기록도 꺼져
+있어 그 이후 추적에는 DB 서버의 중계 전 연결 정보나 해당 실행의 로그가 필요합니다.
+
+프로세스는 watchdog과 `finally` 복원 경로를 두고 정상 재개했으며 Backend `/ready`
+200과 브라우저 연결 복구를 확인했습니다. 진단 게임은 Day 3에서 다시 저장했습니다.
+추가 분석에서 실행 코드는 변경하지 않았고 DB 진단 연결은 읽기 전용이었습니다.
+로컬 프로세스·컨테이너와 기존 연결된 Linux 개발 서버에서도 추가 프로젝트 Backend를
+찾지 못했지만, 이 관측 범위 밖의 실행 위치는 확정하지 않습니다. 읽기 전용 감사와
+기존 실행의 대조 실험이므로 자동 테스트는 반복하지 않고 문서 diff를 확인했습니다.
+
 2026-09-09 WU-B8 관리자 AI 행동 로그 확장은 임시 focused 테스트 33개
 (권한 거부·입력 오류·조회/감사 장애·민감 열 제외·Front 필터와 페이지 이동)를
 통과했습니다. 팀 DB에서는 검증 시점의 작업 5,497건을 100건씩 55페이지로 읽어
@@ -811,18 +924,22 @@ Backend만 리로드할 때는 Backend 터미널에서 `Ctrl+C` 후 위 Backend 
 이후 사용자 종료 요청으로 Backend·MCP·사용자 Front·관리자 Front를 종료했고,
 18000·18100·18501·18502 포트가 모두 닫힌 것을 확인했습니다.
 
-아래 수치는 기능 구현 당시의 기록입니다. 2026-09-09 사용자 요청으로
-`backend/tests`, `frontend_user/tests`, `frontend_admin/tests`, `mcp_server/tests`의 테스트
-소스 54개와 전용 pytest 경로 설정을 삭제했습니다. 현재 checkout에서는 기존 자동 테스트
-명령을 다시 실행할 수 없습니다. 과거 결과와 검증 근거는 재현 결과가 아니라 이력으로
+아래 수치는 기능 구현 당시의 기록입니다. 현재 checkout에는 `frontend_user/tests`의
+테스트 소스 11개와 `frontend_user/pytest.ini`가 있어 다음 사용자 Front 회귀를 실행할
+수 있습니다. `backend/tests`, `frontend_admin/tests`, `mcp_server/tests`는 없으므로
+이 세 컴포넌트의 과거 전체 결과를 현재 재현 결과로 해석하지 마세요. 과거 검증 근거는
 [날짜별 기록](docs/개발상세플랜/90_history/)과 관련 설계 문서에 보존합니다.
 
+```bash
+.venv/bin/python -m pytest frontend_user/tests -c frontend_user/pytest.ini
+```
+
 테스트 소스를 다시 도입할 때는 컴포넌트별 `tests/` 경로와 pytest 설정을 함께 복원하고,
-팀 DB를 사용하는 검증은 테스트 소유 자료만 조작해야 합니다. 테스트가 없는 현재 상태에서
-사용할 수 있는 최소 정적 확인은 다음과 같습니다.
+팀 DB를 사용하는 검증은 테스트 소유 자료만 조작해야 합니다. 현재 실행할 수 있는
+최소 정적 확인은 다음과 같습니다.
 
 ```bash
-.venv/bin/python -m compileall -q backend/app frontend_user frontend_admin mcp_server/mafia_game scripts
+.venv/bin/python -m compileall -q backend/app frontend_user frontend_admin mcp_server/mafia_game
 .venv/bin/python -m ruff check --no-cache --select E9 backend/app frontend_user frontend_admin mcp_server/mafia_game
 git diff --check
 ```
@@ -918,15 +1035,35 @@ AI의 비공개 정보 분리는 Backend의 actor projection과 검증 정책으
 - `ADMIN_USER_IDS`는 강한 인증이 아니므로 관리자 앱도 loopback·사설망에서만 사용합니다.
 - 현재 홈에는 UUID 복구 설정 진입점이 없으며, 완료 화면의 새 게임 시작은 홈을
   거쳐야 합니다. 관련 기존 회귀 실패는 이번 병합 수정 범위에서 유지합니다.
-- 팀 DB를 공유하는 Backend worker는 같은 버전으로 실행해야 합니다. 이번 실게임에서는
-  로컬 적용 로그가 없는 첫날 AI PASS와 마감이 없는 HUMAN 창이 관찰됐고, DB job·receipt와
-  lease 시간 비교는 다른 버전의 worker 개입을 강하게 시사했습니다. 저장된 정보만으로
-  호스트는 특정할 수 없으며 다른 개발자의 프로세스나 게임은 변경하지 않았습니다.
-  반복 발언 재현에서도 같은 게임의 MCP_UNAVAILABLE 기본 발언과 첫날 PASS가
-  다른 실행에서 적용됐고, 로컬 작업자가 정상 생성한 발언은 서로 달랐습니다.
-  로컬 재시작·코드 수정만으로 다른 worker의 대체 발언을 막을 수는 없습니다.
-  게임을 점검할 때는 Backend·MCP를 함께 최신 코드로 재시작하고 DB job 결과를
-  로컬 `game-progress.log`의 실행 식별자·상태 버전과 대조해야 합니다.
+- 팀 DB를 공유하는 Backend worker는 같은 버전으로 실행해야 합니다. 발언 worker는
+  같은 DB의 모든 진행 중 게임을 조회하므로 Backend 포트를 나눠도 게임 처리 대상이
+  분리되지는 않습니다. Frontend에는 AI worker가 없으며, 2026-09-09의 18501·18502
+  병렬 브라우저 검증에서는 두 게임 모두 정상 모델 발언과 `MCP_UNAVAILABLE`에 따른
+  기본 발언·PASS가 섞여 재현됐습니다.
+  반복 발언·PASS는 `action_submissions`에 실제 반영된 행동을 같은 window·player의
+  `agent_jobs`와 대조해 집계합니다. 현재 fallback은 첫날에 준비된 일반 질문을 고르고,
+  이후 발언 차례에는 PASS를 고릅니다. MCP 공개 이력 조회가 실패하면 이전 발언을
+  이용한 중복 회피도 제한됩니다. 모델이 선택한 PASS와 오류 fallback을 구분해야 합니다.
+  `MCP_UNAVAILABLE`의 상세 원인은 처리한 실행의 `MCP_CONTEXT_FAILED` 진단을
+  확인해야 합니다. 로컬 기록이 없는 job의 실패 endpoint·HTTP 상태·실행 호스트를
+  추측으로 확정하지 않습니다. DB job에는 worker instance가 없고 `created_at`은 DB,
+  `completed_at`은 application 시계를 사용하므로 시각 역전만으로 호스트를 특정할 수 없습니다.
+  Backend의 DB 연결을 구분하려면 실행 환경에 PC별로 다른 `PGAPPNAME`을 지정하고,
+  진단 조회에도 별도 `application_name`을 지정해 `pg_stat_activity`를 대조합니다.
+  2026-09-09 재검증에서는 로컬 Backend 연결에 식별 이름을 붙인 뒤에도 별도 무표식
+  연결이 `list_expired_night_windows`와 동일한 자동 진행 조회를 실행하는 것을 확인했습니다.
+  MCP 재기동 후 실게임에서는 별도 무표식 연결이 `agent_jobs` INSERT·UPDATE도
+  실행했습니다. 후속 20초 정지 실험에서는 새 FALLBACK 행의 `xmin`과 별도 연결의
+  `backend_xid`까지 대조해 해당 행 버전의 작성 연결을 확인했습니다. 구체적 관측
+  조건은 위 검증 기록을 따르며 물리 PC·MCP 실패 endpoint는 여전히 미확정입니다.
+  조사용 연결은 읽기 전용으로 운영했고 이 PC에서 추가 Backend 프로세스도
+  관측되지 않았지만, DB의 client 주소가 중계 주소로 보여 별도 실행의 PC는 특정하지 못했습니다.
+  앞선 8초 동결 관측은 모든 자식의 정지 상태와 이미 보낸 DB 작업의 완료를 확인하지
+  않았으므로 다른 PC 실행의 단독 확정 근거로 사용하지 않습니다.
+  `Event loop is closed`는 별도 연결 정리 문제도 점검해야 합니다. 합성 HTTP 응답으로
+  검증했을 때 OpenAI 요청 성공 후 다음 event loop의 지연된 client 정리에서 오류가
+  재현됐고, 같은 loop에서 명시적으로 닫은 대조군은 정상 종료했습니다. 이 정리 오류를
+  MCP context 조회 실패나 LLM 요청 실패와 같은 원인으로 집계하지 않습니다.
 
 비밀값 노출이 의심되면 값을 다시 출력하지 말고 즉시 폐기·재발급한 뒤 Git 이력과
 외부 로그를 별도로 점검하세요.
