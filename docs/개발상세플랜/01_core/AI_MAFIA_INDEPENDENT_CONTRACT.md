@@ -64,12 +64,11 @@ MCP는 상태를 재판정하지 않는다.
 사용자 UUID는 URL이나 JSON body에 중복하지 않는다. canonical MVP에는 Front의
 `Authorization`, OIDC token, Front HMAC을 사용하지 않는다.
 
-Cross-origin Front 연결은 API 정본의 CORS 정책을 사용한다. 기본 개발 origin은
-`http://127.0.0.1:8501`, `http://127.0.0.1:8502`이고 허용 request header는
-`X-User-Id`, `X-Request-Id`, `Idempotency-Key`, `Last-Event-ID`, `Content-Type`이다.
-배포 시 origin은 명시적 allowlist로 관리하며 wildcard origin과 credentials 인증은
-사용하지 않는다. same-origin proxy를 선택하면 proxy가 이 header와 SSE stream을
-그대로 전달한다.
+Cross-origin Front 연결은 API 정본의 CORS 정책을 사용한다. 모든 origin을 `*`로
+허용하며 별도 origin allowlist를 설정하지 않는다. 허용 request header는
+`X-User-Id`, `X-Request-Id`, `Idempotency-Key`, `Last-Event-ID`, `Content-Type`이고
+credentials 인증은 사용하지 않는다. same-origin proxy를 선택하면 proxy가 이 header와
+SSE stream을 그대로 전달한다.
 
 ### 3.2 성공·오류 envelope
 

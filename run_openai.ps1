@@ -148,7 +148,7 @@ $PrivateEnvironment = @(
     "AI_MAFIA_DATABASE_URL", "AI_MAFIA_REDIS_URL", "OPENAI_API_KEY", "GEMINI_API_KEY",
     "GAME_STATE_KEYRING_FILE", "GAME_STATE_ACTIVE_KEY_ID", "ADMIN_USER_IDS",
     "MCP_SERVER_AUTH_SECRET", "ENGINE_INTERNAL_API_SECRET",
-    "LLM_PROVIDER", "MCP_SERVER_URL", "CORS_ALLOWED_ORIGINS"
+    "LLM_PROVIDER", "MCP_SERVER_URL"
 )
 $old = @{}
 foreach ($name in ($PrivateEnvironment + @("BACKEND_API_URL", "MCP_LISTEN_HOST", "MCP_LISTEN_PORT"))) {
@@ -161,7 +161,6 @@ try {
     $env:REDIS_URL = $RuntimeRedisUrl
     $env:LLM_PROVIDER = "openai"
     $env:MCP_SERVER_URL = $McpBaseUrl
-    $env:CORS_ALLOWED_ORIGINS = "$FrontendUrl,http://localhost:$FrontendPort"
     # Front·테스트 편집은 Backend를 재시작하지 않아 진행 중 API 요청을 끊지 않는다.
     $ReloadDirectory = '"' + (Join-Path $ProjectRoot "backend\app") + '"'
     $processes += Start-Process $PythonBin -ArgumentList @("-m", "uvicorn", "backend.app.main:app", "--reload", "--reload-dir", $ReloadDirectory, "--host", "127.0.0.1", "--port", "$BackendPort") -WorkingDirectory $ProjectRoot -PassThru -NoNewWindow

@@ -541,7 +541,7 @@ flowchart LR
 |---|---|
 | Backend | `DATABASE_URL`, `DATABASE_NAME`, `REDIS_URL` |
 | MCP | `BACKEND_API_URL`, `MCP_LISTEN_HOST`, `MCP_LISTEN_PORT` |
-| Frontend | Backend base URL, CORS origin |
+| Frontend | Backend base URL |
 | LLM | Provider 선택, model, timeout, output budget |
 | 관리자 | allowlist 설정 |
 

@@ -138,7 +138,6 @@ if [[ "${1:-}" == "--check" ]]; then
     "${DOTENV_BIN}" -f "${ENV_FILE}" run --override -- \
         env TEAM_DATABASE_URL="${RUNTIME_DATABASE_URL}" DATABASE_URL="${RUNTIME_DATABASE_URL}" \
         REDIS_URL="${RUNTIME_REDIS_URL}" LLM_PROVIDER=openai MCP_SERVER_URL="${MCP_BASE_URL}" \
-        CORS_ALLOWED_ORIGINS="${FRONTEND_URL},http://localhost:${FRONTEND_PORT}" \
         "${PYTHON_BIN}" - <<'PY'
 import psycopg
 import redis
@@ -261,7 +260,6 @@ trap cleanup EXIT
 "${DOTENV_BIN}" -f "${ENV_FILE}" run --override -- \
     env TEAM_DATABASE_URL="${RUNTIME_DATABASE_URL}" DATABASE_URL="${RUNTIME_DATABASE_URL}" \
     REDIS_URL="${RUNTIME_REDIS_URL}" LLM_PROVIDER=openai MCP_SERVER_URL="${MCP_BASE_URL}" \
-    CORS_ALLOWED_ORIGINS="${FRONTEND_URL},http://localhost:${FRONTEND_PORT}" \
     "${PYTHON_BIN}" -m uvicorn backend.app.main:app \
     --reload --reload-dir "${PROJECT_ROOT}/backend/app" \
     --host 127.0.0.1 --port "${BACKEND_PORT}" &

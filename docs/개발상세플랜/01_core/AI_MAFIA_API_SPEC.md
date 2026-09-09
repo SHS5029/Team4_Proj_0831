@@ -76,20 +76,20 @@ envelope의 state_version/window_id를 검증하고 각 scope를 따로 조회�
 
 ### 1.2.1 Front 연결 정책
 
-두 Streamlit Front origin은 기본적으로 `http://127.0.0.1:8501`과
-`http://127.0.0.1:8502`이며 배포 환경에서는 동일한 역할의 명시적 allowlist origin으로
-대체한다. Backend가 cross-origin으로 제공될 때는 다음 정책을 적용한다.
+Backend가 cross-origin으로 제공될 때는 Front의 실행 host·port를 사전 등록하지 않고
+모든 browser origin에 다음 정책을 적용한다.
 
 - 허용 method: `GET`, `POST`, `DELETE`, `OPTIONS`
 - 허용 request header: `X-User-Id`, `X-Request-Id`, `Idempotency-Key`,
   `Last-Event-ID`, `Content-Type`
 - 허용 credentials: 사용하지 않음
-- 허용 origin: 위 allowlist와 정확히 일치하는 origin만 반환하며 `*`를 사용하지 않음
-- preflight: 허용되지 않은 origin·method·header는 성공 응답으로 허용하지 않음
+- 허용 origin: `*`; 요청 origin별 allowlist 환경 설정을 사용하지 않음
+- preflight: 모든 origin을 허용하되 허용되지 않은 method·header는 성공 응답으로 허용하지 않음
 
 same-origin proxy를 사용하는 배포에서는 proxy가 위 header와 `text/event-stream` 응답을
-Backend까지 전달하고, Front에는 proxy origin만 Backend URL로 제공한다. CORS와 proxy 중
-하나의 방식을 CP-0에서 선택하며 두 방식을 동시에 전제하지 않는다.
+Backend까지 전달한다. origin 개방은 브라우저의 CORS 읽기 제한만 해제하며 사용자 UUID·
+게임 소유권·관리자 allowlist 검사를 대체하지 않는다. credentials를 허용하지 않으므로
+cookie 기반 인증을 이 계약에 추가하지 않는다.
 
 ### 1.3 사용자 UUID 수명주기
 

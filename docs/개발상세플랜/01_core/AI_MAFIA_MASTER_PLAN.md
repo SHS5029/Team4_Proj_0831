@@ -1,5 +1,20 @@
 # AI 마피아 MVP 공통 마스터플랜
 
+## 2026-09-09 Backend CORS origin 개방 (WU-B7)
+
+사용자가 요청한 이번 단일 WU-B7은 Backend의 CORS origin allowlist를 제거하고 모든
+브라우저 origin에 공개·관리자 API와 SSE의 cross-origin 요청을 허용한다. 응답은
+`Access-Control-Allow-Origin: *`를 사용하고 credentials는 계속 허용하지 않는다.
+허용 method와 request header 목록, 사용자 UUID·게임 소유권 검사, 관리자
+`ADMIN_USER_IDS` allowlist는 유지한다.
+
+Backend 설정과 macOS/Linux·Windows 실행 스크립트에서 `CORS_ALLOWED_ORIGINS`를
+제거하고 Front는 origin 사전 등록 없이 Backend 주소를 사용할 수 있게 한다. 이 변경은
+CORS가 제공하던 브라우저 읽기 제한만 해제하며 Backend bind 주소나 네트워크 방화벽을
+바꾸지 않는다. UUID가 인증 증명이 아닌 기존 보안 경계에 따라 서비스는 계속 개인
+개발 환경 또는 접근이 통제된 사설망에서 사용한다. DB·MCP 계약과 파일 구조는 변경하지
+않는다.
+
 ## 2026-09-09 Agent 시험 보고서 반복 검증 (WU-B6)
 
 사용자가 요청한 이번 단일 WU-B6는 `docs/arrangement/07_AGENT_TEST_RESULT_REPORT.md`의

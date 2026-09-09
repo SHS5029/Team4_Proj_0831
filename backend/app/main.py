@@ -111,11 +111,12 @@ def create_app(
         lifespan=lifespan,
     )
     # Streamlit browser component은 인증·추적 header를 포함한 fetch를 사용하므로
-    # 단순 GET이 아닌 CORS preflight가 발생한다. 허용 origin을 명시적으로 제한하고
-    # wildcard를 사용하지 않아 다른 사이트가 사용자 UUID를 대신 전송하지 못하게 한다.
+    # 단순 GET이 아닌 CORS preflight가 발생한다. Front의 host·port를 사전 등록하지
+    # 않도록 모든 origin을 허용하되 cookie 인증으로 오인되지 않게 credentials는 막는다.
+    # 사용자 소유권과 관리자 권한은 각 API service가 별도로 계속 검사한다.
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=list(effective_settings.cors_allowed_origins),
+        allow_origins=["*"],
         allow_credentials=False,
         allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
         allow_headers=["Accept", "Content-Type", "X-User-Id", "X-Request-Id", "Idempotency-Key", "Last-Event-ID"],

@@ -599,8 +599,8 @@ Provider에 전달하는 timeout과 `asyncio.timeout`으로 함께 적용합니�
 3초는 여유이며 DB·네트워크 지연에도 제출 완료를 보장하는 값은 아닙니다. 늦은 제출은
 기존 마감·상태 검증으로 거부합니다. OpenAI의 `high` 추론 노력과 출력 한도는 유지합니다.
 - Backend 중앙 AI worker는 `MCP_SERVER_URL`로 FastMCP 서버를 호출합니다.
-- Backend는 `CORS_ALLOWED_ORIGINS`에 등록된 Front origin에만 SSE fetch preflight와
-동기화 header를 허용합니다.
+- Backend는 Front host·port 사전 등록 없이 모든 origin의 SSE fetch preflight를
+허용합니다. credentials는 허용하지 않으며 method·header와 API 권한 검사는 유지합니다.
 - 공개 발언 분석은 `SPEECH_ANALYSIS_ENABLED=false`가 기본이며, 활성화하려면
 migration 006·008 적용과 [.env.example](.env.example)의 `SPEECH_ANALYSIS_*` 설정이
 필요합니다.
@@ -608,7 +608,7 @@ migration 006·008 적용과 [.env.example](.env.example)의 `SPEECH_ANALYSIS_*`
 | 환경 소비자 | 허용하는 AI 마피아 관련 키 | 주입 금지 |
 | --- | --- | --- |
 | Front 서버 | Backend URL | DB·Redis·LLM·MCP/Engine secret |
-| Backend runtime | `TEAM_DATABASE_URL`, `DATABASE_URL`, `DATABASE_NAME`, `REDIS_URL`, game state keyring, LLM Provider·model·key, `ADMIN_USER_IDS`, `MCP_SERVER_URL`, `CORS_ALLOWED_ORIGINS` | `DATABASE_MIGRATION_URL`, MCP runtime 전용 설정 |
+| Backend runtime | `TEAM_DATABASE_URL`, `DATABASE_URL`, `DATABASE_NAME`, `REDIS_URL`, game state keyring, LLM Provider·model·key, `ADMIN_USER_IDS`, `MCP_SERVER_URL` | `DATABASE_MIGRATION_URL`, MCP runtime 전용 설정 |
 | migration 실행 프로세스 | `DATABASE_MIGRATION_URL`, 비교용 `TEAM_DATABASE_URL`/`DATABASE_URL`·`DATABASE_NAME` | LLM·MCP secret |
 | MCP runtime | `BACKEND_API_URL`, `MCP_LISTEN_HOST`, `MCP_LISTEN_PORT` | DB·Redis·LLM·인증 secret |
 
@@ -744,7 +744,6 @@ MCP와 사용자 Front는 localhost에 유지합니다. `run_openai.sh`의 기�
 
 # 팀 DB·모델 설정은 루트 .env를 사용합니다.
 LLM_PROVIDER=openai MCP_SERVER_URL=http://127.0.0.1:18100 \
-CORS_ALLOWED_ORIGINS=http://127.0.0.1:18501,http://localhost:18501,http://127.0.0.1:18502,http://localhost:18502 \
   .venv/bin/python -m uvicorn backend.app.main:app \
   --reload --reload-dir backend/app --host 0.0.0.0 --port 18000
 
@@ -762,8 +761,8 @@ localhost의 `18501` 포트에서 실행합니다. 같은 팀 DB를 처리하는
 한 곳으로 모으려면 다른 PC의 Backend 실행도 종료해야 합니다. `/health` 외에
 `/ready`가 PostgreSQL·Redis 모두 `ok`인지 확인하고, Redis는 기존 환경을 기동합니다.
 Frontend 프로세스에는 AI background worker가 없으므로 여러 포트로 실행해도
-AI 차례를 중복 선점하지 않습니다. 각 포트의 origin은 Backend
-`CORS_ALLOWED_ORIGINS`에 개별 등록해야 브라우저의 SSE·polling 동기화가 동작합니다.
+AI 차례를 중복 선점하지 않습니다. Backend는 모든 origin을 허용하므로 Front 포트를
+추가해도 CORS 환경 설정을 변경할 필요가 없습니다.
 
 진행 로그 확인:
 
@@ -808,8 +807,7 @@ Backend·UUID 없이 화면만 확인하려면 `ADMIN_DEMO_MODE=true`로 실행�
 
 ```bash
 # Backend: 관리자 조회용으로 백그라운드 게임 진행을 중지한 상태로 실행합니다.
-CORS_ALLOWED_ORIGINS=http://127.0.0.1:18502,http://localhost:18502 \
-  .venv/bin/python -c 'import uvicorn; from backend.app.main import create_app; uvicorn.run(create_app(enable_background_worker=False), host="127.0.0.1", port=18000)'
+.venv/bin/python -c 'import uvicorn; from backend.app.main import create_app; uvicorn.run(create_app(enable_background_worker=False), host="127.0.0.1", port=18000)'
 
 # 관리자 Front: 기존 Backend의 실제 관리자 API에 연결합니다.
 BACKEND_API_URL=http://127.0.0.1:18000 ADMIN_DEMO_MODE=false \

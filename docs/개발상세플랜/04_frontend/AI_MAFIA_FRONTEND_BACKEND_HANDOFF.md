@@ -121,9 +121,10 @@ X-Request-Id: 연결별 새 UUID
 Last-Event-ID: 마지막 적용 front_sequence
 ```
 
-Backend는 `:8501`, `:8502`의 승인된 origin, 위 GET header와 CORS preflight를 허용하거나
-동등한 same-origin proxy 계약을 제공해야 한다. UUID query parameter 방식은 사용하지
-않는다. 이 결정은 F5/B7 구현 전에 API 정본에 반영하고 양쪽이 승인한다.
+Backend는 모든 origin에서 위 GET header와 CORS preflight를 허용한다. Front host·port를
+Backend에 사전 등록하지 않으며 credentials는 사용하지 않는다. UUID query parameter
+방식은 사용하지 않는다. origin 개방은 사용자 UUID·게임 소유권·관리자 allowlist 검사를
+우회하지 않는다.
 
 ### 기본 timing
 

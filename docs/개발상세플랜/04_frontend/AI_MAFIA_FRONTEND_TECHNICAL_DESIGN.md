@@ -31,15 +31,14 @@
 | WU-F1~F10 | 적합 | 마스터플랜 순서·범위 유지 |
 | 닉네임 입력 | 제외 | 이름·프로필 수집 금지 |
 | SSE·polling | 적합 | 동일 operation envelope·cursor |
-| 관리자 | 적합 | 별도 origin·allowlist·read-only·fail-closed |
+| 관리자 | 적합 | 별도 앱·UUID allowlist·read-only·fail-closed |
 
 ### 승인 필요 사항
 
 - [ ] 두 Streamlit 앱의 독립 process·origin 유지
 - [ ] UUID와 SSE에 한정한 최소 custom component 사용
-- [ ] Backend가 `:8501`, `:8502` origin과 `X-User-Id`, `X-Request-Id`,
-      `Idempotency-Key`, `Last-Event-ID` header를 허용하는 CORS 정책 또는 동등한
-      same-origin proxy 계약 제공
+- [ ] Backend가 모든 origin과 `X-User-Id`, `X-Request-Id`, `Idempotency-Key`,
+      `Last-Event-ID` header를 허용하고 credentials를 막는 CORS 계약 제공
 - [ ] Front fixture와 Backend `/openapi.json` 통합 gate
 - [ ] F1 착수 전 기존 OIDC·HMAC 삭제·유지 파일 목록
 - [ ] WU별 branch·review와 README 동시 갱신
@@ -456,10 +455,10 @@ server offset으로 표시만 갱신하며 0초에 submit을 잠근다. Front �
   복구한다. 유효 batch만 한 번에 session에 반영한다.
 - game·UUID·route 변경 시 `AbortController`로 streaming fetch를 중단하고 poll timer를
   정리한다.
-- Backend CORS가 두 Streamlit origin과 `X-User-Id`, `X-Request-Id`, `Idempotency-Key`,
-  `Last-Event-ID`를 허용하지 않으면 F5를 시작하지 않는다. 이 항목은 CP-0에서 Backend
-  담당자와 합의하고 API 정본에 반영한다. same-origin proxy를 선택하면 proxy가 동일
-  header와 SSE stream을 Backend까지 전달하고, `backend_url`은 proxy origin으로 고정한다.
+- Backend CORS는 모든 origin과 `X-User-Id`, `X-Request-Id`, `Idempotency-Key`,
+  `Last-Event-ID`를 허용하고 credentials를 막는다. Front origin을 Backend 설정에 사전
+  등록하지 않는다. same-origin proxy를 선택하면 proxy가 동일 header와 SSE stream을
+  Backend까지 전달하고, `backend_url`은 proxy origin으로 고정한다.
 
 상태는 `CONNECTING → LIVE`, 실패 시 `POLLING`, 반복 실패 시 `STALE`로 전환한다. SSE 복구
 때 cursor를 확인한 뒤 `LIVE`로 돌아간다.

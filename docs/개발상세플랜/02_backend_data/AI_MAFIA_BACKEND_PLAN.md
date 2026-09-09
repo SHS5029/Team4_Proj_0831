@@ -787,11 +787,11 @@ OAuth, Front HMAC과 URL 내 role/private 정보는 사용하지 않는다.
 성공 envelope는 data와 meta(request_id, server_time, replayed)를 사용하고, 실패
 envelope는 error(code, message, request_id, retryable, details)를 사용한다.
 
-Cross-origin Front 연결은 API 정본의 CORS 정책을 따른다. 기본 허용 origin은
-`http://127.0.0.1:8501`, `http://127.0.0.1:8502`이며 허용 request header는
-`X-User-Id`, `X-Request-Id`, `Idempotency-Key`, `Last-Event-ID`, `Content-Type`이다.
-wildcard origin과 credentials 인증은 사용하지 않는다. same-origin proxy를 CP-0에서
-선택하면 proxy가 동일 header와 `text/event-stream` 응답을 전달한다.
+Cross-origin Front 연결은 API 정본의 CORS 정책을 따른다. 모든 origin을 `*`로 허용하며
+별도 origin allowlist를 설정하지 않는다. 허용 request header는 `X-User-Id`,
+`X-Request-Id`, `Idempotency-Key`, `Last-Event-ID`, `Content-Type`이고 credentials
+인증은 사용하지 않는다. same-origin proxy를 선택하면 proxy가 동일 header와
+`text/event-stream` 응답을 전달한다.
 
 ### 공개·관리자 API
 

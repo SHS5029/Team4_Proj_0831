@@ -93,9 +93,9 @@ Polling과 SSE는 같은 `game_sync` envelope를 사용한다. sequence/version 
 snapshot을 반환하고, Front는 부분 operation을 적용하지 않은 채 authoritative snapshot을
 재조회한다. 활성 timed window의 `remaining_ms`는 Backend deadline에서 계산한다.
 
-SSE browser fetch를 위해 Backend는 `CORS_ALLOWED_ORIGINS`에 등록된 Front origin의
-preflight와 `X-User-Id`, `X-Request-Id`, `Last-Event-ID` header를 허용한다. 기본값은
-`localhost`와 `127.0.0.1`의 사용자·관리자 Front port다.
+SSE browser fetch를 위해 Backend는 모든 origin의 preflight와 `X-User-Id`,
+`X-Request-Id`, `Last-Event-ID` header를 허용한다. origin별 환경 설정은 사용하지 않고
+credentials는 허용하지 않는다.
 
 ## 6. 저장소와 설정
 
@@ -104,8 +104,8 @@ preflight와 `X-User-Id`, `X-Request-Id`, `Last-Event-ID` header를 허용한다
   game_events, receipts와 scenario/fact 데이터를 사용한다.
 - seed와 snapshot 암호화 keyring은 저장소 외부 설정을 사용한다.
 - Redis client·lock·stream 코드는 Backend에 있으나 canonical 이벤트 원본은 PostgreSQL이다.
-- Backend는 `DATABASE_URL`, `DATABASE_NAME`, `REDIS_URL`, `MCP_SERVER_URL`,
-  `CORS_ALLOWED_ORIGINS`와 선택한 LLM 설정을 사용한다.
+- Backend는 `DATABASE_URL`, `DATABASE_NAME`, `REDIS_URL`, `MCP_SERVER_URL`과 선택한
+  LLM 설정을 사용한다.
 - MCP process는 `BACKEND_API_URL`, `MCP_LISTEN_HOST`, `MCP_LISTEN_PORT`를 사용한다.
 
 실제 비밀번호, API key, token, 사용자 데이터는 문서·로그·fixture에 기록하지 않는다.

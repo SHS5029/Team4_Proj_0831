@@ -51,12 +51,6 @@ class Settings:
     app_env: str = "development"
     redis_url: str = field(default="redis://127.0.0.1:6379/0", repr=False)
     mcp_server_url: str = "http://127.0.0.1:8100"
-    cors_allowed_origins: tuple[str, ...] = (
-        "http://127.0.0.1:8501",
-        "http://127.0.0.1:8502",
-        "http://localhost:8501",
-        "http://localhost:8502",
-    )
     # 게임 seed와 snapshot 암호화 키는 .env에 직접 넣지 않는다. .env에는
     # 저장소 밖의 keyring 파일 위치와 현재 사용할 key ID만 기록한다.
     game_state_keyring_file: str = field(default="", repr=False)
@@ -157,12 +151,6 @@ class Settings:
             raise ValueError("REDIS_URL must not be empty")
         if not self.mcp_server_url.strip():
             raise ValueError("MCP_SERVER_URL must not be empty")
-        normalized_origins = tuple(origin.strip().rstrip("/") for origin in self.cors_allowed_origins if origin.strip())
-        if not normalized_origins or any(
-            urlsplit(origin).scheme not in {"http", "https"} or not urlsplit(origin).netloc
-            for origin in normalized_origins
-        ):
-            raise ValueError("CORS_ALLOWED_ORIGINS must contain absolute origins")
         keyring_file = self.game_state_keyring_file.strip()
         active_key_id = self.game_state_active_key_id.strip()
         # 기존 로컬 runtime은 둘 다 비어 있으면 legacy 평문 저장을 사용한다.
@@ -202,7 +190,6 @@ class Settings:
         object.__setattr__(self, "database_name", self.database_name.strip())
         object.__setattr__(self, "redis_url", self.redis_url.strip())
         object.__setattr__(self, "mcp_server_url", self.mcp_server_url.strip().rstrip("/"))
-        object.__setattr__(self, "cors_allowed_origins", normalized_origins)
         object.__setattr__(self, "game_state_keyring_file", keyring_file)
         object.__setattr__(self, "game_state_active_key_id", active_key_id)
         object.__setattr__(self, "llm_provider", self.llm_provider.strip().lower())
@@ -301,13 +288,6 @@ class Settings:
             app_env=os.getenv("APP_ENV", "development"),
             redis_url=os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0"),
             mcp_server_url=os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8100"),
-            cors_allowed_origins=tuple(
-                item.strip()
-                for item in os.getenv(
-                    "CORS_ALLOWED_ORIGINS",
-                    "http://127.0.0.1:8501,http://127.0.0.1:8502,http://localhost:8501,http://localhost:8502",
-                ).split(",")
-            ),
             game_state_keyring_file=os.getenv("GAME_STATE_KEYRING_FILE", ""),
             game_state_active_key_id=os.getenv("GAME_STATE_ACTIVE_KEY_ID", ""),
             llm_provider=os.getenv("LLM_PROVIDER", "dummy"),
