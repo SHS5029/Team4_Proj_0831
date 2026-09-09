@@ -246,7 +246,9 @@ def render(*, client: ApiClient, game_id: str, snapshot: dict[str, Any]) -> None
     # 채팅·대상 선택은 주기 갱신에 포함하지 않는다. 별도 시계와 큐 fragment가
     # 진행을 표시하는 동안 Enter 입력과 아직 제출하지 않은 선택을 유지한다.
     _render_actions(client=client, game_id=game_id, snapshot=snapshot)
-    _render_speech_queue(game_id=game_id)
+    phase = snapshot.get("game", {}).get("phase")
+    if phase in DISCUSSION_PHASES:
+        _render_speech_queue(game_id=game_id)
 
 
 def maintain_speech_queue(*, user_id: Any, page: str, game_id: Any,
@@ -306,8 +308,14 @@ def _render_speech_queue(*, game_id: str) -> None:
     queue = st.session_state.get("game.speech_queue")
     if not isinstance(queue, SpeechQueue) or queue.game_id != game_id:
         return
+    latest = st.session_state.get("game.latest_snapshot")
+    if (not isinstance(latest, dict)
+            or latest.get("game", {}).get("phase") not in DISCUSSION_PHASES):
+        # 토론 예약이 단계 전환으로 취소되어도 그 notice는 투표·밤 행동 화면의
+        # 안내와 섞이지 않도록 대화 단계에서만 표시한다.
+        return
     client = st.session_state.get("game.client")
-    snapshot = st.session_state.get("game.latest_snapshot")
+    snapshot = latest
     maintain_speech_queue(user_id=getattr(client, "user_id", None),
                           page=st.session_state.get("navigation.page", "game"),
                           game_id=game_id, snapshot=snapshot)
