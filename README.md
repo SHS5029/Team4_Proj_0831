@@ -416,7 +416,7 @@ pgvector·RAG 확장도 구분했습니다. 팀 DB의 색인 적용 여부는 20
 │   ├── app/game_engine/              # 순수 게임 규칙·phase·결정적 RNG 정본 package
 │   ├── app/llm_provider/             # 현재 LLM Provider adapter
 │   ├── app/mcp/                      # Backend Agent용 MCP context client
-│   ├── migrations/                   # Backend 작성 SQL migration(MCP 실행, 001~011)
+│   ├── migrations/                   # Backend 작성 SQL migration(MCP 실행, 001~012)
 │   ├── logs/                         # 실행 시 생성되는 순환 진행 로그 (Git 제외)
 │   └── README.md
 ├── frontend_user/
@@ -433,6 +433,10 @@ pgvector·RAG 확장도 구분했습니다. 팀 DB의 색인 적용 여부는 20
 │   ├── components/                   # 관리자 UI·브라우저 연동 컴포넌트
 │   ├── core/                         # 관리자 API client·식별·응답 모델
 │   └── README.md
+├── remotion/
+│   ├── package.json                  # Remotion 영상 작업공간과 npm 명령
+│   ├── src/                          # 영상 Composition·React 마크업
+│   └── README.md                     # Remotion 전용 실행 안내
 ├── mcp_server/
 │   ├── pyproject.toml, uv.lock       # Python 3.12·MCP SDK 1.29.1 독립 실행 환경
 │   └── mafia_game/
@@ -487,6 +491,7 @@ pgvector·RAG 확장도 구분했습니다. 팀 DB의 색인 적용 여부는 20
 ### 사전 준비
 
 - Python 3.12 이상
+- Node.js 18 이상 (Remotion·MuAPI CLI)
 - PostgreSQL 서버와 데이터베이스 생성 권한(MCP 섹터 운영 책임)
 - Redis 실행 환경(MCP 섹터 운영 책임)
 - 권장 패키지 관리자: [uv](https://docs.astral.sh/uv/)
@@ -535,6 +540,37 @@ chmod 600 frontend_user/.streamlit/secrets.toml
 ```
 
 실제 `.env`와 `secrets.toml`은 Git 무시 대상이며 이동·커밋하지 않습니다.
+
+</details>
+
+<details>
+<summary>Remotion·MuAPI 영상 작업공간</summary>
+
+`remotion/`은 기존 Python 앱과 분리한 Remotion 4 작업공간입니다. 현재는 기본
+`MyComp` Composition만 포함하며, 영상 마크업은 `remotion/src/`에 추가합니다.
+
+MuAPI CLI 인증은 전역 설정에 저장하고, 저장소의 이미지·영상 보조 스크립트가 읽을
+`MUAPI_KEY`는 로컬 `.env`에만 둡니다. 두 위치 모두 실제 키를 README·`.env.example`·Git
+이력에 기록하지 마세요.
+
+```bash
+# MuAPI CLI가 없는 환경에서 설치하는 예시
+uv tool install muapi-cli
+
+# 키를 저장·검증합니다. 키 값은 터미널에서 직접 입력하고 이 저장소에는 기록하지 않습니다.
+muapi auth configure
+muapi auth status
+
+# Remotion 의존성·정적 검증·Studio 미리보기
+npm --prefix remotion install
+npm --prefix remotion run lint
+npm --prefix remotion run dev -- --no-open
+```
+
+MuAPI API 호출 및 영상 렌더링은 별도 명령이므로 기본 설치·lint 검증에서는 실행하지
+않습니다. 생성이 필요한 경우에만 Remotion의 `npx remotion render` 또는 MuAPI 보조
+스크립트를 명시적으로 실행합니다. 자세한 CLI 안내는 [MuAPI 문서](https://muapi.ai/docs/cli)를
+참고하세요.
 
 </details>
 
@@ -587,6 +623,13 @@ AI_MAFIA_STORAGE_MODE=team
 migration 006·008 적용과 [.env.example](.env.example)의 `SPEECH_ANALYSIS_*` 설정이
 필요합니다.
 
+### Remotion·MuAPI
+
+`.env.example`에는 미디어 생성 스크립트용 `MUAPI_KEY` placeholder가 있습니다. 실제 키는
+로컬 `.env`에만 설정하고, MuAPI CLI는 `muapi auth configure`로 전역 인증을 설정합니다.
+Remotion 번들은 현재 MuAPI를 직접 호출하지 않으며, 생성된 이미지·영상이나 이후 추가할
+서버 측 adapter를 Composition 입력으로 사용하는 구조입니다.
+
 | 환경 소비자 | 허용하는 AI 마피아 관련 키 | 주입 금지 |
 | --- | --- | --- |
 | Front 서버 | Backend URL | DB·Redis·LLM·MCP/Engine secret |
@@ -597,7 +640,7 @@ migration 006·008 적용과 [.env.example](.env.example)의 `SPEECH_ANALYSIS_*`
 </details>
 
 <details>
-<summary>데이터베이스 마이그레이션 · 001~011과 팀 DB 적용 기록</summary>
+<summary>데이터베이스 마이그레이션 · 001~012와 팀 DB 적용 기록</summary>
 
 ### 데이터베이스 마이그레이션
 
@@ -608,7 +651,7 @@ Backend가 작성·소유하는 `backend/migrations/`의 SQL을 MCP 담당자가
 uv run python -m backend.app.infrastructure.migrations
 ```
 
-- `001` legacy `users`·`oauth_identities`, `002` scaffold `scaffold_*` 게임 테이블(보존, 미사용)
+- `001` legacy `users`·`oauth_identities`, `002`는 과거 scaffold `scaffold_*` 게임 테이블을 생성
 - `003_create_mystery_v1_schema.sql`은 canonical `mystery-v1` 테이블을 순방향 추가
 - `004_seed_scenarios_and_personas.sql`은 정본 시나리오 5개·알리바이·관찰 문장·persona를 멱등 등록
 - `005_create_admin_knowledge_schema.sql` 관리자 운영 에이전트 색인(pgvector 필요)
@@ -618,6 +661,9 @@ uv run python -m backend.app.infrastructure.migrations
 - `009_update_persona_reasoning_skill.sql` persona 추론 수치·내용 hash 갱신
 - `010_add_custom_role.sql` 게임 mode, HUMAN custom snapshot, 제출 ability_id 추가
 - `011_add_custom_role_tool_abilities.sql` HUMAN VOTE의 `vote.triple.v1` CHECK 확장
+- `012_align_team_db_baseline.sql` 현재 team DB에 없는 빈 `scaffold_*`·`admin_knowledge_*` 객체를
+  데이터가 있을 때는 삭제하지 않고 중단한 뒤 정리하고, `BALANCED_OBSERVER` persona를 seed
+  데이터로 고정
 
 **팀 DB 적용 기록 (2026-09-08):** 사용자 승인으로 설정된 `DATABASE_MIGRATION_URL`의
 대상 DB 경로와 DDL 권한을 확인한 뒤, 서비스를 중지하고 **010 → 011**만 적용했습니다.
@@ -625,10 +671,19 @@ uv run python -m backend.app.infrastructure.migrations
 재실행도 통과했으며 새 열 5개·검증된 CHECK 3개, 기존 테이블 행 수, 기존 게임의
 `STANDARD` 기본값과 custom/ability 열의 `NULL` 보존을 확인했습니다.
 
+**team DB baseline 정렬 (2026-09-09):** 읽기 전용 catalog 확인에서 현재 DB에는
+`scaffold_*` 3개와 `admin_knowledge_*` 2개가 없고, 활성 persona 6개 중
+`BALANCED_OBSERVER`가 004 seed에 없음을 확인했습니다. 새 DB가 같은 최종 구조와
+seed를 얻도록 012를 추가했습니다. 012는 현재 team DB에서 없는 객체에는 no-op이고,
+대상 객체에 데이터가 있으면 삭제하지 않고 실패합니다. 실제 team DB에 012를 적용하는
+작업은 이 검증과 분리하며, 적용 전 row count·백업·서비스 중지 여부를 확인해야 합니다.
+
 위 기본 runner는 디렉터리의 전체 SQL을 이름순 실행하므로 이미 운영 중인 DB에서는
 적용할 파일 범위를 먼저 확정해야 합니다. runtime DSN으로 DDL 설정을 자동 대체하지
 않으며 URL과 자격 증명은 로그에 출력하지 않습니다. 다른 환경도 Backend·MCP를
-최신 코드로 실행하기 전에 010·011을 적용해야 합니다.
+최신 코드로 실행하기 전에 010·011·012를 적용해야 합니다. 새 DB에서는 runner가
+001부터 012까지 이름순으로 실행하며, 이미 team baseline인 DB에서는 012가 정렬 검사를
+수행하고 누락된 `BALANCED_OBSERVER`만 멱등 보완합니다.
 
 자세한 기본값·권한 분리는 [.env.example](.env.example)과
 [DB 설계 정본](docs/개발상세플랜/02_backend_data/AI_MAFIA_DB_DESIGN.md)을 참고하세요.

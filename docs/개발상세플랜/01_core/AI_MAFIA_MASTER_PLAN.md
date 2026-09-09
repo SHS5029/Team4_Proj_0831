@@ -1430,8 +1430,10 @@ Front UI 구현, custom AI, 실제 DB migration 적용은 포함하지 않는다
   탐정·의사이며 사망자도 포함한다. 본인 전용 읽기이며 밤 행동 횟수를 소모하지 않는다.
 - 기존 `custom-role-v1`에 두 versioned ID를 additive로 제공한다. 두 진영 모두 선택할 수
   있고 능력 수 1~3개·마피아 공격 필수는 유지한다. 밤 능력이 없는 시민 커스텀 직업도 허용한다.
-- 신규 파일은 `backend/migrations/011_add_custom_role_tool_abilities.sql` 하나다.
-  기존 010은 유지하고 VOTE의 `vote.triple.v1` 저장만 순방향으로 허용한다.
+- M10 자체의 신규 파일은 `backend/migrations/011_add_custom_role_tool_abilities.sql` 하나다.
+  기존 010은 유지하고 VOTE의 `vote.triple.v1` 저장만 순방향으로 허용한다. 이후 현재
+  team DB baseline과 새 DB의 최종 object·seed를 맞추기 위한 별도 순방향 정리 파일
+  `backend/migrations/012_align_team_db_baseline.sql`은 M10 기능 범위와 분리한다.
 
 M10 완료는 MCP 왕복·권한 거부·첫 밤 경계·가중 집계·재투표·재개·STANDARD 회귀를
 합성 데이터로 검증한 시점이다. 실제 화면 사용과 CP-7 완료는 후속 WU-B17·WU-F12 연동 증거가 필요하다.

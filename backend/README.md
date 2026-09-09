@@ -33,9 +33,11 @@ Health endpoint는 `GET http://127.0.0.1:8000/health`이며 정상 응답은
 uv run python -m backend.app.infrastructure.migrations
 ```
 
-현재 migration은 역사적으로 보존된 `001`·`002` legacy schema, `003` canonical
-`mystery-v1` schema, `004` 최소 정적 콘텐츠 순서로 실행됩니다. `004`는 시나리오 5개와 시나리오별
-알리바이·관찰 각 9개, 활성 persona 한 개를 고정 key로 멱등 등록합니다.
+현재 migration은 `001`·`002`·`005`의 역사적/선택 객체 생성도 파일 이력으로 보존한 뒤,
+마지막 `012`에서 현재 team DB baseline에 없는 빈 `scaffold_*`·`admin_knowledge_*` 객체를
+안전하게 정리하는 순서로 실행됩니다. `004`는 시나리오 5개와 시나리오별 알리바이·관찰
+각 9개를 등록하고, `012`가 team DB의 `BALANCED_OBSERVER` persona를 멱등 보완합니다.
+정리 대상에 데이터가 있으면 012는 삭제하지 않고 중단합니다.
 
 현재 Backend는 `mystery-v1` 공개 게임 API와 최소 FastMCP 연결용 내부 endpoint를
 제공합니다. Swagger는 `http://127.0.0.1:8000/docs`에서 확인할 수 있으며, FastMCP

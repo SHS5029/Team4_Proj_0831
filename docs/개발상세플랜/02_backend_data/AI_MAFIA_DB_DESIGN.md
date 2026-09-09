@@ -98,6 +98,12 @@ UUID만으로 사용자를 구분하는 최소 레코드다.
 읽거나 쓰지 않으며, 실제 데이터 보존 여부를 확인한 순방향 cleanup migration에서
 제거한다. 기존 적용 이력이 있는 migration 파일 자체는 수정하지 않는다.
 
+현재 team DB baseline에는 `002`가 생성하던 `scaffold_games`·`scaffold_operations`·
+`scaffold_events`와 `005`가 생성하던 `admin_knowledge_documents`·
+`admin_knowledge_chunks`가 없다. `012_align_team_db_baseline.sql`은 기존 migration
+이력을 보존한 채 이 다섯 객체가 비어 있을 때만 제거하며, 데이터가 있으면 삭제하지 않고
+중단한다. `oauth_identities`와 001의 legacy profile column은 이 정리 대상이 아니다.
+
 ### 4.2 `scenario_catalog`
 
 | 컬럼 | 타입 | 제약·의미 |
@@ -621,10 +627,13 @@ MVP에서도 접근 흔적을 남긴다.
 | `embedding` | `vector(64)` | 현재 고정 토큰 해싱 기반 로컬 임베딩 |
 | `metadata` | `jsonb` | 비민감 필터용 metadata object |
 
-`005_create_admin_knowledge_schema.sql`은 `vector` extension, GIN full-text index와
-cosine용 pgvector HNSW index를 만든다. 실제 Provider 임베딩으로 교체할 때는 차원과
-index를 함께 migration해야 한다. 질문 API는 역할·개별 행동·투표·seed·LLM prompt를
-이 테이블에 색인하지 않으며, 조회 결과와 질문 상태만 `admin_audit_events`에 남긴다.
+`005_create_admin_knowledge_schema.sql`은 선택 확장 환경에서 `vector` extension, GIN
+full-text index와 cosine용 pgvector HNSW index를 만든다. 현재 team DB baseline에는 이
+두 자료 테이블이 없으며, `012_align_team_db_baseline.sql`은 빈 테이블만 정리한다.
+운영 자료 검색 확장을 다시 활성화할 때는 012 이후 별도 순방향 migration으로 테이블을
+재도입해야 하며, 실제 Provider 임베딩으로 교체할 때는 차원과 index를 함께 migration해야
+한다. 질문 API는 역할·개별 행동·투표·seed·LLM prompt를 이 테이블에 색인하지 않으며,
+조회 결과와 질문 상태만 `admin_audit_events`에 남긴다.
 
 관리자 센터 확장(WU-B8, API 7.4~7.7)은 기존 테이블을 사용한다. users 전체 수,
 games의 UTC 생성 추이, 완료 게임의 game_players(kind=AI) 직업별 집계를 읽는다.
@@ -878,8 +887,9 @@ runner는 `DATABASE_MIGRATION_URL`을 필수 DDL 접속값으로 사용하며 ru
 1. 다음 번호 migration에서 canonical table, index, constraint와 seed loader를 만든다.
 2. 사용자 UUID-only repository와 canonical game API로 traffic을 전환한다.
 3. identity route·OIDC Front와 scaffold route가 더 이상 읽고 쓰지 않는지 확인한다.
-4. 보존할 실제 데이터가 없고 명시적 검토가 끝난 환경에서만 별도 순방향 migration으로
-   `oauth_identities`, legacy profile field와 `scaffold_*` table을 제거한다.
+4. 현재 team DB baseline을 새 DB에서도 재현해야 하므로 `012_align_team_db_baseline.sql`이
+   빈 `scaffold_*`와 `admin_knowledge_*`만 제거한다. `oauth_identities`와 legacy profile
+   field는 별도 보존 검토 전까지 유지한다.
 5. destructive cleanup 전 backup, row count, FK dependency와 rollback 절차를 기록한다.
 
 초기 개발 DB라도 기존 migration 파일을 다시 쓰는 대신 forward-only 전환을 사용한다.
@@ -892,6 +902,8 @@ cleanup 승인이 나기 전 legacy object는 사용 금지 상태이며 새 for
 - 같은 migration 재실행이 성공하고 중복 seed data를 만들지 않아야 한다.
 - runtime 계정으로 DDL과 event UPDATE·DELETE가 거부되는지 확인한다.
 - 5개 scenario, scenario별 18개 이상 template와 승인 hash를 확인한다.
+- 012의 정리 대상에 데이터가 있으면 삭제하지 않고 rollback되는지, 빈 대상은 제거되고
+  `BALANCED_OBSERVER`가 6번째 활성 persona로 멱등 등록되는지 확인한다.
 - `NOT VALID` FK를 사용했다면 검증 완료 없이 checkpoint를 통과하지 않는다.
 
 ## 10. 보존과 삭제
