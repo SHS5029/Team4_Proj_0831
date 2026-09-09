@@ -126,17 +126,14 @@ UUID로 동작하며 새로고침 뒤 게임 복구가 보장되지 않는다는
 
 ## 테스트·검증
 
-2026-09-09 저장소 정리 요청으로 Front 테스트 소스와 pytest 경로 설정을 삭제했습니다.
-아래 정적 검사만 현재 checkout에서 바로 실행할 수 있으며, 뒤의 테스트 수치는 삭제 전
-검증 이력입니다.
-
 ```powershell
+& ".\frontend_user\.venv\Scripts\python.exe" -m pytest ".\frontend_user\tests"
 & ".\frontend_user\.venv\Scripts\python.exe" -m ruff check ".\frontend_user"
 ```
 
 현재 확인된 Python 3.12 설치 경로는
 `C:\Users\Playdata\AppData\Local\Programs\Python\Python312\python.exe`이며,
-위 검사는 `frontend_user\.venv`가 이 Python을 정상적으로 참조할 때 실행합니다.
+위 테스트는 `frontend_user\.venv`가 이 Python을 정상적으로 참조할 때 실행합니다.
 
 ## 책임 경계
 
@@ -196,11 +193,12 @@ NFC·앞뒤/연속 공백 정규화 후 1~40자인 자유 직업명을 입력합
 포함하고, 기존 command 멱등 재시도와 저장/재개 경계를 유지합니다. 선택 키는 게임·행동
 창·능력별로 분리하여 rerun 시 선택을 보존하고 능력 전환 시 잘못된 대상을 제출하지 않습니다.
 
-삭제 전 Front 검증은 합성 catalog/snapshot을 사용하는 AppTest 및 API client/command
-테스트였습니다. 실제 Backend 통합은 WU-B16 fixture 확정 후 CP-7에서 수행해야 하며
-DB나 유료 API를 Front 검증에서 호출하지 않습니다. 현재 정적 검사 명령:
+Front 검증은 합성 catalog/snapshot을 사용하는 AppTest 및 API client/command 테스트입니다.
+실제 Backend 통합은 WU-B16 fixture 확정 후 CP-7에서 수행해야 하며 DB나 유료 API를
+Front 테스트에서 호출하지 않습니다. focused 검증 명령:
 
 ```bash
+frontend_user/.venv/bin/python -m pytest frontend_user/tests/test_home_f2.py frontend_user/tests/test_commands_f4.py frontend_user/tests/test_api_client.py frontend_user/tests/test_view_models_f3.py -q
 .venv/bin/ruff check frontend_user/app_pages/game_create_page.py frontend_user/app_pages/game_page.py frontend_user/app_pages/role_reveal_page.py frontend_user/components/action_panel.py frontend_user/core/api_client.py frontend_user/core/commands.py frontend_user/core/view_models.py --select F,E9
 ```
 
@@ -226,8 +224,9 @@ rerun 중 pending body/key를 보존하며 5xx는 동일 요청, 생성 422 교�
 snapshot 재조회와 수동 재시도를 제공합니다. 종료 화면은 Backend custom 직업명·진영을
 표준 역할보다 우선해 평문으로 표시합니다.
 
-아래 F12 결과는 테스트 소스 삭제 전에 실행한 이력입니다. 자동 회귀를 다시 운영하려면
-테스트 소스와 pytest 설정을 먼저 복원해야 합니다.
+F12 검증은 위 focused 명령에 `frontend_user/tests/test_result_f6.py`를 추가하고,
+전체 Front 회귀는 `frontend_user/.venv/bin/python -m pytest frontend_user/tests -q`로 실행합니다.
+DB·유료 API 호출은 포함하지 않으며 실제 서비스 CP-7 통합은 별도 검증입니다.
 
 2026-09-08 WU-F12 검증 결과: 능력 투표·private 조회·종료 표시 집중 검증 32건과
 snapshot 재검증 실패 경계 1건이 통과했습니다. 전체 Front 회귀는 **655 passed,

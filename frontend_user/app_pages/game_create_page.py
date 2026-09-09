@@ -307,8 +307,17 @@ def _render_role_settings(client: ApiClient, *, in_flight: bool) -> tuple[dict |
         key = f"game.create_abilities.{faction}"
         previous = st.session_state.get(key, [])
         previous = [value for value in previous if value in options] if isinstance(previous, list) else []
-        max_optional = 3 - len(mandatory)
-        st.markdown("**능력 선택 · 최대 3개**")
+        # 시민은 4개 능력 중 3개까지, 마피아는 공격을 포함한 전체 3개까지
+        # 선택하게 한다. 공격은 별도 checkbox가 아닌 기본 능력이므로, 마피아의
+        # 실제 추가 선택 수는 2개이며 화면 문구에도 전체 기준을 명시한다.
+        max_abilities = 3
+        max_optional = max_abilities - len(mandatory)
+        selection_label = (
+            "**마피아 진영 능력 선택 · 최대 3개 (공격 포함)**"
+            if faction == "MAFIA"
+            else "**시민 진영 능력 선택 · 최대 3개**"
+        )
+        st.markdown(selection_label)
         if mandatory:
             st.caption("공격은 기본 능력으로 포함됩니다.")
         selected = []
@@ -334,8 +343,12 @@ def _render_role_settings(client: ApiClient, *, in_flight: bool) -> tuple[dict |
             if name.strip():
                 st.caption(str(error))
             return None, False
-        if not 1 <= len(ability_ids) <= 3 or len(set(ability_ids)) != len(ability_ids):
-            st.caption("능력을 1~3개 선택해 주세요.")
+        if not 1 <= len(ability_ids) <= max_abilities or len(set(ability_ids)) != len(ability_ids):
+            st.caption(
+                "공격을 포함해 능력을 최대 3개 선택해 주세요."
+                if faction == "MAFIA"
+                else "총 4개 능력 중 최대 3개를 선택해 주세요."
+            )
             return None, False
         return {"name": name, "faction": faction, "catalog_version": data["catalog_version"],
                 "ability_ids": ability_ids}, True

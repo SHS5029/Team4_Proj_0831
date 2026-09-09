@@ -116,6 +116,10 @@ ACTION_PANEL_CSS = """
   -webkit-text-fill-color: #f3f7ff !important;
   opacity: 1 !important;
 }
+.action-submission-status {
+  margin: .7rem 0 0; padding: .35rem 0; color: #f3f7ff !important;
+  -webkit-text-fill-color: #f3f7ff !important; font-weight: 700; line-height: 1.45;
+}
 /* 비활성화된 제출 버튼도 기본 테마의 회색 글자에 묻히지 않게 한다.
    비활성 상태는 색상 대비로 구분하되, 안내 문구를 읽을 수 있는 불투명도를 유지한다. */
 [class*="st-key-night-action-panel"] [data-testid="stButton"] button,
@@ -246,7 +250,9 @@ def render(*, client: ApiClient, game_id: str, snapshot: dict[str, Any]) -> None
     # 채팅·대상 선택은 주기 갱신에 포함하지 않는다. 별도 시계와 큐 fragment가
     # 진행을 표시하는 동안 Enter 입력과 아직 제출하지 않은 선택을 유지한다.
     _render_actions(client=client, game_id=game_id, snapshot=snapshot)
-    _render_speech_queue(game_id=game_id)
+    phase = snapshot.get("game", {}).get("phase")
+    if phase in DISCUSSION_PHASES:
+        _render_speech_queue(game_id=game_id)
 
 
 def maintain_speech_queue(*, user_id: Any, page: str, game_id: Any,
@@ -306,8 +312,14 @@ def _render_speech_queue(*, game_id: str) -> None:
     queue = st.session_state.get("game.speech_queue")
     if not isinstance(queue, SpeechQueue) or queue.game_id != game_id:
         return
+    latest = st.session_state.get("game.latest_snapshot")
+    if (not isinstance(latest, dict)
+            or latest.get("game", {}).get("phase") not in DISCUSSION_PHASES):
+        # 토론 예약이 단계 전환으로 취소되어도 그 notice는 투표·밤 행동 화면의
+        # 안내와 섞이지 않도록 대화 단계에서만 표시한다.
+        return
     client = st.session_state.get("game.client")
-    snapshot = st.session_state.get("game.latest_snapshot")
+    snapshot = latest
     maintain_speech_queue(user_id=getattr(client, "user_id", None),
                           page=st.session_state.get("navigation.page", "game"),
                           game_id=game_id, snapshot=snapshot)
@@ -544,7 +556,7 @@ def _render_night_action(
     if game.get("mode") == "CUSTOM_ROLE":
         role_label = str(me.get("role_name", "커스텀 직업"))
         instruction = "이번 밤에는 선택한 능력 중 하나만 사용할 수 있습니다."
-        title = "선택한 능력의 대상을 골라 주세요"
+        title = "행동할 대상을 선택해 주세요"
     day_number = game.get("day_number", 1)
     if type(day_number) is not int or day_number < 1:
         day_number = 1
@@ -592,7 +604,12 @@ def _render_night_action(
         _clear_invalid_selection(key=target_key, options=option_ids)
         with st.container(key="night-action-selection", border=True):
             st.markdown("#### 행동 선택")
-            st.caption(title)
+            ability_target_titles = {
+                "night.attack.v1": "공격할 대상을 선택해 주세요.",
+                "night.investigate.v1": "조사할 대상을 선택해 주세요.",
+                "night.protect.v1": "보호할 대상을 선택해 주세요.",
+            }
+            st.caption(ability_target_titles.get(ability_id, title))
             target_labels = _target_labels(targets)
             target_id = st.radio(
                 "대상 선택",
@@ -667,7 +684,12 @@ def _render_vote_action(
             _render_pending_feedback(client=client, game_id=game_id, pending=pending)
             if "SUBMIT_VOTE" not in set(snapshot.get("legal_actions", [])) or not targets:
                 if window.get("has_submitted") or (pending and pending.get("status") == "SUCCEEDED"):
-                    st.success("투표를 제출했습니다. 집계 결과를 기다리고 있습니다.")
+                    st.markdown(
+                        '<div class="action-submission-status">'
+                        '투표를 제출했습니다. 집계 결과를 기다리고 있습니다.'
+                        '</div>',
+                        unsafe_allow_html=True,
+                    )
                 else:
                     st.info("다른 플레이어의 투표를 기다리고 있습니다.")
                 return
@@ -1161,7 +1183,16 @@ def _render_pending_feedback(
     if status in {"PENDING_TO_RENDER", "IN_FLIGHT"}:
         st.info("제출 내용을 확인하고 있습니다.")
     elif status == "SUCCEEDED":
-        st.success("행동이 제출되었습니다.")
+        command = pending.get("command")
+        if isinstance(command, dict) and command.get("type") == "SUBMIT_NIGHT_ACTION":
+            st.markdown(
+                '<div class="action-submission-status">'
+                '행동이 제출되었습니다. 다른 플레이어의 선택을 기다리고 있습니다.'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+        # 투표 완료 문구는 투표 패널의 단계별 분기에서 표시한다. 그 외 성공 상태는
+        # 별도 알림을 중복 렌더링하지 않고 서버 snapshot 갱신 결과만 사용한다.
     elif status == "RETRYABLE_UNKNOWN":
         st.warning("제출 결과를 확인하지 못했습니다. 같은 요청으로 다시 확인할 수 있습니다.")
         if st.button("같은 요청 다시 확인", key="action.retry_pending"):
