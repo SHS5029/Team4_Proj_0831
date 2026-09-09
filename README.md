@@ -428,6 +428,7 @@ pgvector·RAG 확장도 구분했습니다. 팀 DB의 색인 적용 여부는 20
 │   ├── app/llm_provider/             # 현재 LLM Provider adapter
 │   ├── app/mcp/                      # Backend Agent용 MCP context client
 │   ├── migrations/                   # Backend 작성 SQL migration(MCP 실행, 001~012)
+│   ├── tests/                        # Agent 시험 보고서 전용 행동·오류 회복 반복 검증 2개 파일
 │   ├── logs/                         # 실행 시 생성되는 순환 진행 로그 (Git 제외)
 │   └── README.md
 ├── frontend_user/
@@ -484,7 +485,9 @@ pgvector·RAG 확장도 구분했습니다. 팀 DB의 색인 적용 여부는 20
 분리된 과거 MCP 계층을 제거했습니다. Python `Protocol`의 `...`와 예외 정리용 `pass`는
 완성된 코드의 일부이므로 유지했습니다. 삭제한 Git 추적 파일은 저장소 이력에서 복구할
 수 있습니다. 현재 checkout에는 사용자 Front 테스트 11개와 `pytest.ini`가 있으며,
-Backend·MCP·관리자 Front의 기존 회귀를 재개하려면 해당 테스트와 경로 설정을 복원해야 합니다.
+Agent 시험 보고서 검증용으로 `backend/tests/test_agent_report_behavior.py`와
+`test_agent_report_recovery.py` 두 파일을 추가했습니다. Backend의 나머지 과거 회귀와
+MCP·관리자 Front의 기존 회귀를 재개하려면 해당 테스트와 경로 설정을 복원해야 합니다.
 
 같은 날 개발 문서는 `01_core`부터 `99_archive`까지 역할별로 재분류했습니다. 저장소
 루트에 중복돼 있던 Frontend 기술 설계와 Backend 인계 문서는 변경 내용이 더 많은 최신본을
@@ -830,6 +833,28 @@ Backend만 리로드할 때는 Backend 터미널에서 `Ctrl+C` 후 위 Backend 
 
 ### 검증 기록과 현재 상태
 
+2026-09-09 WU-B6 Agent 시험 보고서 검증은 AGT-001~012 및 보강 시험의
+**127개 변형을 각각 50회, 총 6,350회** 실행했습니다. 결과는 **6,296회 통과·54회
+실패·오류/건너뜀 0회**이며 pytest 실행 시간은 9.27초입니다. 각 변형의 샘플
+0~49가 정확히 한 번씩 실행됐음을 JUnit으로 검산했습니다. 재현 코드 두 파일은
+`backend/tests/`에 보존하며 관련 명령은 아래에 있습니다.
+
+- 실패는 모두 **9인 전원 생존 의사의 후보 상한 충돌**입니다. Backend의 의사
+  대상은 자기 자신을 포함해 9명이지만 API 명세와 MCP client는 최대 8개로 제한해
+  정상 Context를 `MCP_CONTEXT_CONTRACT`로 거부합니다. 고정 재현 시험 50회가 모두
+  실패했고, 다른 변형의 같은 조건에서도 4회 실패했습니다. 실제 판정 코드와 API
+  상한은 수정하지 않았으며 실패 테스트를 보존했습니다.
+- stale·중복 제출·MCP 장애·응답 유실과 rollback·activity 보강 시험은 통과했습니다.
+  응답 유실 시 원장은 1회 적용됐어도 activity가 `FAILED`일 수 있으므로, 실제 적용
+  건수는 원장과 함께 확인해야 합니다.
+- 합성 Provider·HTTP 전송·메모리 저장소를 사용해 실제 판정 코드를 실행했습니다.
+  실제 LLM 오류율·DB turn 통계·SQL 잠금/내구성 시험은 아닙니다. 새 테스트의 Ruff
+  `E9,F`와 문서·diff 검사를 통과했고, 런타임 변경이 없어 무관한 Front 회귀·외부 서비스
+  통합은 생략했습니다. 삭제된 과거 Backend·MCP 전체 스위트도 복원하지 않았습니다.
+
+시나리오별 횟수, 실제 오류 코드, 원인, 재현 명령과 증거 hash는
+[에이전트 시험 결과 보고서](docs/arrangement/07_AGENT_TEST_RESULT_REPORT.md)에 기록했습니다.
+
 2026-09-09 WU-B6에서는 `.env`의 `OPENAI_MODEL=gpt-5.6-luna`를 확인하고
 Backend·MCP·사용자 Front를 재기동한 뒤, 6인 박물관 게임 한 판을 브라우저에서
 진행했습니다. 저장·재개 두 번을 포함해 14:56:38 KST에 마피아 승리로 종료됐으며,
@@ -935,15 +960,29 @@ DB에 표시되는 client 주소는 중계 주소이고 연결·SQL 이력 기�
 
 아래 수치는 기능 구현 당시의 기록입니다. 현재 checkout에는 `frontend_user/tests`의
 테스트 소스 11개와 `frontend_user/pytest.ini`가 있어 다음 사용자 Front 회귀를 실행할
-수 있습니다. `backend/tests`, `frontend_admin/tests`, `mcp_server/tests`는 없으므로
-이 세 컴포넌트의 과거 전체 결과를 현재 재현 결과로 해석하지 마세요. 과거 검증 근거는
+수 있습니다. `backend/tests`에는 이번 Agent 보고서 전용 두 파일만 있으며,
+`frontend_admin/tests`, `mcp_server/tests`는 없으므로 이 세 컴포넌트의 과거 전체 결과를
+현재 재현 결과로 해석하지 마세요. 과거 검증 근거는
 [날짜별 기록](docs/개발상세플랜/90_history/)과 관련 설계 문서에 보존합니다.
 
 ```bash
 .venv/bin/python -m pytest frontend_user/tests -c frontend_user/pytest.ini
 ```
 
-테스트 소스를 다시 도입할 때는 컴포넌트별 `tests/` 경로와 pytest 설정을 함께 복원하고,
+Agent 보고서의 AGT-001~012 반복 검증은 저장소 루트에서 다음과 같이 실행합니다.
+각 테스트 변형마다 새 합성 상태로 50회 실행하며 외부 LLM·MCP·DB는 호출하지 않습니다.
+실제 Backend 판정 코드를 사용하는 이 시험의 통과율은 실제 LLM의 판단 정확도나
+실제 DB의 Agent turn 오류율과 구분합니다. 항목별 결과·예외 코드·시험 경계는
+[에이전트 시험 결과 보고서](docs/arrangement/07_AGENT_TEST_RESULT_REPORT.md)를 따릅니다.
+
+```bash
+AGENT_REPORT_SAMPLES=50 PYTHONPATH=. .venv/bin/python -m pytest \
+  backend/tests/test_agent_report_behavior.py \
+  backend/tests/test_agent_report_recovery.py \
+  -q --tb=short --junitxml=/tmp/agent-report-results.xml
+```
+
+나머지 과거 스위트를 복원할 때는 컴포넌트별 `tests/` 경로와 pytest 설정을 함께 복원하고,
 팀 DB를 사용하는 검증은 테스트 소유 자료만 조작해야 합니다. 현재 실행할 수 있는
 최소 정적 확인은 다음과 같습니다.
 

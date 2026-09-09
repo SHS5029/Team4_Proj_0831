@@ -40,6 +40,8 @@ backend/logs/
 !backend/tests/
 backend/tests/*
 !backend/tests/test_agent_activity.py
+!backend/tests/test_agent_report_behavior.py
+!backend/tests/test_agent_report_recovery.py
 !backend/tests/test_speech_analysis_repository.py
 !backend/tests/test_speech_analysis_provider.py
 !backend/tests/test_speech_analysis_worker.py

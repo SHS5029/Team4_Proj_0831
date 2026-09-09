@@ -1,5 +1,30 @@
 # AI 마피아 MVP 공통 마스터플랜
 
+## 2026-09-09 Agent 시험 보고서 반복 검증 (WU-B6)
+
+사용자가 요청한 이번 단일 WU-B6는 `docs/arrangement/07_AGENT_TEST_RESULT_REPORT.md`의
+AGT-001~012를 현재 실행 코드에 대해 각각 최소 50회 검증하고 결과를 기록하는 작업이다.
+Orca coordinator는 결과 집계·정본·루트 README·시험 보고서를 갱신하고, 두 작업자는
+동일 checkout에서 아래 테스트 파일만 나누어 소유한다. Backend·MCP 런타임, DB schema,
+공개 계약과 게임 규칙은 변경하지 않는다. 기존 테스트 소스가 정리된 상태이므로 기존
+pytest를 재사용해 `backend/tests/`에 보고서 전용 테스트 두 파일만 복원하고 `.gitignore`에
+이 두 파일의 추적 예외를 추가한다.
+
+- `backend/tests/test_agent_report_behavior.py`: AGT-001~008의 허용 행동·대상·필수 입력·Context 범위.
+- `backend/tests/test_agent_report_recovery.py`: AGT-009~012의 stale·duplicate·MCP 실패·응답 유실 방어와 관련 activity/rollback 증거.
+
+각 반복은 새 합성 상태와 fake Provider·MCP·저장소를 사용한다. 판정 로직은 실제
+Backend·Game Engine을 호출하고 실패를 성공으로 바꾸는 mock은 두지 않는다. DB 연동을
+추가로 실행해야 하는 경우 팀 테스트 DB의 해당 시험 소유 자료로만 한정하며 로컬 DB를
+만들지 않는다. 이번 합성 반복 결과는 실제 LLM 행동 오류율 또는 실제 DB turn 집계와
+구분한다. 발견한 기존 실패는 증거와 영향을 보고서에 기록하고 별도 구현으로 확대하지 않는다.
+
+검증 결과는 127개 변형 × 50회 = 6,350회 중 6,296회 통과·54회 실패·오류/건너뜀
+0회다. 9인 전원 생존 의사의 대상 9개와 API·MCP client의 최대 8개 제한이 충돌하며,
+이 조건의 고정 재현 50회와 다른 변형 4회가 실패했다. 제품 규칙·API·런타임은
+변경하지 않고 후속 계약 조정 대상으로 남긴다. 합성 상태·저장소를 사용한 범위와
+시나리오별 결과는 [시험 보고서](../../arrangement/07_AGENT_TEST_RESULT_REPORT.md)를 따른다.
+
 > **MVP 단순화 프로파일(2026-09-05):** DB·스키마·migration 이력은 보존한다.
 > OAuth/OIDC·Front HMAC, custom MCP bootstrap/capability/nonce/session registry,
 > Agent lease/fencing/job 상태 머신, LLM 비용·usage·자동 failover, Redis outbox
