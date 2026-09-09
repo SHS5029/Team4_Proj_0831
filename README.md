@@ -25,6 +25,14 @@
 | AI별로 입력을 새로 구성하고 개별 요청 | MCP로 허용된 문맥 조회와 행동 위임 | Backend가 유효성·마감·승패 확정 |
 | 다른 AI의 비공개 컨텍스트 공유 없음 | 모델 출력은 아직 확정되지 않은 제안 | PostgreSQL은 원본, Redis는 공개 이력 캐시 |
 
+현재 구현을 빈 디렉터리에서 구축하기 위한 통합 설계 문서는
+[arrangement 전체 시스템 설계서](docs/arrangement/AI_MAFIA_SYSTEM_ARCHITECTURE_DESIGN.md)와
+그 하위 DB·Redis·API·MCP·게임 엔진·화면·에이전트 아키텍처 설계서에서 확인할 수 있습니다.
+영역별 구현 순서와 검증 기준은 [세부 구현 계획서 목록](docs/arrangement/AI_MAFIA_IMPLEMENTATION_PLAN.md)을
+참조하며, 문제 정의·사용자 가치·MVP 범위는 [프로젝트 기획서](docs/arrangement/00_AI_MAFIA_PROJECT_PROPOSAL.md)에,
+Agent의 실행·검증 결과와 한계는 [에이전트 시험 결과 보고서](docs/arrangement/07_AGENT_TEST_RESULT_REPORT.md)에,
+계획에서 실제 구현·오류 개선·통합 검증까지의 흐름은 [프로젝트 수행과정 보고서](docs/arrangement/08_PROJECT_EXECUTION_REPORT.md)에 정리합니다.
+
 <a id="agents"></a>
 
 ## 01 · 공개 대화는 함께, 의사결정은 각자
@@ -446,6 +454,7 @@ pgvector·RAG 확장도 구분했습니다. 팀 DB의 색인 적용 여부는 20
 │       ├── schemas/                  # MCP wire 입력·응답 검증
 │       └── README.md
 ├── docs/
+│   ├── arrangement/                  # 프로젝트 기획·Agent 평가·현재 구현 기준 시스템·영역별 설계·세부 구현 계획
 │   ├── diagrams/                     # README 시스템 관계도 원본·HTML·SVG·검증 근거
 │   ├── ai_mafia_15min/               # 16장·15분 PPTX/PDF·대본·구성안·검증 기록
 │   │   ├── assets/screenshots/      # 실제 게임·관리자 화면 원본 8개
