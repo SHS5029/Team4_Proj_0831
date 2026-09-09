@@ -85,7 +85,8 @@ html { color-scheme: light; }
 }
 [data-testid="stAlertContentSuccess"] [data-testid="stMarkdownContainer"] * { color: inherit !important; }
 [class*="st-key-app-header"] {
-  margin: 0 -1.5rem 2rem; padding: .7rem 1.5rem .55rem;
+  /* 헤더와 첫 콘텐츠는 구분하되 과도한 빈 공간은 줄인다. */
+  margin: 0 -1.5rem .25rem; padding: .7rem 1.5rem .55rem;
   background: #0b1730; border-bottom: 1px solid #24324c;
 }
 [class*="st-key-app-header"] [data-testid="stHorizontalBlock"] { align-items: center; }

@@ -288,7 +288,8 @@ def _render_group(
                 st.markdown(f'<div class="home-card-title">{title}</div>', unsafe_allow_html=True)
                 st.markdown(
                     f'<div class="home-card-meta"><span class="home-card-badge{badge_class}">{label}</span>'
-                    f" · Day {escape(str(game.get('day_number', 1)))} · Round {escape(str(game.get('round', 0)))}</div>",
+                    f" · Day {escape(str(game.get('day_number', 1)))}"
+                    f" · Round {escape(str(game.get('round', 0)))}</div>",
                     unsafe_allow_html=True,
                 )
             if st.button(

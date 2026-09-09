@@ -25,7 +25,7 @@ from frontend_user.core.sync import SyncEnvelopeError
 from frontend_user.core.time_display import display_timestamp
 from frontend_user.core.view_models import own_private_view, public_players, public_timeline, validate_special_roles
 from frontend_user.core.session import maintain_special_roles, special_roles_scope
-from frontend_user.core.commands import owns_custom_ability
+from frontend_user.core.commands import ABILITY_DESCRIPTIONS, owns_custom_ability
 
 CLOSED_PLAYER_SELECTION = "__closed__"
 
@@ -337,7 +337,7 @@ def render(snapshot: dict[str, Any]) -> None:
         render_saved_control(client=client, snapshot=snapshot)
         left, center = st.columns([0.82, 2.55])
         with left:
-            _render_players(snapshot=snapshot, me=me, phase=str(phase))
+            _render_players(snapshot=snapshot, me=me, phase=str(phase), client=client)
         with center:
             _render_live_updates(client=client, snapshot=snapshot)
             _render_bottom_agent_activity(snapshot=snapshot)
@@ -359,7 +359,7 @@ def render(snapshot: dict[str, Any]) -> None:
         # 배치한다. 행동 제출·동기화는 기존 함수를 그대로 호출한다.
         left, center = st.columns([0.82, 2.55])
         with left:
-            _render_players(snapshot=snapshot, me=me, phase=str(phase))
+            _render_players(snapshot=snapshot, me=me, phase=str(phase), client=client)
         with center:
             # 공개 대화는 행동 단계에서 숨기되, sync fragment는 유지해 제출 대기
             # 중에도 서버의 마감·사망·종료 전이를 계속 반영한다.
@@ -374,7 +374,7 @@ def render(snapshot: dict[str, Any]) -> None:
     # 낮 토론은 보조 내 정보 열을 없애고 대화와 발언 입력에 화면 폭을 우선 배정한다.
     left, center = st.columns([0.82, 2.55])
     with left:
-        _render_players(snapshot=snapshot, me=me, phase=str(phase))
+        _render_players(snapshot=snapshot, me=me, phase=str(phase), client=client)
     with center:
         _render_live_updates(client=client, snapshot=snapshot)
         with st.container(key="current-action-region"):
@@ -527,13 +527,9 @@ def _render_live_updates(
         st.session_state["game.sync_render_snapshot"] = True
         st.rerun()
     game = latest.get("game", {})
-    _render_special_roles(client=client, snapshot=latest)
     if show_timeline:
         if own_private_view(latest).get("alive") is False:
             _render_spectator_timeline(snapshot=latest, me=own_private_view(latest))
-            if game.get("status") == "SAVED":
-                # 저장 화면에는 관전 전용 우측 패널이 없으므로 본인 결과를 여기서 복원한다.
-                _render_investigation_results(snapshot=latest)
         else:
             _render_timeline(snapshot=latest, scenario=latest.get("scenario", {}),
                              phase=str(game.get("phase", "")), day_number=game.get("day_number", 1))
@@ -615,6 +611,7 @@ def _render_phase_briefing(*, snapshot: dict[str, Any], phase: str, day_number: 
         str(player.get("player_id")): str(player.get("display_name", "플레이어"))
         for player in public_players(snapshot)
     }
+    player_roles = _public_revealed_roles(snapshot)
     transition_types = {
         "GAME_BEGAN",
         "NIGHT_RESOLVED",
@@ -630,7 +627,11 @@ def _render_phase_briefing(*, snapshot: dict[str, Any], phase: str, day_number: 
         None,
     )
     latest_text = (
-        _event_text(event=latest_transition, player_names=player_names)
+        _event_text(
+            event=latest_transition,
+            player_names=player_names,
+            player_roles=player_roles,
+        )
         if isinstance(latest_transition, dict)
         else None
     )
@@ -655,7 +656,11 @@ def _render_phase_briefing(*, snapshot: dict[str, Any], phase: str, day_number: 
         return
 
     if day_number >= 2 and isinstance(latest_night, dict):
-        night_text = _event_text(event=latest_night, player_names=player_names)
+        night_text = _event_text(
+            event=latest_night,
+            player_names=player_names,
+            player_roles=player_roles,
+        )
         players = public_players(snapshot)
         alive_count = sum(1 for player in players if player.get("alive"))
         total_count = len(players)
@@ -706,7 +711,7 @@ def _render_gm_briefing(*, title: str, message: str) -> None:
     )
 
 
-def _render_players(*, snapshot: dict[str, Any], me: dict[str, Any], phase: str) -> None:
+def _render_players(*, snapshot: dict[str, Any], me: dict[str, Any], phase: str, client: Any) -> None:
     """좌석순 공개 player와 선택한 player의 최근 공개 발언을 함께 표시한다."""
 
     players = public_players(snapshot)
@@ -731,7 +736,7 @@ def _render_players(*, snapshot: dict[str, Any], me: dict[str, Any], phase: str)
                 '</div>',
                 unsafe_allow_html=True,
             )
-        _render_custom_private_information(me=me)
+        _render_custom_private_information(snapshot=snapshot, me=me, client=client)
         st.markdown('<div class="game-panel-title">플레이어 목록</div>', unsafe_allow_html=True)
         st.markdown(
             f'<div class="game-panel-caption">전체 {len(players)}명 · 생존 {alive_count}명</div>',
@@ -893,7 +898,7 @@ def _render_spectator_layout(
         _render_spectator_controls(client=client, game_id=game_id, snapshot=snapshot)
         _render_bottom_agent_activity(snapshot=snapshot)
     with right:
-        _render_spectator_private(snapshot=snapshot, me=me)
+        _render_spectator_private(client=client, snapshot=snapshot, me=me)
 
 
 def _render_spectator_players(*, snapshot: dict[str, Any], me: dict[str, Any]) -> None:
@@ -986,7 +991,6 @@ def _render_spectator_timeline(*, snapshot: dict[str, Any], me: dict[str, Any]) 
         with progress_column:
             game = snapshot.get("game") if isinstance(snapshot.get("game"), dict) else {}
             _render_game_progress(game=game, compact=True)
-        _render_custom_private_information(me=me)
         _render_phase_briefing(
             snapshot=snapshot,
             phase=str(game.get("phase", "DAY_DISCUSSION")),
@@ -1035,7 +1039,7 @@ def _render_incident_summary(scenario: Any, *, me: dict[str, Any] | None = None)
             st.write(str(private.get("observation", "없음")))
 
 
-def _render_spectator_private(*, snapshot: dict[str, Any], me: dict[str, Any]) -> None:
+def _render_spectator_private(*, client: Any, snapshot: dict[str, Any], me: dict[str, Any]) -> None:
     """관전 중에도 유지되는 본인의 역할·사망 시점·기존 private 정보만 표시한다."""
 
     role_name, role_icon = ROLE_PRESENTATION.get(me.get("role"), ("확인 중", "❔"))
@@ -1060,7 +1064,7 @@ def _render_spectator_private(*, snapshot: dict[str, Any], me: dict[str, Any]) -
             st.write(f"역할: {role_name}")
             st.write(f"알리바이: {str(me.get('alibi', '없음'))}")
             st.write(f"관찰: {str(me.get('observation', '없음'))}")
-        _render_investigation_results(snapshot=snapshot)
+        _render_custom_private_information(snapshot=snapshot, me=me, client=client)
         eliminated_phase = own_public.get("eliminated_phase")
         eliminated_round = own_public.get("eliminated_round")
         with st.container(border=True):
@@ -1094,9 +1098,6 @@ def _render_timeline(
         # AI GM 브리핑은 player 발언이 쌓이는 scroll 영역 밖에 둔다. 따라서 최신
         # 대화로 자동 스크롤돼도 낮·밤 전환과 사건의 공개 안내를 계속 확인할 수 있다.
         # 이전 별도 내 정보 열이 사라져도 본인 탐정의 확정 결과는 계속 제공한다.
-        # 공개 채팅 event와 분리된 영역에서 기존 private projection 검증을 재사용한다.
-        with st.container(key="game-investigation-results"):
-            _render_investigation_results(snapshot=snapshot)
         _render_phase_briefing(snapshot=snapshot, phase=phase, day_number=day_number)
         events = _player_conversation_events(snapshot)
         # 공개 대화가 게임의 핵심이므로 독립 스크롤 영역을 크게 확보한다. 이벤트가
@@ -1120,34 +1121,80 @@ def _render_timeline(
                 )
 
 
-def _render_custom_private_information(*, me: dict[str, Any]) -> None:
-    """커스텀 역할의 개인 설명을 왼쪽 내 정보 아래에서 읽기 쉽게 표시한다.
+def _render_custom_private_information(
+    *, snapshot: dict[str, Any], me: dict[str, Any], client: Any,
+) -> None:
+    """본인 전용 역할·조사·특수 직업 정보를 왼쪽 카드 아래에 접어 표시한다.
 
-    커스텀 역할 설명은 본인에게만 허용된 정보이므로 공개 플레이어 목록과 분리한다.
-    설명의 진영·능력명·행동 요약은 굵게 강조하고, 서버에서 전달된 문장은 HTML로
-    해석되지 않도록 escape해 개인 정보가 화면 구조를 깨지 않게 한다.
+    세 정보는 Backend의 소유자 전용 projection과 조회 응답에서만 읽는다. 각
+    expander를 기본 접힘으로 두어 플레이어 목록을 압박하지 않으면서도, 공개
+    대화·다른 플레이어 정보와 섞이지 않는 개인 정보 영역을 유지한다.
     """
 
     description = custom_role_description(me)
-    if not description:
+    # 커스텀 역할의 전체 설명 조건이 일부 누락된 snapshot에서도 Backend가
+    # 전달한 ability_ids에 포함된 능력은 개인 카드에서 잃지 않도록 보강한다.
+    ability_ids = me.get("ability_ids")
+    if isinstance(ability_ids, list):
+        known_abilities = [
+            ABILITY_DESCRIPTIONS[ability_id]
+            for ability_id in ability_ids
+            if isinstance(ability_id, str) and ability_id in ABILITY_DESCRIPTIONS
+        ]
+        for ability in known_abilities:
+            if ability not in description:
+                description = f"{description}\n{ability}" if description else ability
+
+    if description:
+        with st.expander("🔒 내 역할 정보", expanded=False):
+            lines = []
+            for line in str(description).splitlines():
+                heading, separator, body = line.partition(":")
+                if separator:
+                    lines.append(
+                        f'<div style="margin:.25rem 0;line-height:1.45;">'
+                        f'<strong>{escape(heading)}:</strong> {escape(body.strip())}</div>'
+                    )
+                else:
+                    lines.append(
+                        f'<div style="margin:.25rem 0;line-height:1.45;">'
+                        f'<strong>{escape(line)}</strong></div>'
+                    )
+            st.markdown("".join(lines), unsafe_allow_html=True)
+
+    _render_private_results(snapshot=snapshot, client=client)
+
+
+def _render_private_results(*, snapshot: dict[str, Any], client: Any) -> None:
+    """조사·특수 직업 조회처럼 본인에게만 확정된 결과를 한 카드에 모아 표시한다.
+
+    조사 결과가 아직 없는 능력은 빈 안내문을 만들지 않는다. 다만 특수 직업 열람
+    능력을 가진 커스텀 역할은 첫날부터 접힌 개인 패널을 보여 주고, 첫 밤 이후에만
+    Backend 조회 범위와 조회 버튼을 활성화한다. 역할 정보는 Backend가 반환한
+    결과 외에는 Front에서 추정하지 않는다.
+    """
+
+    results = _validated_investigation_results(
+        snapshot, expected_game_id=st.session_state.get("game.game_id"),
+    )
+    can_view_special_roles = owns_custom_ability(snapshot, "intel.special_roles.v1")
+    special_scope = special_roles_scope(st.session_state, snapshot)
+    if not results and not can_view_special_roles:
         return
-    with st.container(key="game-custom-private-information", border=True):
-        st.markdown("#### 🔒 내 역할 정보")
-        st.caption("나에게만 표시됩니다.")
-        lines = []
-        for line in str(description).splitlines():
-            heading, separator, body = line.partition(":")
-            if separator:
-                lines.append(
-                    f'<div style="margin:.25rem 0;line-height:1.45;">'
-                    f'<strong>{escape(heading)}:</strong> {escape(body.strip())}</div>'
+    with st.expander("🔎 나에게만 공개된 결과", expanded=False):
+        if results:
+            st.markdown("**조사 결과**")
+            for result in results:
+                # 공개 이름에 Markdown·HTML이 있어도 링크나 이미지로 해석하지 않는다.
+                st.markdown(
+                    f'<div style="margin:.35rem 0;line-height:1.45;">{escape(result)}</div>',
+                    unsafe_allow_html=True,
                 )
-            else:
-                lines.append(
-                    f'<div style="margin:.25rem 0;line-height:1.45;">'
-                    f'<strong>{escape(line)}</strong></div>'
-                )
-        st.markdown("".join(lines), unsafe_allow_html=True)
+        if can_view_special_roles:
+            st.markdown("**특수 직업 조회**")
+            st.caption("첫 밤 종료 후 조회할 수 있습니다.")
+            if special_scope is not None:
+                _render_special_roles(client=client, snapshot=snapshot)
 
 
 def _player_conversation_events(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1289,13 +1336,26 @@ def _validated_investigation_results(
     players = snapshot.get("players")
     events = me.get("private_events")
     own_id = _canonical_uuid(me.get("player_id"))
+    ability_ids = me.get("ability_ids")
+    custom_investigation_owner = (
+        isinstance(game, dict)
+        and game.get("mode") == "CUSTOM_ROLE"
+        and me.get("faction") in {"CITIZEN", "MAFIA"}
+        and isinstance(ability_ids, list)
+        and "night.investigate.v1" in ability_ids
+    )
     if (not isinstance(game, dict) or not isinstance(players, list)
-            or not isinstance(events, list) or (me.get("role") != "DETECTIVE"
-                and not (game.get("mode") == "CUSTOM_ROLE"
-                         and "night.investigate.v1" in me.get("ability_ids", [])))
+            or not isinstance(events, list)
+            or (me.get("role") != "DETECTIVE" and not custom_investigation_owner)
             or own_id is None or own_id != me.get("player_id")):
         return []
     game_id = _canonical_uuid(game.get("game_id"))
+    # 일반 렌더링·저장 복원 경로에서 session 값이 아직 채워지지 않은 경우에도
+    # 현재 snapshot의 게임 범위 안에서만 결과를 검증한다. 게임 ID가 서로 다른
+    # 기존 세션 결과를 허용하지 않도록 snapshot ID를 우선하지 않고 일치 여부를
+    # 계속 검증한다.
+    if expected_game_id is None:
+        expected_game_id = game.get("game_id")
     current_round = game.get("round")
     if (game_id is None or game_id != game.get("game_id") or game_id != expected_game_id
             or type(current_round) is not int or not 0 <= current_round <= 5):
@@ -1351,19 +1411,27 @@ def _validated_investigation_results(
 
 
 def _render_investigation_results(*, snapshot: dict[str, Any]) -> None:
-    """생존·저장·관전 패널에서 동일한 검증을 거쳐 본인 조사 결과만 표시한다."""
+    """검증된 본인 조사 결과를 내 역할 정보 아래의 접힌 카드로 표시한다."""
 
     results = _validated_investigation_results(
         snapshot, expected_game_id=st.session_state.get("game.game_id"),
     )
     if results:
-        st.markdown("#### 나에게만 공개된 결과")
-        for result in results:
-            # 공개 이름에 Markdown·HTML이 있어도 링크나 이미지로 해석하지 않는다.
-            st.text(result)
+        with st.expander("🔎 나에게만 공개된 결과", expanded=False):
+            for result in results:
+                # 공개 이름에 Markdown·HTML이 있어도 링크나 이미지로 해석하지 않는다.
+                st.markdown(
+                    f'<div style="margin:.35rem 0;line-height:1.45;">{escape(result)}</div>',
+                    unsafe_allow_html=True,
+                )
 
 
-def _event_text(*, event: dict[str, Any], player_names: dict[str, str]) -> str:
+def _event_text(
+    *,
+    event: dict[str, Any],
+    player_names: dict[str, str],
+    player_roles: dict[str, str] | None = None,
+) -> str:
     """공개 event의 허용된 data만 사람이 읽을 수 있는 문장으로 변환한다."""
 
     # PublicEvent는 본문을 data 아래에 두는 폐쇄형 union이다. 다른 player의 선택이나
@@ -1396,12 +1464,17 @@ def _event_text(*, event: dict[str, Any], player_names: dict[str, str]) -> str:
             else f"{player_name}님의 발언 차례입니다."
         )
     if event_type == "NIGHT_RESOLVED":
-        killed_name = player_names.get(str(data.get("killed_player_id")))
-        return (
-            f"밤사이 {killed_name}님이 사망했습니다."
+        killed_player_id = str(data.get("killed_player_id"))
+        killed_name = player_names.get(killed_player_id)
+        revealed_role = (player_roles or {}).get(killed_player_id)
+        death_message = (
+            f"밤사이 {killed_name}님({revealed_role})이 사망했습니다."
+            if killed_name and revealed_role
+            else f"밤사이 {killed_name}님이 사망했습니다."
             if killed_name
             else "밤사이 사망자가 없습니다."
         )
+        return death_message
     if event_type == "PLAYER_EXECUTED":
         executed_name = player_names.get(str(data.get("player_id")), "플레이어")
         revealed_role = ROLE_PRESENTATION.get(data.get("revealed_role"), ("역할 확인", ""))[0]
@@ -1409,6 +1482,26 @@ def _event_text(*, event: dict[str, Any], player_names: dict[str, str]) -> str:
     if event_type == "FAST_FORWARD_ENABLED":
         return "남은 AI 행동을 빠르게 진행합니다."
     return "공개 사건 기록이 갱신되었습니다."
+
+
+def _public_revealed_roles(snapshot: dict[str, Any]) -> dict[str, str]:
+    """공개 역할이 확정된 player만 사망 안내에 사용할 한글 역할명으로 변환한다.
+
+    일반 진행 snapshot에는 숨은 역할이 들어오지 않는다. 따라서 revealed_role 또는
+    revealed_role_name이 실제로 공개된 player만 결과에 포함하며, Front가 생존 여부나
+    다른 private projection으로 역할을 추정하지 않는다.
+    """
+
+    roles: dict[str, str] = {}
+    for player in public_players(snapshot):
+        player_id = player.get("player_id")
+        role_value = player.get("revealed_role_name") or player.get("revealed_role")
+        if not isinstance(player_id, str) or not role_value:
+            continue
+        role_label = _public_role_label(role_value)
+        if role_label:
+            roles[player_id] = role_label
+    return roles
 
 
 def _vote_result_text(*, data: dict[str, Any], player_names: dict[str, str]) -> str | None:
@@ -2148,51 +2241,50 @@ def _render_special_roles(*, client: Any, snapshot: dict[str, Any]) -> None:
     if not owns_custom_ability(snapshot, "intel.special_roles.v1"):
         return
     if scope is None:
-        if type(snapshot["game"].get("day_number")) is int and snapshot["game"]["day_number"] < 2:
-            st.info("특수 직업 열람은 첫 밤 종료 후 사용할 수 있습니다.")
         return
-    with st.container(key="game-special-roles-private", border=True):
-        st.subheader("특수 직업 열람 · 나에게만 표시")
-        stored = st.session_state.get("game.special_roles")
-        if st.button("특수 직업 다시 조회" if stored else "특수 직업 조회", key="game.special_roles_query"):
-            if st.session_state.get("game.special_roles_refresh") == scope:
-                if not _refresh_special_roles_snapshot(client, scope):
-                    st.warning("최신 게임 상태를 확인하지 못했습니다. 잠시 후 다시 시도해 주세요.")
-                    return
-                if special_roles_scope(st.session_state, st.session_state.get("game.latest_snapshot")) != scope:
-                    st.rerun()
+    stored = st.session_state.get("game.special_roles")
+    if st.button("특수 직업 다시 조회" if stored else "특수 직업 조회", key="game.special_roles_query"):
+        if st.session_state.get("game.special_roles_refresh") == scope:
+            if not _refresh_special_roles_snapshot(client, scope):
+                st.warning("최신 게임 상태를 확인하지 못했습니다. 잠시 후 다시 시도해 주세요.")
+                return
+            if special_roles_scope(st.session_state, st.session_state.get("game.latest_snapshot")) != scope:
+                st.rerun()
+        st.session_state.pop("game.special_roles", None)
+        request_token = str(uuid4())
+        st.session_state["game.special_roles"] = {"scope": scope, "request": request_token}
+        roles = None
+        try:
+            response = client.get_special_roles(scope[2])
+            roles = validate_special_roles(response, scope)
+        except Exception:
+            # 서버 원문·비공개 payload·transport 예외를 화면이나 세션에 복사하지 않는다.
+            pass
+        current = st.session_state.get("game.latest_snapshot")
+        pending = st.session_state.get("game.special_roles")
+        if (special_roles_scope(st.session_state, current) != scope
+                or str(client.user_id) != scope[0]
+                or not isinstance(pending, dict) or pending.get("request") != request_token):
+            maintain_special_roles(st.session_state, current)
+            return
+        if roles is None:
             st.session_state.pop("game.special_roles", None)
-            request_token = str(uuid4())
-            st.session_state["game.special_roles"] = {"scope": scope, "request": request_token}
-            roles = None
-            try:
-                response = client.get_special_roles(scope[2])
-                roles = validate_special_roles(response, scope)
-            except Exception:
-                # 서버 원문·비공개 payload·transport 예외를 화면이나 세션에 복사하지 않는다.
-                pass
-            current = st.session_state.get("game.latest_snapshot")
-            pending = st.session_state.get("game.special_roles")
-            if (special_roles_scope(st.session_state, current) != scope
-                    or str(client.user_id) != scope[0]
-                    or not isinstance(pending, dict) or pending.get("request") != request_token):
-                maintain_special_roles(st.session_state, current)
-                return
-            if roles is None:
-                st.session_state.pop("game.special_roles", None)
-                st.warning("특수 직업 정보를 확인하지 못했습니다. 최신 상태를 확인한 뒤 다시 조회해 주세요.")
-                st.session_state["game.special_roles_refresh"] = scope
-                _refresh_special_roles_snapshot(client, scope)
-                return
-            st.session_state["game.special_roles"] = {"scope": scope, "roles": roles}
-        stored = st.session_state.get("game.special_roles")
-        if (isinstance(stored, dict) and stored.get("scope") == scope
-                and special_roles_scope(st.session_state, st.session_state.get("game.latest_snapshot")) == scope):
-            for row in stored.get("roles", []):
-                role = "탐정" if row["role"] == "DETECTIVE" else "의사"
-                st.text(f"{row['display_name']} · {role} · {'생존' if row['alive'] else '사망'}")
-            if stored.get("roles") == []:
-                st.text("조회 가능한 특수 직업이 없습니다.")
+            st.warning("특수 직업 정보를 확인하지 못했습니다. 최신 상태를 확인한 뒤 다시 조회해 주세요.")
+            st.session_state["game.special_roles_refresh"] = scope
+            _refresh_special_roles_snapshot(client, scope)
+            return
+        st.session_state["game.special_roles"] = {"scope": scope, "roles": roles}
+    stored = st.session_state.get("game.special_roles")
+    if (isinstance(stored, dict) and stored.get("scope") == scope
+            and special_roles_scope(st.session_state, st.session_state.get("game.latest_snapshot")) == scope):
+        for row in stored.get("roles", []):
+            role = "탐정" if row["role"] == "DETECTIVE" else "의사"
+            status = "생존" if row["alive"] else "사망"
+            st.markdown(
+                f"**{escape(row['display_name'])}** · **{role}** · {status}"
+            )
+        if stored.get("roles") == []:
+            st.text("조회 가능한 특수 직업이 없습니다.")
 
 
 
