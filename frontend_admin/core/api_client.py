@@ -6,7 +6,7 @@ import json
 import os
 from collections.abc import Callable
 from copy import deepcopy
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
@@ -27,8 +27,32 @@ AUDIT_EVENT_LABELS = {
     "AI 발언 분석 조회": "ADMIN_GET_SPEECH_ANALYTICS",
     "피드백 목록 조회": "ADMIN_LIST_FEEDBACK",
     "감사 로그 조회": "ADMIN_LIST_AUDIT_LOGS",
+    "AI Agent 행동 조회": "ADMIN_LIST_AGENT_JOBS",
+}
+AGENT_JOB_KIND_LABELS = {
+    "전체": None, "발언": "SPEECH", "밤 행동": "NIGHT_ACTION",
+    "투표": "VOTE", "GM 해설": "GM_NARRATION",
+}
+AGENT_JOB_STATUS_LABELS = {
+    "전체": None, "예약됨": "RESERVED", "결과 생성 성공": "SUCCEEDED",
+    "대체 결과 생성": "FALLBACK", "만료·폐기": "STALE", "실패": "FAILED",
 }
 JOB_LABELS = {"MAFIA": "마피아", "DETECTIVE": "탐정", "DOCTOR": "의사", "CITIZEN": "시민"}
+
+
+def _agent_job_params(*, game_id, job_kind, status, cursor, limit) -> dict[str, Any]:
+    """실제·데모 조회가 동일한 분류·UUID·페이지 크기를 사용하도록 제한한다."""
+
+    if not 1 <= limit <= 100:
+        raise ValueError("Agent 행동 로그는 1부터 100건까지 조회할 수 있습니다.")
+    if job_kind not in AGENT_JOB_KIND_LABELS.values() or status not in AGENT_JOB_STATUS_LABELS.values():
+        raise ValueError("Agent 작업 종류 또는 처리 상태가 올바르지 않습니다.")
+    return {key: value for key, value in {
+        "game_id": str(UUID(str(game_id))) if game_id is not None else None,
+        "job_kind": job_kind, "status": status,
+        "cursor": str(UUID(str(cursor))) if cursor is not None else None,
+        "limit": limit,
+    }.items() if value is not None}
 
 
 class AdminApiError(RuntimeError):
@@ -154,6 +178,17 @@ class AdminApiClient:
         query = urlencode({k: v for k, v in {"event_type": event_type, "cursor": cursor,
                                            "limit": limit}.items() if v is not None})
         return self._request("/api/v1/admin/audit-logs?" + query)
+
+    def agent_jobs(
+        self, *, game_id: str | UUID | None = None, job_kind: str | None = None,
+        status: str | None = None, cursor: str | None = None, limit: int = 20,
+    ) -> dict:
+        """Backend를 통해 팀 DB의 Agent 작업 메타데이터만 페이지 단위로 읽는다."""
+
+        params = _agent_job_params(
+            game_id=game_id, job_kind=job_kind, status=status, cursor=cursor, limit=limit,
+        )
+        return self._request("/api/v1/admin/agent-jobs?" + urlencode(params))
 
     def insights_query(self, question: str, *, source_types: list[str] | None = None,
                        rating_lte: int | None = None, from_date: str | None = None,
@@ -315,6 +350,46 @@ class DemoAdminApiClient:
                 if (event_type is None or row["event_type"] == event_type)
                 and (cursor is None or int(row["audit_id"]) < int(cursor))]
         return self._page(rows, "audit_id", limit)
+
+    def agent_jobs(
+        self, *, game_id: str | UUID | None = None, job_kind: str | None = None,
+        status: str | None = None, cursor: str | None = None, limit: int = 20,
+    ) -> dict:
+        """팀 DB를 변경하지 않고 모든 작업 종류·상태와 페이지 이동을 미리본다."""
+
+        params = _agent_job_params(
+            game_id=game_id, job_kind=job_kind, status=status, cursor=cursor, limit=limit,
+        )
+        kinds = [value for value in AGENT_JOB_KIND_LABELS.values() if value is not None]
+        statuses = [value for value in AGENT_JOB_STATUS_LABELS.values() if value is not None]
+        rows = []
+        for i in range(120):
+            kind = kinds[(i // len(statuses)) % len(kinds)]
+            job_status = statuses[i % len(statuses)]
+            created = datetime(2026, 9, 9, tzinfo=UTC) + timedelta(minutes=i)
+            rows.append({
+                "job_id": f"50000000-0000-4000-8000-{i + 1:012d}",
+                "game_id": DEMO_GAMES[i % 6]["game_id"],
+                "player_id": None if kind == "GM_NARRATION"
+                else f"60000000-0000-4000-8000-{i % 8 + 1:012d}",
+                "player_name": None if kind == "GM_NARRATION" else f"AI {i % 8 + 1}",
+                "window_id": f"70000000-0000-4000-8000-{i + 1:012d}",
+                "job_kind": kind, "status": job_status, "reserved_state_version": i + 1,
+                "failure_code": {"FALLBACK": "PROVIDER_UNAVAILABLE", "STALE": "LEASE_EXPIRED",
+                                 "FAILED": "AGENT_DEPENDENCY_ERROR"}.get(job_status),
+                "created_at": created.isoformat().replace("+00:00", "Z"),
+                "completed_at": None if job_status == "RESERVED"
+                else (created + timedelta(seconds=3)).isoformat().replace("+00:00", "Z"),
+            })
+        cursor_id = params.get("cursor")
+        if cursor_id is not None and not any(row["job_id"] == cursor_id for row in rows):
+            return {"data": {"items": [], "next_cursor": None}}
+        rows = [row for row in reversed(rows)
+                if ("game_id" not in params or row["game_id"] == params["game_id"])
+                and (job_kind is None or row["job_kind"] == job_kind)
+                and (status is None or row["status"] == status)
+                and (cursor_id is None or row["job_id"] < cursor_id)]
+        return self._page(rows, "job_id", limit)
 
     def insights_query(self, question: str, *, source_types: list[str] | None = None,
                        rating_lte: int | None = None, from_date: str | None = None,

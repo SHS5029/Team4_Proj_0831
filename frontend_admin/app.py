@@ -25,6 +25,8 @@ from frontend_admin.components.identity_bridge import (
     load_identity,
 )
 from frontend_admin.core.api_client import (
+    AGENT_JOB_KIND_LABELS,
+    AGENT_JOB_STATUS_LABELS,
     AUDIT_EVENT_LABELS,
     DEMO_API_KEY,
     AdminApiClient,
@@ -45,7 +47,7 @@ def _render_live_dashboard(client, *, synthetic: bool = False) -> None:
     """운영 분석을 주기적으로 다시 조회해 그래프가 최신 상태를 유지하게 한다.
 
     인증이 끝난 뒤에도 관리자 화면은 최초 조회 결과를 계속 붙잡지 않고,
-    fragment가 실행될 때마다 공개 집계·페르소나·피드백·감사 로그를 다시
+    fragment가 실행될 때마다 공개 집계·페르소나·피드백·선택한 로그를 다시
     읽는다. 자동 갱신 중 Backend가 일시적으로 실패하면 오래된 수치를
     최신 수치처럼 남기지 않고 해당 영역에 오류를 표시한다.
     """
@@ -364,11 +366,46 @@ def _dashboard_inputs(client, metrics: dict) -> tuple[dict, dict]:
 
     feedback_cursor = cursor("admin.feedback", (feedback_type, rating))
     logs_cursor = cursor("admin.logs", (event_type,))
+    log_source = st.session_state.get("admin.logs.source", "AI Agent 행동")
+    if log_source not in {"AI Agent 행동", "관리자 조회 이력"}:
+        log_source = "AI Agent 행동"
+        st.session_state["admin.logs.source"] = log_source
+    job_filters = {}
+    for name, labels in (("kind", AGENT_JOB_KIND_LABELS), ("status", AGENT_JOB_STATUS_LABELS)):
+        key = f"admin.agent_jobs.{name}"
+        label = st.session_state.get(key, "전체")
+        if label not in labels:
+            label = "전체"
+            st.session_state[key] = label
+        job_filters[name] = labels[label]
+    job_game_text = str(st.session_state.get("admin.agent_jobs.game", "")).strip()
+    job_game_id = None
+    job_game_invalid = False
+    if job_game_text:
+        try:
+            job_game_id = UUID(job_game_text)
+        except ValueError:
+            # 잘못된 UUID를 전체 조회로 바꾸면 필터가 적용된 것처럼 오해할 수 있다.
+            # 해당 목록만 비우고 입력 오류를 표시하며 Backend에는 요청하지 않는다.
+            job_game_invalid = True
+    jobs_cursor = cursor("admin.agent_jobs", (
+        job_filters["kind"], job_filters["status"],
+        str(job_game_id) if job_game_id else job_game_text,
+    ))
     records = {
         "feedback": data(client.feedback(feedback_type=feedback_type, rating=rating,
                                          cursor=feedback_cursor)),
-        "logs": data(client.audit_logs(event_type=event_type, cursor=logs_cursor)),
+        "logs": {"items": [], "next_cursor": None},
+        "agent_jobs": {"items": [], "next_cursor": None},
+        "agent_jobs_game_invalid": job_game_invalid,
     }
+    if log_source == "관리자 조회 이력":
+        records["logs"] = data(client.audit_logs(event_type=event_type, cursor=logs_cursor))
+    elif not job_game_invalid:
+        records["agent_jobs"] = data(client.agent_jobs(
+            game_id=job_game_id, job_kind=job_filters["kind"], status=job_filters["status"],
+            cursor=jobs_cursor,
+        ))
     return insights, records
 
 if __name__ == "__main__":

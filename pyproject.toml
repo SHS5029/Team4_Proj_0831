@@ -10,7 +10,7 @@ dependencies = [
   "python-dotenv>=1.1.0,<2",
   "streamlit>=1.55.0,<2",
   "uvicorn>=0.35.0,<1",
-  # --- AI 마피아 MVP(docs/개발상세플랜/AI_MAFIA_MASTER_PLAN.md)용 의존성 ---
+  # --- AI 마피아 MVP(docs/개발상세플랜/01_core/AI_MAFIA_MASTER_PLAN.md)용 의존성 ---
   # Redis: 게임 lock·공개 cache·event stream·내부 HMAC nonce
   "redis>=5.0.0,<7",
   # 역할 배정 seed를 AES-256-GCM으로 암호화해 PostgreSQL에 보관
@@ -35,11 +35,6 @@ dev = [
   "pytest-asyncio>=0.24.0,<2",
   "ruff>=0.12.0,<1",
 ]
-
-[tool.pytest.ini_options]
-addopts = "-ra"
-pythonpath = [".", "frontend_user"]
-testpaths = ["backend/tests", "frontend_user/tests", "tests"]
 
 [tool.ruff]
 line-length = 100

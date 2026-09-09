@@ -4,7 +4,7 @@
 
 이 문서는 현재 코드의 실행 경계를 바탕으로 **인지 → 판단 → 행동 → 검증을 StateGraph로 표현하는 도입안**을 정의한다. 현재 구현은 `AgentOrchestrator`의 직접 비동기 호출이며, StateGraph 런타임·지속 요약 메모리·아래 공유 상태 객체는 아직 구현하지 않았다. 이 작업은 문서 작성만 수행하며 API, DB schema, 게임 동작을 변경하지 않는다. 후속 구현에서 계약이나 저장 구조가 바뀌면 관련 정본 갱신과 섹터 합의를 먼저 진행한다.
 
-정본: [마스터플랜](개발상세플랜/AI_MAFIA_MASTER_PLAN.md), [API 명세](개발상세플랜/AI_MAFIA_API_SPEC.md), [MCP 서버 설계](개발상세플랜/AI_MAFIA_MCP_SERVER_DESIGN.md), [DB 설계](개발상세플랜/AI_MAFIA_DB_DESIGN.md). 이 문서의 상태 필드는 내부 그래프 설계이며 MCP Resource의 별도 wire schema가 아니다. Resource 상세 계약은 API 명세를 따른다.
+정본: [마스터플랜](개발상세플랜/01_core/AI_MAFIA_MASTER_PLAN.md), [API 명세](개발상세플랜/01_core/AI_MAFIA_API_SPEC.md), [MCP 서버 설계](개발상세플랜/03_mcp_agent/AI_MAFIA_MCP_SERVER_DESIGN.md), [DB 설계](개발상세플랜/02_backend_data/AI_MAFIA_DB_DESIGN.md). 이 문서의 상태 필드는 내부 그래프 설계이며 MCP Resource의 별도 wire schema가 아니다. Resource 상세 계약은 API 명세를 따른다.
 
 ## 1. 현재 구현과 설계 변경점
 
@@ -36,7 +36,7 @@ AI 목표는 자신의 진영 승리다. 시민 진영은 근거에 따른 추�
 
 ## 3. StateGraph 상태 흐름도
 
-아래 Mermaid가 전체 논리 흐름이다. [Archify HTML](AI_MAFIA_AGENT_STATEGRAPH.html)은 같은 노드의 주요 경로와 예외 분기를 보여준다. 상세 반환·종료 조건은 아래 Mermaid와 표를 함께 읽는다.
+아래 Mermaid가 전체 논리 흐름이다. [Archify HTML](diagrams/AI_MAFIA_AGENT_STATEGRAPH.html)은 같은 노드의 주요 경로와 예외 분기를 보여준다. 상세 반환·종료 조건은 아래 Mermaid와 표를 함께 읽는다.
 
 ```mermaid
 flowchart TD
@@ -321,13 +321,13 @@ checkpoint를 도입하면 원문 context·개인 역할·모델 내부 추론·
 
 ## 11. 산출물·검증 기록
 
-- [인터랙티브 StateGraph HTML](AI_MAFIA_AGENT_STATEGRAPH.html): 독립 HTML로 브라우저에서 열 수 있다. 테마 전환, 확대·이동, 검색과 관계 추적을 지원한다.
-- [Archify 사양](AI_MAFIA_AGENT_STATEGRAPH.workflow.json): `workflow`, `schema_version: 2`, `showcase`.
-- [검증 원본](AI_MAFIA_AGENT_STATEGRAPH.validation.json): 9/9 검사 통과, composition 오류 0개·경고 0개.
-- [전달 영수증](AI_MAFIA_AGENT_STATEGRAPH.delivery.json): 사양과 HTML의 SHA-256·byte 수를 기록한다.
+- [인터랙티브 StateGraph HTML](diagrams/AI_MAFIA_AGENT_STATEGRAPH.html): 독립 HTML로 브라우저에서 열 수 있다. 테마 전환, 확대·이동, 검색과 관계 추적을 지원한다.
+- [Archify 사양](diagrams/AI_MAFIA_AGENT_STATEGRAPH.workflow.json): `workflow`, `schema_version: 2`, `showcase`.
+- [검증 원본](diagrams/AI_MAFIA_AGENT_STATEGRAPH.validation.json): 9/9 검사 통과, composition 오류 0개·경고 0개.
+- [전달 영수증](diagrams/AI_MAFIA_AGENT_STATEGRAPH.delivery.json): 사양과 HTML의 SHA-256·byte 수를 기록한다.
 - specification SHA-256: `c37a1380da0a06114cc9cad3a3d13ccaf7bd73c1a879703f14017d8d707fcc51`.
 - artifact SHA-256: `2849f152df5c22706673ff9b6a387546d18bb9f18b3b8ae6ea61b3230203b4c5`.
 - 이전 경로 충돌은 `repair` 노드를 행동 호출 아래 열로 옮기고 자동 경로를 사용해 해결했다. 주요 경로와 예외 분기의 의미는 유지했다.
 - 본문은 한국어이며 Archify 고정 뷰어 메뉴와 HTML 언어 메타데이터는 지원 범위에 따라 영어다.
-- [화면 검증 기록](AI_MAFIA_AGENT_STATEGRAPH.visual-check.json)과 [테마별 캡처](AI_MAFIA_AGENT_STATEGRAPH.visual-check.html): 1440×900, 1600×1000, 1920×1080, 2048×1320에서 화면 넘침 없음. 밝은·어두운 테마 캡처를 직접 검토했다 (`visual_review: passed`). 자동 영수증의 `visualReview: pending`은 자동 검사가 사람의 시각 검토를 대체하지 않는다는 도구 표기다.
+- [화면 검증 기록](diagrams/AI_MAFIA_AGENT_STATEGRAPH.visual-check.json)과 [테마별 캡처](diagrams/AI_MAFIA_AGENT_STATEGRAPH.visual-check.html): 1440×900, 1600×1000, 1920×1080, 2048×1320에서 화면 넘침 없음. 밝은·어두운 테마 캡처를 직접 검토했다 (`visual_review: passed`). 자동 영수증의 `visualReview: pending`은 자동 검사가 사람의 시각 검토를 대체하지 않는다는 도구 표기다.
 - 앱 실행 로직을 변경하지 않아 앱 회귀 테스트·서버 재시작·유료 API 호출은 생략한다.

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-PRIVATE_KEYS = {"role", "alibi", "observation", "private_events", "action", "vote", "seed", "agent_context"}
+PRIVATE_KEYS = {
+    "role", "alibi", "observation", "private_events", "action", "vote", "seed", "agent_context",
+    "normalized_proposal", "normalized_result", "lease_token",
+}
 
 
 def reject_private_fields(value: Any) -> Any:

@@ -16,6 +16,7 @@ from backend.app.core.errors import ApiError
 from backend.app.core.responses import api_success_response, request_trace_id
 from backend.app.routers.game_router import user_id_header
 from backend.app.schemas.admin_schema import (
+    AdminAgentJobQuery,
     AdminAuditQuery,
     AdminFeedbackQuery,
     AdminGameListQuery,
@@ -178,6 +179,34 @@ def list_admin_feedback(
         admin_id, **query.model_dump(), request_id=UUID(request_trace_id(request)),
     )
     return api_success_response(request, data)
+
+
+@router.get("/agent-jobs", response_model=None)
+def list_admin_agent_jobs(
+    request: Request,
+    x_user_id: str | None = Header(default=None),
+    game_id: str | None = Query(default=None),
+    job_kind: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    cursor: str | None = Query(default=None),
+    limit: str = Query(default="20"),
+) -> JSONResponse:
+    """권한을 먼저 확인한 뒤 Agent 작업 분류·UUID·페이지 크기를 검증한다."""
+
+    admin_id = user_id_header(x_user_id)
+    _admin_service(request).require_admin(admin_id)
+    try:
+        query = AdminAgentJobQuery(
+            game_id=game_id, job_kind=job_kind, status=status, cursor=cursor, limit=limit,
+        )
+    except ValidationError as error:
+        raise _validation_error(error) from error
+    data = _admin_service(request).list_agent_jobs(
+        admin_id, **query.model_dump(), request_id=UUID(request_trace_id(request)),
+    )
+    response = api_success_response(request, data)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.get("/audit-logs", response_model=None)

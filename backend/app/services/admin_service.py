@@ -180,6 +180,19 @@ class AdminService:
         self._audit(admin_user_id, "ADMIN_LIST_AUDIT_LOGS", None, request_id)
         return {"items": items, "next_cursor": next_cursor}
 
+    def list_agent_jobs(
+        self, admin_user_id: UUID, *, game_id: UUID | None, job_kind: str | None,
+        status: str | None, cursor: UUID | None, limit: int, request_id: UUID,
+    ) -> dict:
+        """관리자에게 작업 메타데이터를 제공하고 해당 조회의 감사 기록을 남긴다."""
+
+        self.require_admin(admin_user_id)
+        items, next_cursor = self._read(lambda: self.repository.list_agent_jobs(
+            game_id=game_id, job_kind=job_kind, status=status, cursor=cursor, limit=limit,
+        ))
+        self._audit(admin_user_id, "ADMIN_LIST_AGENT_JOBS", game_id, request_id)
+        return {"items": items, "next_cursor": next_cursor}
+
     def query_insights(
         self,
         admin_user_id: UUID,

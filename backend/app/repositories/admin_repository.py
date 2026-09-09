@@ -93,6 +93,11 @@ class AdminRepository(Protocol):
     def list_audit_logs(self, *, event_type: str | None, cursor: int | None,
                         limit: int) -> tuple[list[dict], str | None]: ...
 
+    def list_agent_jobs(
+        self, *, game_id: UUID | None, job_kind: str | None, status: str | None,
+        cursor: UUID | None, limit: int,
+    ) -> tuple[list[dict], str | None]: ...
+
     def search_knowledge(
         self,
         *,
@@ -932,6 +937,49 @@ class PostgresAdminRepository:
                   "request_id": str(row["request_id"]), "created_at": _iso(row["created_at"])}
                  for row in rows[:limit]]
         return items, items[-1]["audit_id"] if len(rows) > limit else None
+
+    def list_agent_jobs(
+        self, *, game_id: UUID | None, job_kind: str | None, status: str | None,
+        cursor: UUID | None, limit: int,
+    ) -> tuple[list[dict], str | None]:
+        """작업 메타데이터만 최근 생성순으로 읽고 동률은 UUID로 구분한다.
+
+        제안 JSON과 lease token은 SQL에서 선택하지 않아 비공개 행동·권한이
+        응답에 섞일 수 없게 한다. 플레이어 이름도 같은 게임에 속한 행만 읽는다.
+        작업 상태는 생성 결과이므로 실제 행동 원장의 반영 상태로 해석하지 않는다.
+        """
+
+        with self._connection() as connection:
+            with connection.cursor() as cursor_obj:
+                cursor_obj.execute(
+                    """
+                    SELECT j.id, j.game_id, j.player_id, p.display_name AS player_name,
+                           j.window_id, j.job_kind, j.status, j.reserved_state_version,
+                           j.failure_code, j.created_at, j.completed_at
+                    FROM public.agent_jobs j
+                    LEFT JOIN public.game_players p
+                      ON p.game_id = j.game_id AND p.id = j.player_id
+                    WHERE (%s::uuid IS NULL OR j.game_id = %s)
+                      AND (%s::text IS NULL OR j.job_kind = %s)
+                      AND (%s::text IS NULL OR j.status = %s)
+                      AND (%s::uuid IS NULL OR (j.created_at, j.id) < (
+                          SELECT c.created_at, c.id FROM public.agent_jobs c WHERE c.id = %s))
+                    ORDER BY j.created_at DESC, j.id DESC LIMIT %s
+                    """,
+                    [game_id, game_id, job_kind, job_kind, status, status,
+                     cursor, cursor, limit + 1],
+                )
+                rows = list(cursor_obj.fetchall())
+        items = [{
+            "job_id": str(row["id"]), "game_id": str(row["game_id"]),
+            "player_id": str(row["player_id"]) if row["player_id"] else None,
+            "player_name": row["player_name"], "window_id": str(row["window_id"]),
+            "job_kind": row["job_kind"], "status": row["status"],
+            "reserved_state_version": int(row["reserved_state_version"]),
+            "failure_code": row["failure_code"], "created_at": _iso(row["created_at"]),
+            "completed_at": _iso(row["completed_at"]),
+        } for row in rows[:limit]]
+        return items, items[-1]["job_id"] if len(rows) > limit else None
 
     def search_knowledge(
         self,

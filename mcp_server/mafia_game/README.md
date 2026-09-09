@@ -43,7 +43,7 @@ AI 문맥에 추가하지 않으며 기존 AI Tool allowlist도 확장하지 않
 
 Backend는 두 지침을 developer 메시지로 한 번 전달하고 게임 원문은 user 데이터에
 둔다. 메인 system 메시지는 짧은 공통 규칙만 유지한다. 운영 응답의 정확한 계약은
-[API 명세](../../docs/개발상세플랜/AI_MAFIA_API_SPEC.md)의 WU-M6 절을 따른다.
+[API 명세](../../docs/개발상세플랜/01_core/AI_MAFIA_API_SPEC.md)의 WU-M6 절을 따른다.
 
 `api/prompts`, `api/resources`, `api/tools`의 `__init__.py`는 패키지 설명만 포함한다.
 FastMCP 등록 코드는 각 패키지의 `registry.py`에 두며, `main.py`는 이 모듈들을 직접
@@ -67,25 +67,16 @@ MCP endpoint는 `http://127.0.0.1:8100/mcp`다. FastMCP 표준 protocol session�
 보내지 않으면 Backend는 MCP 오류로 처리한다. `run_openai.sh`를 사용 중이면 전체
 스크립트를 재시작한다. MCP 프로세스에는 자동 reload가 없다.
 
-## 검증
+## 검증 이력
 
-```powershell
-$env:PYTHONPATH = "mcp_server"
-python -m pytest -q mcp_server/tests
-```
-
-테스트는 역할·단계별 선택, 페르소나 수치 검증과 원문 분리, 등록 목록, Backend adapter
-위임, FastMCP ASGI 왕복을 확인한다. 사용자 전용 능력은 고정 투표 payload, 조회의 UUID·
-비공개 응답 검증, 권한·첫 밤 거부와 오류 본문 차단을 합성 Backend로 검증한다.
-`test_process_backend_roundtrip.py`는 Backend와
-FastMCP를 각각 실제 subprocess로 실행한다. 이 테스트는 Backend 의존성과 migration·seed가
-준비된 격리 PostgreSQL이 필요하며 LLM은 dummy로 검증한다.
+2026-09-09 저장소 정리 요청으로 MCP 테스트 소스와 pytest 경로 설정을 삭제했다.
+아래 WU-M10 수치는 삭제 전 실행한 이력이며 현재 checkout에서 같은 pytest 명령을
+재실행할 수 없다. 현재 최소 확인은 `python -m compileall mafia_game`과
+`ruff check mafia_game`, 저장소 루트의 `git diff --check`를 사용한다.
 
 ### 2026-09-08 WU-M10 팀 DB 적용 사전 검증
 
-MCP 비DB 회귀는 `PYTHONPATH=mcp_server .venv/bin/python -m pytest -q
-mcp_server/tests --ignore=mcp_server/tests/test_process_backend_roundtrip.py`로
-177개 통과했다. Backend의 B16·MCP registry·migration 테스트와 MCP adapter·등록·
+MCP 비DB 회귀는 삭제 전에 177개 통과했다. Backend의 B16·MCP registry·migration 테스트와 MCP adapter·등록·
 ASGI 왕복 focused 검증은 514개 통과, 3개 실패했다. 실패는 Backend
 `test_mcp_registry_api.py`의 public context 테스트이며 `ReaderFixture`에
 `cache_public_history`가 없어 `actor_context.py`에서 503으로 변환되는 것이 원인이다.

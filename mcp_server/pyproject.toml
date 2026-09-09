@@ -16,11 +16,6 @@ dev = [
   "ruff>=0.16.0,<1",
 ]
 
-[tool.pytest.ini_options]
-addopts = "-ra"
-pythonpath = ["."]
-testpaths = ["tests"]
-
 [tool.ruff]
 line-length = 100
 target-version = "py312"
@@ -28,10 +23,6 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "ASYNC", "S"]
 ignore = ["S101"]
-
-[tool.ruff.lint.per-file-ignores]
-"mcp_server/tests/**/*.py" = ["S105", "S106"]
-"tests/**/*.py" = ["S105", "S106"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["mafia_game"]

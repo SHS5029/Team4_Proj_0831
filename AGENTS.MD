@@ -9,15 +9,15 @@ AI 마피아 MVP 구현은 3인이 Front / Backend / MCP Server·Data Infrastruc
 문서와 다음 정본 중 작업에 관계된 문서를 반드시 읽어야 합니다.
 
 - 공통 제품 규칙·시나리오·소유권·WU·CP:
-  [AI_MAFIA_MASTER_PLAN.md](docs/개발상세플랜/AI_MAFIA_MASTER_PLAN.md)
+  [AI_MAFIA_MASTER_PLAN.md](docs/개발상세플랜/01_core/AI_MAFIA_MASTER_PLAN.md)
 - PostgreSQL·Redis·transaction·migration:
-  [AI_MAFIA_DB_DESIGN.md](docs/개발상세플랜/AI_MAFIA_DB_DESIGN.md)
+  [AI_MAFIA_DB_DESIGN.md](docs/개발상세플랜/02_backend_data/AI_MAFIA_DB_DESIGN.md)
 - 공개·내부·MCP API:
-  [AI_MAFIA_API_SPEC.md](docs/개발상세플랜/AI_MAFIA_API_SPEC.md)
+  [AI_MAFIA_API_SPEC.md](docs/개발상세플랜/01_core/AI_MAFIA_API_SPEC.md)
 - MCP runtime 구현 구조·WU 실행 설계:
-  [AI_MAFIA_MCP_SERVER_DESIGN.md](docs/개발상세플랜/AI_MAFIA_MCP_SERVER_DESIGN.md)
+  [AI_MAFIA_MCP_SERVER_DESIGN.md](docs/개발상세플랜/03_mcp_agent/AI_MAFIA_MCP_SERVER_DESIGN.md)
 - 사용자·관리자 화면:
-  [AI_MAFIA_SCREEN_FLOW.md](docs/개발상세플랜/AI_MAFIA_SCREEN_FLOW.md)
+  [AI_MAFIA_SCREEN_FLOW.md](docs/개발상세플랜/04_frontend/AI_MAFIA_SCREEN_FLOW.md)
 
 다섯 MCP Resource의 상세 `data` schema는 API 명세 8.2절과 그 절이 명시적으로
 참조하는 API 공통 모델만 정본이다. MCP 서버 설계서에는 URI·Engine scope 매핑과
