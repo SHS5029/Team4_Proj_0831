@@ -8,7 +8,7 @@ from backend.app.models.enums import GamePhase
 
 
 _DURATION_SECONDS: dict[GamePhase, int] = {
-    GamePhase.NIGHT_ACTION: 20,
+    GamePhase.NIGHT_ACTION: 30,
     GamePhase.DAY_VOTE: 30,
     GamePhase.REVOTE: 30,
     GamePhase.FINAL_ACCUSATION: 30,

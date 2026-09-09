@@ -212,7 +212,7 @@ API:
 
 - 전체 인원 segmented control: `6`, `7`, `8`, `9`
 - 선택 인원별 역할 구성 preview
-- 규칙 요약: 인간 1명, 첫날 무투표, 밤 20초, 투표 30초, 최대 밤 5회
+- 규칙 요약: 인간 1명, 첫날 무투표, 밤 30초, 투표 30초, 최대 밤 5회
 - `게임 만들기` primary button
 - `취소` secondary button
 
@@ -334,9 +334,9 @@ HTML을 허용하지 않고 plain text로 렌더링한다. 내부 event payload 
 |---|---|---|---|
 | `DAY_DISCUSSION`, 발언 가능 | 최대 200자 발언, 첫날은 인간·AI 모두 PASS 금지 | 발언 입력, 글자수, 첫날에는 `PASS` 숨김 | 서버 legal action·deadline에 따른 제어 |
 | `DAY_DISCUSSION`, 다른 차례 | 현재 발언자 표시 | 없음 | event 대기 |
-| `NIGHT_ACTION`, 마피아 | 공격 대상 선택, 20초 | target radio, 제출 | 대상 비공개 유지 |
-| `NIGHT_ACTION`, 탐정 | 조사 대상 선택, 20초 | target radio, 제출 | private 결과 event 대기 |
-| `NIGHT_ACTION`, 의사 | 보호 대상 선택, 20초 | target radio, 제출 | 성공 여부 숨김 |
+| `NIGHT_ACTION`, 마피아 | 공격 대상 선택, 30초 | target radio, 제출 | 대상 비공개 유지 |
+| `NIGHT_ACTION`, 탐정 | 조사 대상 선택, 30초 | target radio, 제출 | private 결과 event 대기 |
+| `NIGHT_ACTION`, 의사 | 보호 대상 선택, 30초 | target radio, 제출 | 성공 여부 숨김 |
 | `NIGHT_ACTION`, 시민 | 밤이 지나가는 중 | 없음 | 결과 대기 |
 | `DAY_VOTE` | 처형 후보 선택, 30초 | target radio, 투표 | 집계 전 선택 비공개 |
 | `REVOTE` | 동률 후보 중 선택, 30초 | 축소 target radio | 결과 대기 |

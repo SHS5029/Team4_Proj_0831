@@ -286,7 +286,7 @@ ENDED
   index를 둔다.
 - `UNIQUE(game_id, id)`와 `(game_id, turn_player_id) -> game_players(game_id, id)`
   복합 FK로 다른 게임 player가 발언 차례에 들어가지 못하게 한다.
-- 밤은 20초, 투표 계열은 30초다. DB가 초 단위를 설정값으로 저장하지 않고 실제
+- 밤은 30초, 투표 계열은 30초다. DB가 초 단위를 설정값으로 저장하지 않고 실제
   `opened_at`·`deadline_at`을 원본으로 보존한다.
 - `status=OPEN`인 window만 제출을 받는다.
 

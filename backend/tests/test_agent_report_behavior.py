@@ -105,7 +105,7 @@ class SyntheticCase:
             GamePhase.DAY_DISCUSSION: "SPEECH", GamePhase.DAY_VOTE: "VOTE",
             GamePhase.NIGHT_ACTION: "NIGHT",
         }[phase]
-        deadline_seconds = {"SPEECH": 105, "VOTE": 30, "NIGHT": 20}[kind]
+        deadline_seconds = {"SPEECH": 105, "VOTE": 30, "NIGHT": 30}[kind]
         deadline = self.now + timedelta(seconds=deadline_seconds)
         self.window = {
             "id": self.window_id, "game_id": self.state.game_id, "status": "OPEN",

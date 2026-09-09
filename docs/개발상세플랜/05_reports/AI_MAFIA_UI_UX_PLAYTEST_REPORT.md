@@ -106,7 +106,7 @@ focus 후 Enter로 동작했다. 화면 하단의 중첩 scroll, overlay, `point
 | UX-20 | P1 | 관전 제목은 실제 phase와 관계없이 해 아이콘과 `낮 n일차 · 관전 중`으로 표시된다. | `game_page.py` 관전 title 분기 | 관전 badge와 실제 phase·round·countdown 또는 대기 상태를 함께 표시한다. |
 | UX-21 | P1 | 일반 피드백 성공 뒤 pending을 지우지 않아 다시 진입하면 이전 성공 화면이 반복될 수 있다. | `frontend_user/app_pages/feedback_page.py` terminal 이동 분기 | GENERAL 성공 후 pending과 widget 값을 비우고 GAME receipt만 게임 scope에 유지한다. |
 | UX-22 | P2 | 홈 게임 카드에 정본의 phase와 마지막 갱신 상대 시각이 없다. | `frontend_user/app_pages/home_page.py` card metadata | `현재 단계`와 `마지막 갱신`을 추가해 여러 게임을 구분한다. |
-| UX-23 | P2 | 새 게임 화면에 역할 구성 preview와 첫날 무투표·밤 20초·투표 30초 안내가 없다. | `game_create_page.py`의 미사용 `ROLE_COUNTS`와 rules copy | 선택 인원별 역할 수와 실제 시간 규칙을 선택 카드 아래에서 즉시 갱신한다. |
+| UX-23 | P2 | 새 게임 화면에 역할 구성 preview와 첫날 무투표·밤 30초·투표 30초 안내가 없다. | `game_create_page.py`의 미사용 `ROLE_COUNTS`와 rules copy | 선택 인원별 역할 수와 실제 시간 규칙을 선택 카드 아래에서 즉시 갱신한다. |
 | UX-24 | P2 | 로딩 skeleton, 새 차례·countdown의 ARIA live, 오류 focus 이동이 없다. | 앱 초기화·action panel·공통 theme | 레이아웃 크기를 유지하는 skeleton과 상태용 live region, 오류·새 차례 focus 정책을 추가한다. |
 | UX-25 | P2 | 피드백 별점은 첫 진입부터 5점이 선택되고 제출이 활성화된다. | `feedback_page.py`의 `st.feedback(default=4)` | 초기값을 미선택으로 두고 명시적으로 별점을 선택하게 한다. |
 | UX-26 | P3 | 모든 scenario의 중앙 장식이 `ON AIR` 방송 장면으로 고정된다. | `game_page.py`의 scene CSS·markup | scenario ID별 중립 장식 또는 사건별 정적 visual token을 사용한다. |

@@ -26,7 +26,7 @@ registry, 복잡한 reconnect/backoff, Redis publisher 자동 실행은 현 MVP 
 | G11 · 카탈로그·개인 단서 미연결 | **기본 연결 해결** | [creation_service.py](../../../backend/app/services/game/creation_service.py) L122~178에서 직전 시나리오 제외·seed 선택·persona·좌석별 단서를 만든다. 제품 콘텐츠 승인은 별도 확인 사항이다. |
 | D01 · 정상 seed도 실패하는 SQL | **코드 수정 확인** | [004 seed SQL](../../../backend/migrations/004_seed_scenarios_and_personas.sql) L361~379가 `count FILTER`로 바뀌었다. 실제 migration 최초·재실행은 미검증이다. |
 | G01 · AI worker·실제 호출 없음 | **부분 해결** | [main.py](../../../backend/app/main.py) L48~59에서 worker를 관리하고 [postgres_runtime.py](../../../backend/app/services/game/postgres_runtime.py) L184~210, L247~293에서 MCP·Provider를 호출한다. GM 진행과 아래 AI 정보 격리는 남았다. |
-| G02 · 조회마다 deadline 재설정 | **시간 계산·저장/재개 개선** | [action_timer_service.py](../../../backend/app/services/game/action_timer_service.py)의 밤 20초·투표 30초와 DB deadline 기반 잔여 시간·pause/resume을 사용한다. 만료 검증·해소 공백은 아래 표 참조. |
+| G02 · 조회마다 deadline 재설정 | **시간 계산·저장/재개 개선** | [action_timer_service.py](../../../backend/app/services/game/action_timer_service.py)의 밤 30초·투표 30초와 DB deadline 기반 잔여 시간·pause/resume을 사용한다. 만료 검증·해소 공백은 아래 표 참조. |
 | G05 · 최종 토론 진입 불가 | **토론 경로 연결** | [discussion_transaction.py](../../../backend/app/services/game/discussion_transaction.py) L55~78에 최종 토론을 연결했다. 최종 지목은 여전히 첫 한 표로 판정한다. |
 | F03 · SSE 1회 종료·재접속 없음 | **부분 해결** | Backend 지속 stream, Front 1초 재연결·변경 후 GET·sync 실패 시 GET 복구가 추가됐다. 지속 polling·visibility 복귀·중복 제거 등은 남았다. |
 | M01~M05 · 구 MCP 계약 | **기존 프로파일 기준 판정 폐기** | 실제 FastMCP Resource template·Prompt·Tool·HTTP adapter가 있다. 현 문제는 actor context·응답 envelope·운영 Tool 연결이며 구 bootstrap 5-field 복구가 아니다. |

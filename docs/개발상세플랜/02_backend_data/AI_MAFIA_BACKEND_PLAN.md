@@ -438,7 +438,7 @@ resolved_at timestamptz NULL
 ~~~
 
 게임당 OPEN, PAUSED, RESOLVING window는 하나만 허용한다. turn_player_id는 개별
-발언 window에서만 설정한다. 밤은 20초, 투표 계열은 30초이며 OPEN window만 제출을
+발언 window에서만 설정한다. 밤은 30초, 투표 계열은 30초이며 OPEN window만 제출을
 받는다.
 
 #### action_submissions
@@ -676,7 +676,7 @@ Backend CSPRNG seed에서 결정적 RNG를 만들고 결과를 저장한다. 인
 - 발언은 정규화 후 1~200자다.
 - 첫날은 투표하지 않는다.
 - 생존자 전원이 발언 또는 PASS를 제출하면 다음 phase로 전환한다.
-- 밤은 20초, 투표는 30초다.
+- 밤은 30초, 투표는 30초다.
 - 마피아는 자기 자신을 공격할 수 없고, 탐정은 자기 자신을 조사할 수 없다.
 - 의사는 자기 자신을 보호할 수 있다.
 - 밤 시작 시 생존자와 대상 후보를 고정한다.
