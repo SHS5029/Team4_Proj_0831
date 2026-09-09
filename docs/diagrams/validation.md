@@ -58,7 +58,7 @@ Orca orchestration으로 두 작업자를 같은 체크아웃에서 읽기 전�
 - [Backend의 private 정보 투영](../../backend/app/services/game/actor_context.py)
 - [MCP Resource와 모델 입력 축약](../../mcp_server/mafia_game/api/resources/registry.py)
 - [MCP Tool 등록](../../mcp_server/mafia_game/api/tools/registry.py)
-- [공개·내부·MCP API 정본](../개발상세플랜/AI_MAFIA_API_SPEC.md)
+- [공개·내부·MCP API 정본](../개발상세플랜/01_core/AI_MAFIA_API_SPEC.md)
 
 문서 변경이므로 전체 회귀·유료 모델 호출·실게임·팀 DB 검증은 생략했습니다.
 기존 README의 기능 테스트 결과는 과거 기록으로 보존하며 새 실행 결과로 표기하지 않습니다.

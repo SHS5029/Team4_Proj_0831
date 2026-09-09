@@ -5,7 +5,11 @@ from __future__ import annotations
 import altair as alt
 import streamlit as st
 
-from frontend_admin.core.api_client import AUDIT_EVENT_LABELS
+from frontend_admin.core.api_client import (
+    AGENT_JOB_KIND_LABELS,
+    AGENT_JOB_STATUS_LABELS,
+    AUDIT_EVENT_LABELS,
+)
 
 ADMIN_DASHBOARD_CSS = """
 <style>
@@ -651,9 +655,16 @@ def _render_feedback(metrics: dict, *, records: dict, synthetic: bool = False) -
 
 
 def _render_logs(*, records: dict, synthetic: bool = False) -> None:
-    """관리자 감사 로그만 별도 화면에 표시해 운영 이력을 추적한다."""
+    """AI 작업과 관리자 조회 이력의 필터·페이지 상태를 각각 유지한다."""
 
     st.subheader("관리자 로그")
+    source = st.radio(
+        "로그 종류", ["AI Agent 행동", "관리자 조회 이력"],
+        horizontal=True, key="admin.logs.source",
+    )
+    if source == "AI Agent 행동":
+        _render_agent_jobs(records=records, synthetic=synthetic)
+        return
     st.markdown('<div class="admin-status-label">● 감사 기록</div>', unsafe_allow_html=True)
     st.markdown(
         '<div class="admin-section-note">관리자 API 조회 이력을 읽기 전용으로 확인합니다. 서버 원문 로그는 노출하지 않습니다.</div>',
@@ -674,8 +685,52 @@ def _render_logs(*, records: dict, synthetic: bool = False) -> None:
         _record_navigation("admin.logs", records["logs"])
 
 
+def _render_agent_jobs(*, records: dict, synthetic: bool = False) -> None:
+    """Agent 작업 메타데이터를 표로 표시하며 DB 문자열을 HTML로 해석하지 않는다."""
+
+    st.markdown('<div class="admin-status-label">● AI Agent 행동 로그</div>', unsafe_allow_html=True)
+    st.caption("에이전트별 발언·밤 행동·투표·GM 해설 작업의 처리 상태를 확인합니다.")
+    with st.container(border=True):
+        kind_column, status_column, game_column = st.columns([1, 1, 2])
+        with kind_column:
+            st.selectbox("작업 종류", list(AGENT_JOB_KIND_LABELS), key="admin.agent_jobs.kind")
+        with status_column:
+            st.selectbox("처리 상태", list(AGENT_JOB_STATUS_LABELS), key="admin.agent_jobs.status")
+        with game_column:
+            st.text_input(
+                "게임 UUID", placeholder="전체 게임 · UUID를 입력하면 해당 게임만 조회",
+                key="admin.agent_jobs.game",
+            )
+        if records.get("agent_jobs_game_invalid"):
+            st.warning("게임 UUID 형식이 올바르지 않습니다. UUID를 확인하거나 입력을 지워 주세요.")
+            return
+        st.caption("가상 AI 작업 기록입니다." if synthetic else "최근 생성된 AI 작업부터 표시합니다.")
+        st.caption(
+            "작업당 현재 상태 한 건을 표시합니다. 결과 생성 성공·대체 결과 생성은 "
+            "실제 게임 반영 완료와 다릅니다. 시각은 UTC 기준입니다."
+        )
+        rows = records["agent_jobs"]["items"]
+        kind_labels = {value: key for key, value in AGENT_JOB_KIND_LABELS.items()}
+        status_labels = {value: key for key, value in AGENT_JOB_STATUS_LABELS.items()}
+        if rows:
+            st.dataframe([{
+                "생성 시각": row["created_at"],
+                "에이전트": row["player_name"] or ("GM" if row["player_id"] is None else "이름 없음"),
+                "작업 종류": kind_labels.get(row["job_kind"], row["job_kind"]),
+                "처리 상태": status_labels.get(row["status"], row["status"]),
+                "실패 코드": row["failure_code"] or "—",
+                "완료 시각": row["completed_at"] or "—",
+                "게임 UUID": row["game_id"], "작업 ID": row["job_id"],
+                "플레이어 UUID": row["player_id"] or "—", "윈도우 ID": row["window_id"],
+                "예약 버전": row["reserved_state_version"],
+            } for row in rows], hide_index=True, width="stretch")
+        else:
+            st.info("조건에 맞는 AI Agent 행동 로그가 없습니다.")
+        _record_navigation("admin.agent_jobs", records["agent_jobs"])
+
+
 def _record_navigation(name: str, data: dict) -> None:
-    """피드백과 감사 로그에 같은 한 줄 페이지 이동 컨트롤을 표시한다.
+    """피드백·감사·Agent 로그에 같은 한 줄 페이지 이동 컨트롤을 표시한다.
 
     이전·다음 버튼은 기존 세션 커서 구조를 그대로 사용해 필터 변경과 한 번의
     클릭으로 다음 페이지를 읽는 동작을 보존한다. 화면에서는 두 버튼과 현재

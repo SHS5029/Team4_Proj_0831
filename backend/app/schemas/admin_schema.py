@@ -104,7 +104,7 @@ AdminAuditType = Literal[
     "ADMIN_LIST_GAMES", "ADMIN_GET_GAME", "ADMIN_GET_METRICS",
     "ADMIN_GET_ROLE_WIN_RATES", "ADMIN_GET_PERSONA_WIN_RATES",
     "ADMIN_LIST_FEEDBACK", "ADMIN_LIST_AUDIT_LOGS", "ADMIN_QUERY_INSIGHTS",
-    "ADMIN_GET_SPEECH_ANALYTICS",
+    "ADMIN_GET_SPEECH_ANALYTICS", "ADMIN_LIST_AGENT_JOBS",
 ]
 
 
@@ -124,6 +124,18 @@ class AdminAuditQuery(BaseModel):
     model_config = ConfigDict(extra="forbid")
     event_type: AdminAuditType | None = None
     cursor: int | None = Field(default=None, ge=1, le=9223372036854775807)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class AdminAgentJobQuery(BaseModel):
+    """Agent 작업의 저장된 분류와 UUID만 허용해 조회 조건을 제한한다."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    game_id: UUID | None = None
+    job_kind: Literal["SPEECH", "NIGHT_ACTION", "VOTE", "GM_NARRATION"] | None = None
+    status: Literal["RESERVED", "SUCCEEDED", "FALLBACK", "STALE", "FAILED"] | None = None
+    cursor: UUID | None = None
     limit: int = Field(default=20, ge=1, le=100)
 
 

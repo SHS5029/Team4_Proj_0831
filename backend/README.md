@@ -62,7 +62,7 @@ Backend가 검증할 proposal만 반환합니다.
 prompt 원문, 비공개 게임 context와 raw model response는 로그에 기록하지 않습니다.
 MVP에서는 앱 수준의 LLM timeout, token 상한·사용량과 비용·예산 기능을 구현하지
 않습니다. 세부 경계는
-[API 명세서](../docs/개발상세플랜/AI_MAFIA_API_SPEC.md)를 따릅니다.
+[API 명세서](../docs/개발상세플랜/01_core/AI_MAFIA_API_SPEC.md)를 따릅니다.
 
 ## 보안 경계
 
