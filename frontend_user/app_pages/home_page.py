@@ -114,7 +114,7 @@ def render(client: ApiClient) -> None:
             )
     with st.container(border=True):
         st.markdown('<div class="home-player-title">플레이어 정보</div>', unsafe_allow_html=True)
-        st.caption("현재 구조에서는 UUID를 게임 식별자로 사용합니다. 닉네임은 저장하지 않습니다.")
+        st.caption("현재 구조에서는 UUID를 게임 식별자로 사용합니다.")
         user_id = st.session_state.get("identity.user_id")
         st.text_input(
             "게임 식별자 (UUID)",

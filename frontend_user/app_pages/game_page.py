@@ -23,7 +23,10 @@ from frontend_user.core.api_client import ApiResponseError, ApiUnavailableError
 from frontend_user.core.scenario_images import scenario_image_path
 from frontend_user.core.sync import SyncEnvelopeError
 from frontend_user.core.time_display import display_timestamp
-from frontend_user.core.view_models import own_private_view, public_players, public_timeline, validate_special_roles
+from frontend_user.core.view_models import (
+    own_private_view, private_fact_first_person, public_players, public_timeline,
+    validate_special_roles,
+)
 from frontend_user.core.session import maintain_special_roles, special_roles_scope
 from frontend_user.core.commands import ABILITY_DESCRIPTIONS, owns_custom_ability
 
@@ -983,7 +986,7 @@ def _render_spectator_timeline(*, snapshot: dict[str, Any], me: dict[str, Any]) 
         for player in public_players(snapshot)
     }
     # 관전 페이지도 일반 진행 페이지와 같은 순서를 사용해 사건 확인 위치를 통일한다.
-    _render_incident_summary(snapshot.get("scenario"), me=me)
+    _render_incident_summary(snapshot.get("scenario"), me=me, players=public_players(snapshot))
     presentations = _player_presentations(public_players(snapshot))
     with st.container(key="spectator-timeline-panel", border=True):
         title_column, progress_column = st.columns([3, 1])
@@ -1010,7 +1013,10 @@ def _render_spectator_timeline(*, snapshot: dict[str, Any], me: dict[str, Any]) 
                 )
 
 
-def _render_incident_summary(scenario: Any, *, me: dict[str, Any] | None = None) -> None:
+def _render_incident_summary(
+    scenario: Any, *, me: dict[str, Any] | None = None,
+    players: list[dict[str, Any]] | None = None,
+) -> None:
     """사건 정보를 공개 대화 위에 접을 수 있는 고정 영역으로 표시한다.
 
     사건 내용은 대화 event가 아니므로 player 대화 스크롤 안에 넣지 않는다. 개인
@@ -1020,6 +1026,7 @@ def _render_incident_summary(scenario: Any, *, me: dict[str, Any] | None = None)
 
     details = scenario if isinstance(scenario, dict) else {}
     private = me if isinstance(me, dict) else {}
+    public_player_list = players if isinstance(players, list) else []
     with st.container(key="game-incident-summary"):
         with st.expander("🗂️ 사건 내용", expanded=False):
             image_path = scenario_image_path(details)
@@ -1034,9 +1041,13 @@ def _render_incident_summary(scenario: Any, *, me: dict[str, Any] | None = None)
             st.caption(f"피해자: {victim} · 장소: {location_text}")
             st.write(str(details.get("background", "")))
             st.markdown("**내 알리바이**")
-            st.write(str(private.get("alibi", "없음")))
+            st.write(private_fact_first_person(
+                private.get("alibi"), me=private, players=public_player_list,
+            ))
             st.markdown("**사건 단서**")
-            st.write(str(private.get("observation", "없음")))
+            st.write(private_fact_first_person(
+                private.get("observation"), me=private, players=public_player_list,
+            ))
 
 
 def _render_spectator_private(*, client: Any, snapshot: dict[str, Any], me: dict[str, Any]) -> None:
@@ -1062,8 +1073,16 @@ def _render_spectator_private(*, client: Any, snapshot: dict[str, Any], me: dict
         with st.container(border=True):
             st.markdown("**확인된 사실**")
             st.write(f"역할: {role_name}")
-            st.write(f"알리바이: {str(me.get('alibi', '없음'))}")
-            st.write(f"관찰: {str(me.get('observation', '없음'))}")
+            st.write(
+                "알리바이: " + private_fact_first_person(
+                    me.get("alibi"), me=me, players=public_players(snapshot),
+                )
+            )
+            st.write(
+                "관찰: " + private_fact_first_person(
+                    me.get("observation"), me=me, players=public_players(snapshot),
+                )
+            )
         _render_custom_private_information(snapshot=snapshot, me=me, client=client)
         eliminated_phase = own_public.get("eliminated_phase")
         eliminated_round = own_public.get("eliminated_round")
@@ -1088,7 +1107,7 @@ def _render_timeline(
     # 사건 정보는 대화 흐름과 분리해 타임라인 패널보다 먼저 배치한다. 기본 접힘을
     # 유지하므로 필요한 순간에만 열어 확인할 수 있고, 공개 발언의 시선 흐름을 막지 않는다.
     me = own_private_view(snapshot)
-    _render_incident_summary(scenario, me=me)
+    _render_incident_summary(scenario, me=me, players=public_players(snapshot))
     with st.container(key="game-timeline-panel", border=True):
         title_column, progress_column = st.columns([3, 1])
         title_column.markdown("### 💬 공개 대화")
