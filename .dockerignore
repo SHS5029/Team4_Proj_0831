@@ -1,0 +1,14 @@
+.git
+.venv
+**/.venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.env
+.env.*
+!.env.example
+*.log
+backend/tests
+frontend_user/tests
+mcp_server/tests

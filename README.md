@@ -180,6 +180,70 @@ Windows는 `run_openai.bat --check` / `run_openai.bat`를 사용합니다.
 Windows의 `--check`는 환경값 읽기·import만 확인합니다.
 포트 변경·개별 실행·관리자 전용 실행은 [실행 안내](#running)를 참고하세요.
 
+### Docker DB·Redis 이미지로 로컬 실행
+
+팀 데이터베이스와 Redis를 사용하지 않고 Docker Hub의 사전 초기화 이미지를
+검증하려면 `.env.docker.example`을 복사해 로컬 값으로 작성한 뒤 다음 명령을
+실행합니다. PostgreSQL 이미지는 프로젝트 migration과 `pgcrypto`·`vector`
+확장을 초기화하고, Redis 이미지는 AOF를 활성화합니다.
+
+```powershell
+Copy-Item .env.docker.example .env.docker
+docker compose --env-file .env.docker -f docker-compose.db.yml up -d
+```
+
+기본 포트는 PostgreSQL `127.0.0.1:55432`, Redis `127.0.0.1:56379`이며,
+실제 Backend 실행에는 루트 `.env`의 `AI_MAFIA_STORAGE_MODE=isolated`,
+`AI_MAFIA_DATABASE_URL`, `AI_MAFIA_REDIS_URL`을 지정합니다. 현재 배포 태그는
+`ikonly/ai-mafia-postgres:latest`와 `ikonly/ai-mafia-redis:latest`입니다.
+기동 후 `run_openai.bat`을 실행하고 `/health`·`/ready`가 모두 정상인지 확인합니다.
+테스트가 끝나면 데이터까지 삭제할 때만 다음 명령을 사용합니다.
+
+```powershell
+docker compose --env-file .env.docker -f docker-compose.db.yml down -v
+```
+
+### 전체 Docker 배포
+
+Backend·사용자 Front·MCP까지 Docker Hub 이미지로 실행하려면 `.env.deploy.example`을
+`.env.deploy`로 복사하고 `OPENAI_API_KEY`와 `OPENAI_MODEL`을 사용자의 값으로
+입력합니다. OpenAI 키는 Backend 컨테이너에만 전달되며 이미지와 Front·MCP·DB에는
+포함되지 않습니다.
+
+DB·Redis는 외부 서비스 없이 시작할 수 있도록 Compose 기본값을 제공하지만,
+인터넷에 공개하거나 여러 운영자가 공유하는 환경에서는 `POSTGRES_*` 비밀번호를
+반드시 `.env.deploy`에서 별도로 지정합니다.
+
+```powershell
+Copy-Item .env.deploy.example .env.deploy
+# .env.deploy에서 OPENAI_API_KEY와 OPENAI_MODEL을 수정
+docker compose --env-file .env.deploy pull
+docker compose --env-file .env.deploy up -d
+docker compose --env-file .env.deploy ps
+```
+
+Compose는 `ikonly/ai-mafia-backend:latest`, `ikonly/ai-mafia-frontend:latest`,
+`ikonly/ai-mafia-mcp:latest`와 기존 PostgreSQL·Redis 이미지를 사용합니다.
+Backend·MCP·DB·Redis는 내부 Docker network로만 통신하고, 기본적으로 사용자 Front만
+외부 네트워크에 공개합니다. Backend는 브라우저의 SSE 연결을 위해
+`127.0.0.1:18000`에만 바인딩하고, 사용자 Front는 `127.0.0.1:18501`에 공개합니다.
+모델 변경은 `.env.deploy`의 `OPENAI_MODEL`을
+수정한 뒤 `docker compose --env-file .env.deploy up -d backend`를 실행합니다.
+Docker 내부의 `MCP_SERVER_URL`은 `http://mcp:8100`처럼 base URL만 지정하고,
+MCP client가 `/mcp` 경로를 붙입니다. MCP runtime에는 내부 Host 검증을 위한
+`MCP_ALLOWED_HOSTS=mcp:8100`을 전달합니다.
+Frontend의 Python API 호출은 `BACKEND_API_URL=http://backend:8000`을 사용하고,
+브라우저 SSE·polling은 `BACKEND_BROWSER_URL=http://127.0.0.1:18000`을 사용합니다.
+사용자 Front의 실시간 동기화와 AI 처리 참고 정보는 하나의 Streamlit fragment에서
+갱신해, 게임 단계 전환 때 fragment 전체 재실행이 서로의 화면 DOM을 제거하지 않도록
+구성되어 있습니다.
+
+서비스와 데이터까지 중지·삭제하려면 다음 명령을 사용합니다.
+
+```powershell
+docker compose --env-file .env.deploy down -v
+```
+
 > 이 MVP는 UUID로 사용자를 구분하는 **로컬·사설망용**입니다. UUID는 강한 인증이 아니며,
 > 관리자 allowlist도 공개 인터넷 배포용 인증을 대신하지 않습니다. [보안과 제약](#security)
 
