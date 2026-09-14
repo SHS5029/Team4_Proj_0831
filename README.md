@@ -204,8 +204,8 @@ docker compose --env-file .env.deploy up -d
 docker compose --env-file .env.deploy ps
 ```
 
-Compose는 `ikonly/ai-mafia-backend:latest`, `ikonly/ai-mafia-frontend:latest`,
-`ikonly/ai-mafia-mcp:latest`와 PostgreSQL·Redis 이미지를 사용합니다.
+Compose는 `shs5029/ai-mafia-backend:latest`, `shs5029/ai-mafia-frontend:latest`,
+`shs5029/ai-mafia-mcp:latest`와 같은 계정의 PostgreSQL·Redis 이미지를 사용합니다.
 Backend·MCP·DB·Redis는 Compose 내부 네트워크로 통신하고, 사용자 Front와 Backend,
 PostgreSQL·Redis의 호스트 포트는 기본적으로 loopback에만 공개합니다. 기본 주소는
 Backend `127.0.0.1:18000`, 사용자 Front `127.0.0.1:18501`, PostgreSQL

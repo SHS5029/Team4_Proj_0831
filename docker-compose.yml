@@ -1,6 +1,7 @@
 services:
   postgres:
-    image: ikonly/ai-mafia-postgres:latest
+    image: shs5029/ai-mafia-postgres:latest
+    platform: linux/amd64
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-ai_mafia}
@@ -19,7 +20,8 @@ services:
       retries: 20
 
   redis:
-    image: ikonly/ai-mafia-redis:latest
+    image: shs5029/ai-mafia-redis:latest
+    platform: linux/amd64
     restart: unless-stopped
     ports:
       - "127.0.0.1:${REDIS_HOST_PORT:-56379}:6379"
@@ -32,13 +34,14 @@ services:
       retries: 20
 
   backend:
-    image: ikonly/ai-mafia-backend:latest
+    image: shs5029/ai-mafia-backend:latest
+    platform: linux/amd64
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_APP_USER:-app_user}:${POSTGRES_APP_PASSWORD:-change-this-app-password}@postgres:5432/${POSTGRES_DB:-ai_mafia}
       DATABASE_NAME: ${POSTGRES_DB:-ai_mafia}
       REDIS_URL: redis://redis:6379/0
-      MCP_SERVER_URL: http://mcp:8100/mcp
+      MCP_SERVER_URL: http://mcp:8100
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
       LLM_PROVIDER: ${LLM_PROVIDER:-openai}
@@ -59,7 +62,8 @@ services:
       - "127.0.0.1:${BACKEND_HOST_PORT:-18000}:8000"
 
   mcp:
-    image: ikonly/ai-mafia-mcp:latest
+    image: shs5029/ai-mafia-mcp:latest
+    platform: linux/amd64
     restart: unless-stopped
     environment:
       BACKEND_API_URL: http://backend:8000
@@ -72,7 +76,8 @@ services:
         condition: service_healthy
 
   frontend:
-    image: ikonly/ai-mafia-frontend:latest
+    image: shs5029/ai-mafia-frontend:latest
+    platform: linux/amd64
     restart: unless-stopped
     environment:
       BACKEND_API_URL: http://backend:8000
